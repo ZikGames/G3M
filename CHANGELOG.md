@@ -7,7 +7,7 @@
     - automate added... tabulate!?
     - makin it in second branch because... idk... staying main in uptodate..?
     - woah, im like Alphys from Undertale]]]... ok nevermind...
-      // i have a thought... Y114 have been replaced from 1.7.4?.. okay i get it, just more styled
+      // i got a thought... Y114 have been replaced from 1.7.4?.. okay i get it, just more styled
 
 ### Version 3.3.3 — 15.08.26
 
