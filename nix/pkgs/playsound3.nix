@@ -1,0 +1,44 @@
+{
+  perSystem =
+    { pkgs, ... }:
+    let
+      playsound3 = pkgs.python3Packages.callPackage (
+        {
+          lib,
+          buildPythonPackage,
+          fetchPypi,
+          hatchling,
+          gst_all_1,
+        }:
+        buildPythonPackage rec {
+          pname = "playsound3";
+          version = "3.3.2";
+          pyproject = true;
+
+          src = fetchPypi {
+            inherit pname version;
+            hash = "sha256-oZ2fVCvrPOXstMp4C0cJLHhXJSY+M5vtjn00CzIsT50=";
+          };
+
+          build-system = [ hatchling ];
+          pythonImportsCheck = [ "playsound3" ];
+
+          # subprocess-backend
+          propagatedBuildInputs = [ gst_all_1.gst-plugins-base ];
+
+          meta = {
+            description = "Cross platform library to play sound files in Python";
+            homepage = "https://github.com/szmikler/playsound3";
+            license = lib.licenses.mit;
+          };
+        }
+      ) { };
+    in
+    {
+      packages.playsound3 = playsound3;
+
+      overlayAttrs.pythonPackagesExtensions = [
+        (_final: _prev: { inherit playsound3; })
+      ];
+    };
+}

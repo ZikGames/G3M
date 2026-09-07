@@ -4,13 +4,17 @@
   outputs = inputs: inputs.flake-parts.lib.mkFlake { inherit inputs; } (inputs.import-tree ./nix);
 
   inputs = {
+    actions-nix.url = "github:nialov/actions.nix";
     flake-file.url = "github:vic/flake-file";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
-      inputs.nixpkgs-lib.follows = "nixpkgs-lib";
+      inputs.nixpkgs-lib.follows = "nixpkgs";
     };
     import-tree.url = "github:vic/import-tree";
     nixpkgs.url = "https://channels.nixos.org/nixpkgs-unstable/nixexprs.tar.xz";
-    nixpkgs-lib.follows = "nixpkgs";
+    pyproject-nix = {
+      url = "github:pyproject-nix/pyproject.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 }

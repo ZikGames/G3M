@@ -1,3 +1,25 @@
+### Version pre-3.3.4-nix — 07.09.26 - Zik1213
+
+- Improvements and Base (un)stable features
+    - added package.nix, g3mtool.nix and playsound3.nix (for proper installation)
+    - added .gitignore and .gitattributes (second one for seamless updates, i think it would work, maybe?)
+    - removed actions.nix (because i didnt find consident use for it)
+
+    // bugs that i need to find fix:
+
+    // 1. crash after manual installing mods (but they installs fine)
+
+    // 2. crash after closing game
+
+    // beware of bugs! (or consequences of my (claude driven) code and workarounds) if you see another ones, open issue in fork or (if you in Y114's discord guild) find in #g3m-help "NixOS thread". Do not bother Y114 about my slop experience that results in fork!
+
+### Version 3.3.4 — 01.09.26 - Y114
+
+- Improvements and Bug Fixes
+    - Fixed Bad CPU Error on macOS-arm64. G3MTool using separate xdelta for x64 and arm64 architectures for macOS now.
+    - Fixed bug when G3M couldn't detect whether game is stopped on Linux Mint.
+    - Fixed bug when G3M couldn't convert or merge Pet.Net mods.
+
 ### Version 3.3.3-nix - 28.08.26 - Zik1213
 
 - **(Yet Another) Visible Part of one person's Madness and Dispair**

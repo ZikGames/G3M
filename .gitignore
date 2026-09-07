@@ -1,0 +1,44 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- venv / tooling ---
+.venv/
+venv/
+.ruff_cache/
+.pyright/
+
+# --- pytest / coverage (see nix/pyproject.nix devShell + CI) ---
+.pytest_cache/
+.cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+test-output.log
+test-collection.log
+
+# --- Nix ---
+result
+result-*
+.direnv/
+
+# --- runtime binaries fetched/built by CI or by hand (see test-g3m.yml) ---
+src/assets/bin/g3mtool_linux/
+src/assets/bin/g3mtool_macos/
+src/assets/bin/g3mtool_windows/
+src/assets/bin/unrar/
+
+# --- local secrets (see .env.example) ---
+src/.env
+.env
+
+# --- editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
