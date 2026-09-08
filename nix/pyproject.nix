@@ -36,7 +36,7 @@
           ++ runtimeTools;
         };
 
-      devShells.test =
+      devShells.devtest =
         let
           testDeps = with python.pkgs; [
             pytest
@@ -51,6 +51,9 @@
         pkgs.mkShell {
           packages = [
             pythonEnv
+            config.packages.g3mtool
+            python.pkgs.ruff
+            pkgs.pyright
             pkgs.xvfb-run
             pkgs.openbox
           ]

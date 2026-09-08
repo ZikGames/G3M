@@ -24,12 +24,12 @@
       packages.g3m = python.pkgs.buildPythonApplication (
         buildAttrs
         // {
-          # версии в nixpkgs не совпадают строго с пинами из pyproject.toml —
-          # иначе pythonRuntimeDepsCheckHook валит сборку
+          # satisfy build
           pythonRelaxDeps = [
             "PyQt6"
             "defusedxml"
             "rarfile"
+            "python-dotenv"
           ];
 
           postInstall = ''

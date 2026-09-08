@@ -1,3 +1,9 @@
+### Version 3.3.4-nix — 08.09.26 - Zik1213
+
+- Improvements and some stuff
+    - updated to 3.3.4 (and satisfyed python-dotenv)
+    - (experimental) added modules.nix for declarative things such as `programs.g3m.enable = true`
+
 ### Version pre-3.3.4-nix — 07.09.26 - Zik1213
 
 - Improvements and Base (un)stable features
