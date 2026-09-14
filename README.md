@@ -50,7 +50,7 @@
 
 ## What Is G3M
 
-G3M *(Formerly DELTAHUB)* is a desktop manager for GameMaker mod workflows. It combines GameBanana browsing, local library management, profile switching, mod and game versioning, patch utilities, custom game support, and optional plugins in one PyQt6 application.
+G3M _(Formerly DELTAHUB)_ is a desktop manager for GameMaker mod workflows. It combines GameBanana browsing, local library management, profile switching, mod and game versioning, patch utilities, custom game support, and optional plugins in one PyQt6 application.
 
 The current codebase is focused on DELTARUNE, DELTARUNE Demo, UNDERTALE, UNDERTALE Yellow, Pizza Tower, Sugary Spire, and FRICKBEARS3, while also allowing custom games to be added through the in-app Game Manager.
 
@@ -121,15 +121,15 @@ The current codebase is focused on DELTARUNE, DELTARUNE Demo, UNDERTALE, UNDERTA
 
 ## Supported Games
 
-| Game | Browser / GameBanana | Library / Launch | Notes |
-| --- | --- | --- | --- |
-| DELTARUNE | Yes | Yes | Full chapter-aware workflow, Steam App ID, direct-launch restrictions handled in-app. |
-| DELTARUNE Demo | No (Download from DELTARUNE) | Yes | Supports local use and has a built-in full-install. |
-| UNDERTALE | Yes | Yes | Includes Steam App ID support. |
-| UNDERTALE Yellow | Yes | Yes | Includes a built-in full-install. |
-| Pizza Tower | Yes | Yes | Includes PizzaOven conversion and CYOP/AFOM handling. |
-| Sugary Spire | Yes | Yes | Included in the built-in registry and marked for full-install support. |
-| FRICKBEARS3 | Yes | Yes | Included in the built-in registry and marked for full-install support. |
+| Game             | Browser / GameBanana         | Library / Launch | Notes                                                                                 |
+| ---------------- | ---------------------------- | ---------------- | ------------------------------------------------------------------------------------- |
+| DELTARUNE        | Yes                          | Yes              | Full chapter-aware workflow, Steam App ID, direct-launch restrictions handled in-app. |
+| DELTARUNE Demo   | No (Download from DELTARUNE) | Yes              | Supports local use and has a built-in full-install.                                   |
+| UNDERTALE        | Yes                          | Yes              | Includes Steam App ID support.                                                        |
+| UNDERTALE Yellow | Yes                          | Yes              | Includes a built-in full-install.                                                     |
+| Pizza Tower      | Yes                          | Yes              | Includes PizzaOven conversion and CYOP/AFOM handling.                                 |
+| Sugary Spire     | Yes                          | Yes              | Included in the built-in registry and marked for full-install support.                |
+| FRICKBEARS3      | Yes                          | Yes              | Included in the built-in registry and marked for full-install support.                |
 
 Custom games can be added in the Game Manager. A custom game can define its executable, DATA filename, optional Steam App ID, and optional GameBanana ID, and visible custom games can participate in search when a valid GameBanana ID is provided.
 
@@ -148,34 +148,36 @@ Local plugins are also supported. Manual installs are marked separately from cat
 
 ## Build From Source
 
-G3M requires Python 3.14 or newer (project uses latest versions, edit pyproject.toml if you need compatibility changes).
+this fork uses nix with flakes
+
+add this into your [insert name of configuration file as you installed nix] and rebuild nix(OS)
+
+```nix
+      nix.settings.experimental-features = [
+        "nix-command"
+        "flakes"
+      ];
+```
+
+now you can run ts:
 
 ```bash
-git clone https://github.com/y114git/G3M.git
+nix run github:ZikGames/G3M/python-nix
+```
+
+or according to next section:
+
+```bash
+git clone https://github.com/ZikGames/G3M/python-nix
 cd G3M
-python -m pip install -e ".[dev,test,build]"
-python src/main.py
 ```
-
-Extras defined in `pyproject.toml`:
-
-- `.[build]` installs PyInstaller.
-- `.[test]` installs `pytest`, `pytest-qt`, coverage helpers, and related test tools.
-- `.[dev]` installs Ruff.
-
-The repository includes a PyInstaller spec at `builds/G3MExecutable.spec`:
-
-```bash
-pyinstaller builds/G3MExecutable.spec
-```
-
-That spec packages `src/main.py`, bundles the `src/` tree into the frozen app, and includes macOS bundle URL scheme metadata for both `g3m` and `deltahub`. A Windows installer script also exists at `builds/G3MWindowsInstaller.iss`.
 
 ## Development and Tests
 
-Run the full automated suite with:
+in that folder you can run:
 
 ```bash
+nix develop .#devtest
 pytest
 ```
 
@@ -190,6 +192,44 @@ pytest tests/ui
 
 The repository includes unit, integration, and Qt UI coverage for core areas such as protocol handling, downloads, profiles, plugin services, GameBanana integration, patching, game versions, dialogs, and widgets.
 
+## installation
+
+<details>
+    <summary>ready-to-work simple nixos module (for dendritic)</summary>
+    ```nix
+    {
+      flake-file.inputs = {
+        g3m.url = "github:ZikGames/G3M/python-nix";
+      };
+      flake.nixosModules.g3m = { pkgs, inputs, ... }: {
+        imports = [ inputs.g3m.nixosModules.default ];
+        programs.g3m = {
+          enable = true;
+          package = inputs.g3m.packages.${pkgs.system}.g3m;
+        };
+      };
+    }
+
+    ```
+
+</details>
+
+by default
+
+```nix
+# flake.nix
+inputs = {
+      g3m.url = "github:ZikGames/G3M/python-nix";
+};
+
+# configuration.nix
+imports = [ inputs.g3m.nixosModules.default ];
+programs.g3m = {
+  enable = true;
+  package = inputs.g3m.packages.${pkgs.system}.g3m;
+};
+```
+
 ## Customization and Localization
 
 Bundled themes live in `src/assets/themes/`, and bundled language packs live in `src/assets/lang/`. Theme import and export are archive-based, and localization supports external `lang_*.json` files plus per-language custom fonts loaded from the same directory as the language file.
@@ -201,5 +241,10 @@ If you want implementation details or contributor-facing guides for themes, loca
 - [License](LICENSE)
 - [Security Policy](SECURITY.md)
 - [Third-Party Notices](THIRD_PARTY_NOTICES.md)
+
+## note from fork manager
+
+Y114 - ☝✌💧❄☜☼
+Zik1213 - Alphys
 
 <p align="right"><a href="#readme-top">Back to top</a></p>
