@@ -378,6 +378,7 @@ class SaveEditorDialog(QDialog):
         self.app_state = app_state
         self.file_path = file_path
         self.simple_mode_data = load_simple_mode_data()
+        self._flag_names_by_id: dict[int, str] = {}
         self._simple_ready = False
         self._original_newline = "\n"
         self._had_trailing_newline = False
@@ -575,6 +576,9 @@ class SaveEditorDialog(QDialog):
             self._simple_layout.addWidget(label)
             return
         self._simple_ready = True
+        self._flag_names_by_id = {
+            value: name for name, value in self._group_ids("flags").items()
+        }
         self._rebuild_simple_mode()
 
     def _clear_layout(self, layout) -> None:
@@ -738,10 +742,7 @@ class SaveEditorDialog(QDialog):
         return self._group_meta("flags").get(str(flag_id), {})
 
     def _flag_name(self, flag_id: int) -> str:
-        for name, value in self._group_ids("flags").items():
-            if value == flag_id:
-                return name
-        return f"FLAG_{flag_id}"
+        return self._flag_names_by_id.get(flag_id, f"FLAG_{flag_id}")
 
     def _set_flag(self, flag_id: int, value) -> None:
         if 0 <= flag_id < len(self.save_data["flags"]):

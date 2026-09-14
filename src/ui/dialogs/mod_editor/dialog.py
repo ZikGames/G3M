@@ -1096,7 +1096,7 @@ class ModEditorDialog(QDialog):
         self,
         layout,
         path_edit: QLineEdit,
-        frame: QFrame,
+        frame: QWidget,
         hint_label: QLabel | None = None,
     ) -> None:
         is_special = self._is_special_runtime_extra_path(layout, path_edit.text())
