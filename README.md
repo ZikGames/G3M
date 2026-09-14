@@ -196,7 +196,9 @@ The repository includes unit, integration, and Qt UI coverage for core areas suc
 
 <details>
     <summary>ready-to-work simple nixos module (for dendritic)</summary>
+
     ```nix
+
     {
       flake-file.inputs = {
         g3m.url = "github:ZikGames/G3M/python-nix";
