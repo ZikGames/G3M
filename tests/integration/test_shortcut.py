@@ -695,7 +695,7 @@ class TestShortcutDialog:
         finally:
             dialog.close()
 
-    def test_disable_plugin_actions_hides_plugin_section(self, qapp, mock_app_state):
+    def test_disable_plugin_actions_hides_plugin_section(self, qapp, qtbot, mock_app_state):
         plugin_context = ShortcutPluginContext({"game_id": "deltarune"})
         plugin_context.add_summary_line("Save Folder", "SOJ")
         plugin_blocks = [
@@ -720,7 +720,8 @@ class TestShortcutDialog:
         )
         try:
             dialog.show()
-            qapp.processEvents()
+            qtbot.waitExposed(dialog)
+            qtbot.waitUntil(lambda: dialog.height() == dialog.sizeHint().height())
             height_before = dialog.height()
             assert dialog.plugin_section_widget.isHidden() is False
             assert "Save Folder: SOJ" in dialog.summary_label.text()
@@ -728,7 +729,7 @@ class TestShortcutDialog:
             qapp.processEvents()
             assert dialog.plugin_section_widget.isHidden() is True
             assert "Save Folder: SOJ" not in dialog.summary_label.text()
-            assert dialog.height() < height_before
+            qtbot.waitUntil(lambda: dialog.height() < height_before)
         finally:
             dialog.close()
 

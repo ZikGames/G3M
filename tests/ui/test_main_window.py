@@ -564,7 +564,7 @@ class TestAppWindow:
                     window.change_font_button.text()
                     == window.customization_service.get_font_button_text()
                 )
-                assert window.status_label.text() == "Launcher settings"
+                assert window.status_label.text() == "G3M settings"
 
                 localization_service.load_language("ru")
                 window.app_state.local_config["language"] = "ru"
@@ -594,7 +594,7 @@ class TestAppWindow:
                     window.change_font_button.text()
                     == window.customization_service.get_font_button_text()
                 )
-                assert window.status_label.text() == "Настройки лаунчера"
+                assert window.status_label.text() == "Настройки G3M"
             finally:
                 localization_service.load_language(original_language)
                 _close_app_window(qapp, window)

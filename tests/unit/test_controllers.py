@@ -2366,11 +2366,15 @@ class TestGameLaunchController:
         assert controller is not None
         assert controller.app_state == app_state
 
-    def test_external_game_process_blocks_launch_button(self, qapp):
+    def test_external_game_process_blocks_launch_button(self, qapp, monkeypatch):
         from config.config import UI_COLORS
         from controllers.game_launch_controller import GameLaunchController
         from services.localization_service import tr
 
+        monkeypatch.setattr(
+            "controllers.game_launch_controller.get_running_game_process_name",
+            lambda _names: "DELTARUNE.exe",
+        )
         app_state = SimpleNamespace(
             game_mode=SimpleNamespace(supports_full_install=False),
             game_is_running=False,
