@@ -192,13 +192,21 @@ pytest tests/ui
 
 The repository includes unit, integration, and Qt UI coverage for core areas such as protocol handling, downloads, profiles, plugin services, GameBanana integration, patching, game versions, dialogs, and widgets.
 
+(put LC_ALL=C at beginning, if you are not using english as main language (prevent some failed tests))
+
+<details>
+    <summary>also you can use xvfb</symmary>
+```bash
+LC_ALL=C xvfb-run -a pytest -k "not test_background_audio_pause_detection_accepts_child_windows and not test_search_mod_card_widget_expands_on_selection_and_hides_on_focus_loss"
+```
+(sometexttofill)
+</details>
+
 ## installation
 
 <details>
     <summary>ready-to-work simple nixos module (for dendritic)</summary>
-
-    ```nix
-
+    ```
     {
       flake-file.inputs = {
         g3m.url = "github:ZikGames/G3M/python-nix";
@@ -211,9 +219,7 @@ The repository includes unit, integration, and Qt UI coverage for core areas suc
         };
       };
     }
-
     ```
-
 </details>
 
 by default
@@ -247,6 +253,7 @@ If you want implementation details or contributor-facing guides for themes, loca
 ## note from fork manager
 
 Y114 - ☝✌💧❄☜☼
+
 Zik1213 - Alphys
 
 <p align="right"><a href="#readme-top">Back to top</a></p>
