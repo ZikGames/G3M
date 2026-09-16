@@ -25,14 +25,17 @@
         buildAttrs
         // {
           # satisfy build
-          pythonRelaxDeps = [
-            "PyQt6"
-            "defusedxml"
-            "rarfile"
-            "python-dotenv"
-          ];
+          # pythonRelaxDeps = [
+          #   "PyQt6"
+          #   "defusedxml"
+          #   "rarfile"
+          #   "python-dotenv"
+          # ];
+
+          pypaBuildFlags = [ "--skip-dependency-check" ];
 
           postInstall = ''
+
             # gettin content
             cp -a src/. "$out/${python.sitePackages}/"
 
