@@ -226,7 +226,7 @@ class BackupManager:
                 elif path in added and current == {"type": "missing"}:
                     continue
                 self.external_changes.append(path)
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 self.external_changes.append(path)
         if self.external_changes:
             self.patching_logger.warning(

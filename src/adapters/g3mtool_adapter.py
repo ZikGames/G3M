@@ -382,11 +382,15 @@ class G3MToolManager:
         file2: str,
         output_dir: str | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
+        *,
+        full_report: bool = False,
     ) -> tuple[int, str, str]:
-        """Call g3mtool diff <file1> <file2> [output-dir]."""
+        """Call g3mtool diff <file1> <file2> [output-dir] [--full]."""
         cmd = ["diff", file1, file2]
         if output_dir:
             cmd.append(output_dir)
+        if full_report:
+            cmd.append("--full")
         return self._run_command(cmd, progress_callback=progress_callback)
 
     def execute(
