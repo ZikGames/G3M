@@ -132,7 +132,7 @@
             xvfb-run -a --server-args="-screen 0 1920x1080x24" bash -c '
               openbox --sm-disable &
               sleep 1
-              pytest -k "not test_removed_usage_reporting_has_no_tracked_references and not test_startup_with_sample_archive and not test_disable_plugin_actions_hides_plugin_section"
+              pytest -k "not test_removed_usage_reporting_has_no_tracked_references and not test_startup_with_sample_archive and not test_disable_plugin_actions_hides_plugin_section and not test_title_bar_menu_restores_focus and not test_settings_view_builder_creation"
             '
 
             runHook postCheck

@@ -43,6 +43,7 @@
 - [Plugins](#plugins)
 - [Build From Source](#build-from-source)
 - [Development and Tests](#development-and-tests)
+- [installation](#installation)
 - [Customization and Localization](#customization-and-localization)
 - [Legal](#legal)
 
@@ -195,31 +196,35 @@ The repository includes unit, integration, and Qt UI coverage for core areas suc
 (put LC_ALL=C at beginning, if you are not using english as main language (prevent some failed tests))
 
 <details>
-    <summary>also you can use xvfb</symmary>
+<summary>also you can use xvfb</summary>
+
 ```bash
-LC_ALL=C xvfb-run -a pytest -k "not test_background_audio_pause_detection_accepts_child_windows and not test_search_mod_card_widget_expands_on_selection_and_hides_on_focus_loss"
+LC_ALL=C xvfb-run -a pytest -k "not test_removed_usage_reporting_has_no_tracked_references and not test_startup_with_sample_archive and not test_disable_plugin_actions_hides_plugin_section and not test_title_bar_menu_restores_focus and not test_settings_view_builder_creation"
 ```
+
 (sometexttofill)
 </details>
 
 ## installation
 
 <details>
-    <summary>ready-to-work simple nixos module (for dendritic)</summary>
-    ```
-    {
-      flake-file.inputs = {
-        g3m.url = "github:ZikGames/G3M/python-nix";
-      };
-      flake.nixosModules.g3m = { pkgs, inputs, ... }: {
-        imports = [ inputs.g3m.nixosModules.default ];
-        programs.g3m = {
-          enable = true;
-          package = inputs.g3m.packages.${pkgs.system}.g3m;
-        };
-      };
-    }
-    ```
+<summary>ready-to-work simple nixos module (for dendritic)</summary>
+
+```nix
+{
+  flake-file.inputs = {
+    g3m.url = "github:ZikGames/G3M/python-nix";
+  };
+  flake.nixosModules.g3m = { pkgs, inputs, ... }: {
+    imports = [ inputs.g3m.nixosModules.default ];
+    programs.g3m = {
+      enable = true;
+      package = inputs.g3m.packages.${pkgs.system}.g3m;
+    };
+  };
+}
+```
+
 </details>
 
 by default
