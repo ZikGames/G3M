@@ -387,9 +387,11 @@ class SaveEditorDialog(QDialog):
         self._advanced_lines_cache = []
         self._advanced_labels_cache = {}
         self._simple_tab = QWidget()
+        self._simple_tab.setObjectName("saveEditorModePage")
         self._simple_layout = QVBoxLayout(self._simple_tab)
         self._simple_layout.setContentsMargins(0, 0, 0, 0)
         self._advanced_tab = QWidget()
+        self._advanced_tab.setObjectName("saveEditorModePage")
         self._advanced_layout = QVBoxLayout(self._advanced_tab)
         self._advanced_layout.setContentsMargins(0, 0, 0, 0)
         self.advanced_details_toggle = QCheckBox()
@@ -428,6 +430,9 @@ class SaveEditorDialog(QDialog):
         btn_bar.addStretch()
         self.cancel_btn.clicked.connect(self._on_cancel)
         self.save_btn.clicked.connect(self._on_save)
+        self.save_btn.setDefault(True)
+        for button in (self.undo_btn, self.redo_btn, self.cancel_btn):
+            button.setAutoDefault(False)
         btn_bar.addWidget(self.cancel_btn)
         btn_bar.addWidget(self.save_btn)
         root.addLayout(btn_bar)
@@ -475,10 +480,13 @@ class SaveEditorDialog(QDialog):
         self.setStyleSheet(
             f"""
             QDialog {{ background-color: {background}; color: {text}; }}
-            QTabWidget::pane, QFrame#simpleSectionBody {{ border: 2px solid {border}; border-radius: {radius}px; }}
+            QLabel, QCheckBox {{ color: {text}; }}
+            QTabWidget::pane, QFrame#simpleSectionBody {{ background-color: {background}; border: 2px solid {border}; border-radius: {radius}px; }}
+            QWidget#saveEditorModePage, QScrollArea#saveEditorScroll, QScrollArea#saveEditorScroll > QWidget > QWidget {{ background-color: {background}; }}
             QLabel#simpleSectionTitle {{ font-size: 13px; font-weight: 600; padding: 0 2px; }}
             QPushButton {{ background-color: {button}; border: 2px solid {border}; border-radius: {radius}px; color: {text}; padding: 6px 10px; }}
             QPushButton:hover {{ background-color: {button_hover}; }}
+            QPushButton:focus, QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTableWidget:focus {{ border-color: {text}; }}
             QLineEdit, QComboBox, QSpinBox, QTableWidget {{ background-color: rgba(0,0,0,0.16); border: 2px solid {border}; border-radius: {radius}px; color: {text}; padding: 6px 8px; }}
             QComboBox, QLineEdit, QSpinBox {{ min-height: 36px; }}
             QScrollArea {{ border: none; background: transparent; }}
@@ -593,6 +601,7 @@ class SaveEditorDialog(QDialog):
 
     def _wrap_scroll(self, widget: QWidget) -> QScrollArea:
         scroll = QScrollArea()
+        scroll.setObjectName("saveEditorScroll")
         scroll.setWidgetResizable(True)
         scroll.setWidget(widget)
         return scroll
