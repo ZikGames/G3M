@@ -385,6 +385,18 @@ class SettingsManager(QObject):
     def on_toggle_downloads_save_local_imports(self, enabled: bool):
         self._toggle_setting("downloads_save_local_imports", enabled, None)
 
+    def on_toggle_hide_update_mods_button(self, enabled: bool):
+        self._toggle_setting("hide_update_mods_button", enabled, None)
+
+    def on_toggle_automatic_mod_updates(self, enabled: bool):
+        self._toggle_setting("automatic_mod_updates", enabled, None)
+
+    def on_toggle_automatic_mod_updates_replace_current(self, enabled: bool):
+        self._toggle_setting("automatic_mod_updates_replace_current", enabled, None)
+
+    def on_set_automatic_mod_updates_scope(self, scope: str):
+        self._toggle_setting("automatic_mod_updates_scope", scope, None)
+
     def on_toggle_merge_properties(self, enabled: bool):
         self._toggle_setting("merge_properties", enabled, None)
 
@@ -627,8 +639,6 @@ class SettingsManager(QObject):
         base_name: str,
         select_dialog_key: str,
         removed_msg_key: str,
-        remove_fail_key: str,
-        copy_fail_key: str,
         custom_path_getter: str = "",
     ):
         paths = self._get_audio_paths(base_name)
@@ -710,8 +720,6 @@ class SettingsManager(QObject):
             "background_music",
             "dialogs.select_background_music",
             "dialogs.background_music_removed",
-            "errors.remove_background_music_failed",
-            "errors.copy_background_music_failed",
         )
 
     def on_startup_sound_button_click(self):
@@ -719,8 +727,6 @@ class SettingsManager(QObject):
             "startup_sound",
             "dialogs.select_startup_sound",
             "dialogs.startup_sound_removed",
-            "errors.remove_startup_sound_failed",
-            "errors.copy_startup_sound_failed",
             "get_startup_sound_path",
         )
 

@@ -23,8 +23,8 @@ from utils.path_utils import resource_path
 logger = logging.getLogger(__name__)
 
 
-def _play_background_music_process(music_path: str) -> None:
-    _play_sound_process(music_path)
+def _play_background_music_process(music_path: str, parent_pid: int | None = None) -> None:
+    _play_sound_process(music_path, parent_pid=parent_pid)
 
 
 class CustomizationManager(QObject):
@@ -122,7 +122,7 @@ class CustomizationManager(QObject):
             self.stop_background_music()
             process = Process(
                 target=_play_background_music_process,
-                args=(os.path.abspath(music_path),),
+                args=(os.path.abspath(music_path), os.getpid()),
                 daemon=True,
             )
             process.start()

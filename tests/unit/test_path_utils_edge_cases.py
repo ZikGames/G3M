@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import pytest
 
-from utils.archive_utils import _is_safe_path
 from utils.path_utils import (
     _match_steam_path,
     autodetect_path,
@@ -182,29 +181,6 @@ class TestPathUtilsEdgeCases:
                 assert isinstance(normalized, str)
             except Exception as e:
                 pytest.skip(f"Unicode handling not supported on this platform: {e}")
-
-    def test_path_security_validation(self):
-        """Checks that path security validation."""
-        dangerous_paths = [
-            '../../../etc/passwd',
-            '/etc/shadow',
-            '..\\..\\..\\windows\\system32'
-        ]
-
-        windows_absolute_path = 'C:\\Windows\\System32'
-
-        safe_paths = [
-            'normal_file.txt',
-            'subfolder/file.txt',
-            'deep/nested/path.txt',
-            windows_absolute_path
-        ]
-
-        for path in dangerous_paths:
-            assert not _is_safe_path(path), f"Path '{path}' should be detected as unsafe"
-
-        for path in safe_paths:
-            assert _is_safe_path(path), f"Path '{path}' should be detected as safe"
 
     def test_resource_path_pyinstaller_edge_cases(self):
         """Checks that resource path pyinstaller edge cases."""

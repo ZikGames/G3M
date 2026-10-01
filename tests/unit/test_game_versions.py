@@ -2,8 +2,10 @@
 import json
 import os
 import zipfile
+from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
 from PyQt6.QtWidgets import QApplication
 
 from models.game_version_models import GameVersionRecord
@@ -364,6 +366,222 @@ class TestCreateVersionWorker:
         assert "CreateVersionWorker: failed to emit" in caplog.text
 
 
+def test_patched_game_version_uses_the_selected_custom_executable_runtime(
+    monkeypatch, tmp_path
+):
+    from workers import game_version_archive_worker
+    from workers.game_version_archive_worker import CreatePatchedVersionWorker
+
+    game_root = tmp_path / "game"
+    game_root.mkdir()
+    custom_executable = tmp_path / "custom.exe"
+    custom_executable.write_bytes(b"exe")
+    mod_root = tmp_path / "mod"
+    mod_root.mkdir()
+    (mod_root / "replacement.bin").write_bytes(b"replacement")
+    game_copy = tmp_path / "game-copy"
+    game_copy.mkdir()
+    config = {
+        "config_version": "2.0.0",
+        "id": "mod",
+        "name": "Mod",
+        "version": "1.0.0",
+        "authors": [],
+        "game": "deltarune",
+        "files": [
+            {
+                "source": "${mod_path}/replacement.bin",
+                "target": "${game_path}/data.win",
+                "type": "overwrite",
+            }
+        ],
+    }
+    app_state = SimpleNamespace(
+        game_mode=SimpleNamespace(
+            executable_type="deltarune",
+            get_game_path=lambda _config: str(game_root),
+            get_custom_exec_config_key=lambda: "custom_executable",
+        ),
+        local_config={"custom_executable": str(custom_executable)},
+    )
+    mod_service = SimpleNamespace(
+        get_mod_config=lambda _mod_id: config,
+        get_mod_folder_path=lambda _mod_id: str(mod_root),
+    )
+    monkeypatch.setattr(
+        game_version_archive_worker,
+        "resolve_execution_runtime",
+        lambda executable: "windows" if executable == str(custom_executable) else "linux",
+    )
+    worker = CreatePatchedVersionWorker(
+        str(tmp_path / "version.zip"),
+        str(game_root),
+        set(),
+        app_state,
+        mod_service,
+        {"deltarune": [SimpleNamespace(id="mod")]},
+    )
+
+    plan, skipped = worker._build_operation_plan(game_copy)
+
+    assert skipped == 0
+    assert plan.operations[0].target == game_copy / "data.win"
+
+
+def test_patched_game_version_ignores_findings_for_skipped_game_data_operations(
+    tmp_path,
+):
+    from workers.game_version_archive_worker import CreatePatchedVersionWorker
+
+    game_root = tmp_path / "game"
+    game_root.mkdir()
+    mod_root = tmp_path / "mod"
+    mod_root.mkdir()
+    (mod_root / "save.bin").write_bytes(b"save")
+    config = {
+        "config_version": "2.0.0",
+        "id": "mod",
+        "name": "Mod",
+        "version": "1.0.0",
+        "authors": [],
+        "game": "deltarune",
+        "files": [
+            {
+                "source": "${mod_path}/save.bin",
+                "target": "${game_data_path}/save.bin",
+                "type": "overwrite",
+            }
+        ],
+    }
+    app_state = SimpleNamespace(
+        game_mode=SimpleNamespace(
+            game_id="deltarune",
+            executable_type="deltarune",
+            get_game_path=lambda _config: str(game_root),
+            get_custom_exec_config_key=lambda: "custom_executable",
+        ),
+        local_config={},
+    )
+    worker = CreatePatchedVersionWorker(
+        str(tmp_path / "version.zip"),
+        str(game_root),
+        set(),
+        app_state,
+        SimpleNamespace(
+            get_mod_config=lambda _mod_id: config,
+            get_mod_folder_path=lambda _mod_id: str(mod_root),
+        ),
+        {"deltarune": [SimpleNamespace(id="mod")]},
+    )
+
+    plan, skipped = worker._build_operation_plan(tmp_path / "game-copy")
+
+    assert skipped == 1
+    assert not plan.operations
+    assert not plan.has_errors
+
+
+def test_patched_game_version_does_not_archive_after_operation_failure(qapp, tmp_path):
+    from workers.game_version_archive_worker import CreatePatchedVersionWorker
+
+    game_root = tmp_path / "game"
+    game_root.mkdir()
+    mod_root = tmp_path / "mod"
+    mod_root.mkdir()
+    config = {
+        "config_version": "2.0.0",
+        "id": "mod",
+        "name": "Mod",
+        "version": "1.0.0",
+        "authors": [],
+        "game": "deltarune",
+        "files": [
+            {
+                "source": "${mod_path}/missing.bin",
+                "target": "${game_path}/data.win",
+                "type": "overwrite",
+            }
+        ],
+    }
+    app_state = SimpleNamespace(
+        game_mode=SimpleNamespace(
+            game_id="deltarune",
+            executable_type="deltarune",
+            get_game_path=lambda _config: str(game_root),
+            get_custom_exec_config_key=lambda: "custom_executable",
+        ),
+        local_config={},
+    )
+    worker = CreatePatchedVersionWorker(
+        str(tmp_path / "version.zip"),
+        str(game_root),
+        set(),
+        app_state,
+        SimpleNamespace(
+            get_mod_config=lambda _mod_id: config,
+            get_mod_folder_path=lambda _mod_id: str(mod_root),
+        ),
+        {"deltarune": [SimpleNamespace(id="mod")]},
+    )
+    results = []
+    worker.result_ready.connect(lambda *args: results.append(args))
+
+    worker.run()
+
+    assert results[0][0] is False
+    assert not (tmp_path / "version.zip").exists()
+
+
+def test_patched_game_version_merges_simultaneous_profile_patches(qapp, tmp_path):
+    from workers.game_version_archive_worker import CreatePatchedVersionWorker
+
+    game_root = tmp_path / "game"
+    game_root.mkdir()
+    (game_root / "data.win").write_bytes(b"original")
+    custom_executable = game_root / "DELTARUNE.exe"
+    custom_executable.write_bytes(b"exe")
+    mod_root = tmp_path / "mods"
+    mod_root.mkdir()
+    configs = {}
+    for mod_id in ("first", "second"):
+        (mod_root / f"{mod_id}.xdelta").write_bytes(mod_id.encode())
+        configs[mod_id] = {
+            "config_version": "2.0.0", "id": mod_id, "name": mod_id,
+            "version": "1.0.0", "authors": [], "game": "deltarune",
+            "files": [{"source": f"${{mod_path}}/{mod_id}.xdelta", "target": "${game_path}/data.win", "type": "patch"}],
+        }
+    worker = CreatePatchedVersionWorker(
+        str(tmp_path / "version.zip"), str(game_root), set(),
+        SimpleNamespace(
+            game_mode=SimpleNamespace(
+                game_id="deltarune", executable_type="deltarune",
+                get_game_path=lambda _config: str(game_root),
+                get_custom_exec_config_key=lambda: "custom_executable",
+            ), local_config={"custom_executable": str(custom_executable)},
+        ),
+        SimpleNamespace(get_mod_config=configs.get, get_mod_folder_path=lambda _mod_id: str(mod_root)),
+        {"deltarune": [[SimpleNamespace(id="first"), SimpleNamespace(id="second")]]},
+    )
+    merged = []
+
+    def merge(_target, patches, output):
+        merged.extend(path.name for path in patches)
+        output.write_bytes(b"merged")
+        return True
+
+    worker._merger = merge
+    worker._patcher = Mock(side_effect=AssertionError("simultaneous patches must be merged"))
+    results = []
+    worker.result_ready.connect(lambda *args: results.append(args))
+    worker.run()
+
+    assert results[0][0] is True
+    assert merged == ["second.xdelta", "first.xdelta"]
+    with zipfile.ZipFile(tmp_path / "version.zip") as archive:
+        assert archive.read("data.win") == b"merged"
+    assert (game_root / "data.win").read_bytes() == b"original"
+
+
 class TestApplyVersionWorker:
     """Tests for game versions."""
     def test_apply_version(self, temp_dir, qapp):
@@ -419,9 +637,56 @@ class TestApplyVersionWorker:
         assert results[0][0] is False
         assert results[0][1] == tr("errors.file_not_found", path="/nonexistent.zip")
 
+    def test_apply_rejects_a_path_escaping_archive(self, temp_dir, qapp):
+        game_dir = os.path.join(temp_dir, "game")
+        os.makedirs(game_dir)
+        archive_path = os.path.join(temp_dir, "unsafe.zip")
+        with zipfile.ZipFile(archive_path, "w") as archive:
+            archive.writestr("../outside.txt", "unsafe")
+
+        from workers.game_version_archive_worker import ApplyVersionWorker
+
+        results = []
+        worker = ApplyVersionWorker(archive_path, game_dir, set(), full_replace=False)
+        worker.result_ready.connect(lambda *args: results.append(args))
+        worker.run()
+
+        assert results[0][0] is False
+        assert not os.path.exists(os.path.join(temp_dir, "outside.txt"))
+
 
 class TestExportImportWorkers:
     """Tests for game versions."""
+    @pytest.mark.parametrize("worker_name", ["GameExportVersionWorker", "GameImportVersionWorker"])
+    @pytest.mark.parametrize("alias", [False, True])
+    def test_rejects_overwriting_source_archive(self, worker_name, alias, tmp_path, qapp):
+        from workers import game_version_archive_worker
+
+        source = tmp_path / "source.zip"
+        manifest = {"manifest_version": 1, "game": "deltarune"}
+        with zipfile.ZipFile(source, "w") as archive:
+            archive.writestr("data.win", "preserved game data")
+            archive.writestr("game_version_data.json", json.dumps(manifest))
+        original = source.read_bytes()
+        destination = tmp_path / "alias.zip" if alias else source
+        if alias:
+            try:
+                os.link(source, destination)
+            except OSError:
+                pytest.skip("Hard links are unavailable")
+        worker_class = getattr(game_version_archive_worker, worker_name)
+        args = [str(source), str(destination)]
+        if worker_name == "GameExportVersionWorker":
+            args.append(manifest)
+        worker = worker_class(*args)
+        results = []
+        worker.result_ready.connect(lambda *args: results.append(args))
+
+        worker.run()
+
+        assert results[0][0] is False
+        assert source.read_bytes() == original
+
     def test_export_and_import_round_trip(self, temp_dir, qapp):
         """Checks that exporting and import round trip."""
         source_archive = os.path.join(temp_dir, 'internal.zip')

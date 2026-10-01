@@ -1,3 +1,96 @@
+
+
+### Version 3.4.0 — 01.10.26
+
+- **System requirements update**
+
+  - G3M 3.4.0 uses a newer PyQt version, so the minimum supported systems are now:
+
+    - Windows 10 version 1809 or newer
+    - Linux with glibc 2.34 or newer (previously 2.28)
+    - macOS 13 or newer (previously macOS 11)
+
+  - G3M 3.4.0 is now available as native x86_64 and ARM64 builds for Windows, Linux, and macOS. ARM64 builds for Windows and Linux are new in this release.
+
+- **New mod format — mod_config.json 2.0.0**
+
+  - `mod_config.json`, the file that tells G3M how to apply a mod, now uses the **2.0.0** format. Mod authors can combine patches, file replacements, and archive contents in one package.
+  - **Action order and groups:** replace a file before patching it, or unpack files before changing them. Arrange actions in order and organize them into named groups.
+  - **Replacement choices:** replace matching files, add only missing files, or replace a destination folder's contents. The same choices are available when unpacking archives.
+  - **Files inside archives:** use files stored in supported archives and modify their contents without asking players to unpack them first. Changing an archive requires a format G3M can write.
+  - **Reusable paths:** refer to the mod folder, game installation, game data folder, or player's home folder. Define custom names, called *placeholders*, for paths used throughout the mod.
+  - **Mod requirements:** list required and incompatible mods and specify their order, including which mods belong in earlier or later steps.
+  - **Required file versions:** specify the game or source file a patch needs. G3M reports a mismatch before applying it.
+  - **Contributors and documentation:** credit multiple authors and include documents for players to read in G3M.
+
+- **Game data folders**
+
+  - *Settings > Game* now has a separate data-folder field for games that keep saves or other user files outside the installation folder. G3M detects common locations when possible.
+  - Mods using the new format can place files in that folder using the player's configured location.
+
+- **Mod Editor**
+
+  - The redesigned editor lets you create mods in the new format without writing JSON by hand.
+  - **Metadata** contains the name, version, authors, description, and other information shown to players.
+  - **Files** lets you choose each action, its source and destination, and its replacement rule. Drag entries to change their order or organize them into groups.
+  - **Placeholders** lets you define reusable paths. Renaming a placeholder updates the entries that use it.
+  - **Compatibility** lets you specify required mods, incompatible mods, and their relative order.
+  - **Help** explains these options and shows how the folder references resolve on your computer.
+  - Missing or incomplete entries are highlighted before you save.
+  - Manual Install now selects files first and opens the editor for the remaining setup, so downloaded archives and local folders use the same setup screens.
+
+- **Required mods before launch**
+
+  - When a mod declares a requirement, G3M can offer to activate it if installed or download it from GameBanana if missing.
+  - When the selected mods need a different order, G3M shows a proposed arrangement. You can apply it, launch with the current order, or cancel.
+  - Diagnostics also shows missing requirements and conflicts for the selected mods.
+
+- **Launch modes**
+
+  - The menu beside **Launch** now offers three choices: restore game files after closing the game, keep the applied changes, or apply mods without starting the game.
+  - The selected mode is also used by shortcuts. Modes that keep changes leave the patched files in place until you restore them yourself.
+
+- **Mod information**
+
+  - The Library's mod summary shows the files a mod changes and lets you expand the full list.
+  - The INFO/README viewer now has a **Show unlisted files** option for additional supported documents, including documents stored inside supported archives.
+
+- **Modding Tools**
+
+  - Convert mods in the new format between full DATA files, `.g3mpatch`, and `.xdelta`, including mods that combine file replacements and patches.
+  - The **Diff** tab has a **Full report** option for more detailed comparisons.
+
+- **Update Mods**
+
+  - A new **Update Mods** button in the Library checks GameBanana-linked mods in the selected profile.
+  - Install several updates together, saving the previous versions by default. You can also choose direct replacement.
+  - In *Settings > Library*, automatic updates can be enabled for the selected game, the current profile, or all profiles. The Update Mods button can also be hidden.
+
+- **Mods Browser and media**
+
+  - Search keeps results visible while loading more and offers **Retry** if a GameBanana request fails.
+  - Mod details have an updated layout for descriptions, screenshots, INFO files, and actions.
+  - Screenshot viewers have previous/next buttons, position dots, resizing, and options to open or copy an image.
+
+- **Catalog**
+
+  - The **Plugins** tab in Settings is now **Catalog**, with separate **Plugins** and **Themes** sections.
+  - Browse themes with icons, descriptions, and theme tags. Install, apply, or remove them directly from the Catalog; installed themes also remain available in *Appearance*.
+  - The themes previously bundled with G3M are now downloaded from the Catalog.
+
+- **Plugin updates**
+
+  - **DR Save Manager 1.2.2:** improved Save Editor colors and keyboard focus. When using the keep-changes launch mode, the original save collection returns after playing while mods stay applied.
+  - **Custom Saves Folders 1.1.5:** selected mods can place files in the chosen save folder, and folder lists keep their order in settings dialogs.
+
+- **Other improvements and bug fixes**
+
+  - Fixed Game Versions using the wrong profile's mod files or missing its patching steps.
+  - Fixed importing some mod packages with nested folders.
+  - Failed report exports now show an error message.
+  - Fixed display problems with missing images and long descriptions in Community feed cards.
+  - Background music now stops when G3M exits unexpectedly instead of continuing to play.
+
 ### Version 3.3.4 — 01.09.26
 
 - **Improvements and Bug Fixes**

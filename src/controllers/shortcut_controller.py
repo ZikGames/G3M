@@ -7,7 +7,7 @@ import os
 import platform
 import stat
 import sys
-from typing import Any, cast
+from typing import Any, Literal, cast, overload
 
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -21,14 +21,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from models.execution_plan import LaunchPlan, PatchPlan
 from services.game_detection_service import get_chapter_id_for_game_mode
 from services.localization_service import tr
 from services.plugins.shortcut_service import (
     ShortcutPluginContext,
 )
 from ui.common.styling import get_border_radius
-from utils.mod.utils import get_mod_name
+from utils.mod.utils import get_mod_id, get_mod_name
 from utils.native_integration import get_save_file_name
 from utils.process_utils import format_filesystem_error
 
@@ -39,10 +38,22 @@ def _get_platform_extension() -> str:
     return {"Windows": ".vbs", "Darwin": ".command"}.get(platform.system(), ".sh")
 
 
+@overload
 def _collect_section_data(
-    used_mods_service, app_state
-) -> tuple[PatchPlan, dict] | None:
-    """Collect ordered patch steps and summary mods for every content section."""
+    used_mods_service, app_state, *, include_merge_steps: Literal[True]
+) -> tuple[list[str], dict, list[list[str]]]: ...
+
+
+@overload
+def _collect_section_data(
+    used_mods_service, app_state, *, include_merge_steps: Literal[False] = False
+) -> tuple[list[str], dict]: ...
+
+
+def _collect_section_data(
+    used_mods_service, app_state, *, include_merge_steps: bool = False
+) -> tuple[list[str], dict] | tuple[list[str], dict, list[list[str]]]:
+    """Collect selected mod IDs in the profile's visible execution order."""
     game_mode = app_state.game_mode
     is_chapter_mode = app_state.current_mode == "chapter"
     section_steps, section_objects = {}, {}
@@ -68,8 +79,7 @@ def _collect_section_data(
                 [
                     mod
                     for mod in step
-                    if hasattr(mod, "get_chapter_data")
-                    and cast(Any, mod).get_chapter_data(tab.tab_id)
+                    if cast(Any, mod).supports_section(tab.tab_id)
                 ]
                 for step in steps
             ]
@@ -82,34 +92,60 @@ def _collect_section_data(
         section_steps[default_id] = steps
         section_objects[default_id] = [mod for step in steps for mod in step]
 
-    patch_plan = PatchPlan.from_runtime(section_steps)
-    try:
-        patch_plan.require_single_mod_steps()
-    except ValueError:
-        return None
-    return patch_plan, section_objects
+    ordered_ids = []
+    seen = set()
+    for steps in section_steps.values():
+        for step in steps:
+            for mod in step:
+                mod_id = get_mod_id(mod)
+                if mod_id and mod_id not in seen:
+                    seen.add(mod_id)
+                    ordered_ids.append(str(mod_id))
+    merge_steps = []
+    seen_steps = set()
+    for steps in section_steps.values():
+        for step in steps:
+            mod_ids = tuple(str(mod_id) for mod in step if (mod_id := get_mod_id(mod)))
+            if len(mod_ids) > 1 and mod_ids not in seen_steps:
+                seen_steps.add(mod_ids)
+                merge_steps.append(list(mod_ids))
+    if include_merge_steps:
+        return ordered_ids, section_objects, merge_steps
+    return ordered_ids, section_objects
 
 
 def _build_shortcut_config(
     app_state,
-    patch_plan: PatchPlan,
+    mod_ids: list[str],
     plugin_context: ShortcutPluginContext | None = None,
+    *,
+    merge_steps: list[list[str]] | None = None,
+    section_mod_objects: dict | None = None,
 ) -> dict:
     """Build the JSON config dict from current app state."""
     is_chapter_mode = app_state.current_mode == "chapter"
-    launch_plan = LaunchPlan(
-        game_id=app_state.game_mode.game_id,
-        patch_plan=patch_plan,
-        chapter_mode=is_chapter_mode,
-        launch_via_steam=app_state.local_config.get("launch_via_steam", False),
-        use_portproton=app_state.local_config.get("use_portproton", False),
-        direct_launch_chapter=(
+    config = {
+        "game_id": app_state.game_mode.game_id,
+        "active_profile": app_state.local_config.get("active_profile", "Default"),
+        "chapter_mode": is_chapter_mode,
+        "launch_via_steam": (
+            app_state.local_config.get("launch_via_steam", False)
+            and bool(app_state.game_mode.steam_app_id)
+        ),
+        "use_portproton": app_state.local_config.get("use_portproton", False),
+        "direct_launch_chapter": (
             app_state.local_config.get("direct_launch_chapter", "")
             if is_chapter_mode
             else ""
         ),
-    )
-    config = launch_plan.to_shortcut_config()
+        "mod_ids": mod_ids,
+        "merge_steps": merge_steps or [],
+    }
+    if section_mod_objects is not None:
+        config["section_mod_ids"] = {
+            section: list(dict.fromkeys(str(mod_id) for mod in mods if (mod_id := get_mod_id(mod))))
+            for section, mods in section_mod_objects.items()
+        }
     if plugin_context and plugin_context.enabled:
         config["plugins_enabled"] = True
         config["plugin_states"] = plugin_context.export_states()
@@ -466,17 +502,10 @@ def on_shortcut_button_click(
     if not app_state.initialization_completed:
         return
 
-    result = _collect_section_data(used_mods_service, app_state)
-    if result is None:
-        _safe_show_message(
-            feedback_service,
-            "warning",
-            "common.warning",
-            tr("shortcut.too_many_mods"),
-        )
-        return
-    patch_plan, section_mod_objects = result
-    error = _validate_shortcut_prerequisites(app_state, bool(patch_plan.sections))
+    mod_ids, section_mod_objects, merge_steps = _collect_section_data(
+        used_mods_service, app_state, include_merge_steps=True
+    )
+    error = _validate_shortcut_prerequisites(app_state, bool(mod_ids))
     if error:
         _safe_show_message(feedback_service, "warning", "common.warning", error)
         return
@@ -488,7 +517,9 @@ def on_shortcut_button_click(
         phase="capture",
     )
     plugin_blocks = _collect_shortcut_plugin_blocks(plugin_runtime_service, plugin_context)
-    shortcut_config = _build_shortcut_config(app_state, patch_plan, None)
+    shortcut_config = _build_shortcut_config(
+        app_state, mod_ids, None, merge_steps=merge_steps, section_mod_objects=section_mod_objects
+    )
     dialog = ShortcutDialog(
         app_state.game_mode,
         section_mod_objects,
@@ -505,9 +536,13 @@ def on_shortcut_button_click(
     if dialog.plugin_actions_enabled():
         for plugin_id, payload in dialog.collect_plugin_values().items():
             plugin_context.set_plugin_state(plugin_id, payload)
-        shortcut_config = _build_shortcut_config(app_state, patch_plan, plugin_context)
+        shortcut_config = _build_shortcut_config(
+            app_state, mod_ids, plugin_context, merge_steps=merge_steps, section_mod_objects=section_mod_objects
+        )
     else:
-        shortcut_config = _build_shortcut_config(app_state, patch_plan, None)
+        shortcut_config = _build_shortcut_config(
+            app_state, mod_ids, None, merge_steps=merge_steps, section_mod_objects=section_mod_objects
+        )
 
     ext = _get_platform_extension()
     default_name = (

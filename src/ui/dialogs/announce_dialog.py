@@ -31,14 +31,11 @@ class AnnouncePanel(QWidget):
         *,
         app_state=None,
         on_submit_poll=None,
-        close_on_ok: bool = True,
     ) -> None:
         super().__init__(parent)
         self.app_state = app_state
         self._announce = announce or {}
         self._on_submit_poll = on_submit_poll
-        self._close_on_ok = close_on_ok
-        self._announce_type = AnnounceService.get_announce_type(self._announce)
         self._poll_options = AnnounceService.get_poll_options(self._announce)
         self._allow_multiple = AnnounceService.allows_multiple_selection(self._announce)
         self._option_buttons: list[QPushButton] = []
@@ -86,11 +83,6 @@ class AnnouncePanel(QWidget):
     def selected_options(self) -> list[str]:
         return [button.text() for button in self._option_buttons if button.isChecked()]
 
-    @property
-    def option_buttons(self) -> list[QPushButton]:
-        """Public access to option buttons for testing purposes."""
-        return self._option_buttons
-
     def select_option(self, index_or_label: int | str) -> None:
         """Select an option by index (0-based) or by label text."""
         if isinstance(index_or_label, int):
@@ -101,26 +93,6 @@ class AnnouncePanel(QWidget):
                 if button.text() == index_or_label:
                     button.click()
                     break
-
-    def click_option(self, index_or_label: int | str) -> None:
-        """Alias for select_option - click an option by index or label."""
-        self.select_option(index_or_label)
-
-    def set_preview_announce(self, announce: dict) -> None:
-        self._announce = announce or {}
-        self._announce_type = AnnounceService.get_announce_type(self._announce)
-        self._poll_options = AnnounceService.get_poll_options(self._announce)
-        self._allow_multiple = AnnounceService.allows_multiple_selection(self._announce)
-        try:
-            from ui.common.rich_html import set_rich_html
-
-            set_rich_html(self.text_browser, self._announce.get("message", ""))
-        except Exception:
-            self.text_browser.setHtml(self._announce.get("message", ""))
-        if self.details_button is not None:
-            self.details_button.setVisible(bool(self._announce.get("link", "")))
-        self._populate_poll_buttons()
-        self.sync_ok_button_state()
 
     def _on_ok_clicked(self):
         if AnnounceService.is_poll_announce(self._announce):

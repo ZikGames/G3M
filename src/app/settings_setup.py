@@ -358,12 +358,16 @@ def setup_settings_tab(w):
             "hide_library_tab_checkbox",
             "merge_properties_checkbox",
             "merge_code_checkbox",
+            "hide_update_mods_button_checkbox",
+            "automatic_mod_updates_checkbox",
+            "automatic_mod_updates_replace_current_checkbox",
+            "automatic_mod_updates_scope_combo",
             "ui_scale_label",
             "ui_scale_spinbox",
             "border_radius_label",
             "border_radius_spinbox",
-            "plugins_layout",
-            "plugins_tab",
+            "catalog_layout",
+            "catalog_tab",
         ),
         optional=(
             "use_portproton_checkbox",
@@ -375,13 +379,26 @@ def setup_settings_tab(w):
             "downloads_no_auto_use_checkbox",
             "downloads_delete_after_use_checkbox",
             "downloads_save_local_imports_checkbox",
+            "catalog_installed_only_checkbox",
+            "catalog_theme_tag_checkboxes",
+            "catalog_theme_filters_widget",
+            "catalog_tag_interface_checkbox",
+            "catalog_tag_game_experience_checkbox",
+            "catalog_tag_tool_checkbox",
+            "catalog_tag_other_checkbox",
+            "catalog_widget",
+            "catalog_container",
+            "catalog_type_tabs",
+            "catalog_plugins_layout",
+            "catalog_themes_layout",
+            "plugins_widget",
+            "plugins_container",
+            "plugins_layout",
             "plugins_installed_only_checkbox",
             "plugins_tag_interface_checkbox",
             "plugins_tag_game_experience_checkbox",
             "plugins_tag_tool_checkbox",
             "plugins_tag_other_checkbox",
-            "plugins_widget",
-            "plugins_container",
         ),
     )
     w._section_headers = settings_widgets.get("_section_headers", [])
@@ -800,6 +817,41 @@ def setup_settings_tab(w):
             ),
         )
     )
+    w.automatic_mod_updates_checkbox.setChecked(
+        w.app_state.local_config.get("automatic_mod_updates", False)
+    )
+    w.hide_update_mods_button_checkbox.setChecked(
+        w.app_state.local_config.get("hide_update_mods_button", False)
+    )
+    w.hide_update_mods_button_checkbox.stateChanged.connect(
+        lambda state: _run_actions(
+            lambda: w.settings_service.on_toggle_hide_update_mods_button(bool(state)),
+            w.game_launch.refresh_mod_update_badge,
+        )
+    )
+    w.automatic_mod_updates_checkbox.stateChanged.connect(
+        lambda state: _run_actions(
+            lambda: w.settings_service.on_toggle_automatic_mod_updates(bool(state)),
+            w.game_launch.refresh_mod_update_badge,
+        )
+    )
+    w.automatic_mod_updates_replace_current_checkbox.setChecked(
+        w.app_state.local_config.get("automatic_mod_updates_replace_current", False)
+    )
+    w.automatic_mod_updates_replace_current_checkbox.stateChanged.connect(
+        lambda state: _run_actions(
+            lambda: w.settings_service.on_toggle_automatic_mod_updates_replace_current(bool(state)),
+        )
+    )
+    scope_index = w.automatic_mod_updates_scope_combo.findData(
+        w.app_state.local_config.get("automatic_mod_updates_scope", "profile")
+    )
+    w.automatic_mod_updates_scope_combo.setCurrentIndex(max(scope_index, 0))
+    w.automatic_mod_updates_scope_combo.currentIndexChanged.connect(
+        lambda _index: w.settings_service.on_set_automatic_mod_updates_scope(
+            str(w.automatic_mod_updates_scope_combo.currentData() or "profile")
+        )
+    )
     w.show_reset_buttons_checkbox.setChecked(
         w.app_state.local_config.get("show_reset_buttons", False)
     )
@@ -848,20 +900,22 @@ def setup_settings_tab(w):
                 ),
             )
         )
-    if hasattr(w, "plugins_ui") and w.plugins_ui:
-        w.settings_tab_widget.currentChanged.connect(w.plugins_ui.on_tab_changed)
-        if hasattr(w, "plugins_widget") and hasattr(w.plugins_widget, "files_dropped"):
-            w.plugins_widget.files_dropped.connect(w.plugins_ui.import_paths)
+    if hasattr(w, "catalog_ui") and w.catalog_ui:
+        w.settings_tab_widget.currentChanged.connect(w.catalog_ui.on_tab_changed)
+        w.catalog_type_tabs.currentChanged.connect(w.catalog_ui.on_catalog_type_changed)
+        if hasattr(w, "catalog_widget") and hasattr(w.catalog_widget, "files_dropped"):
+            w.catalog_widget.files_dropped.connect(w.catalog_ui.import_paths)
         for checkbox in (
-            w.plugins_installed_only_checkbox,
-            w.plugins_tag_interface_checkbox,
-            w.plugins_tag_game_experience_checkbox,
-            w.plugins_tag_tool_checkbox,
-            w.plugins_tag_other_checkbox,
+            w.catalog_installed_only_checkbox,
+            w.catalog_tag_interface_checkbox,
+            w.catalog_tag_game_experience_checkbox,
+            w.catalog_tag_tool_checkbox,
+            w.catalog_tag_other_checkbox,
+            *w.catalog_theme_tag_checkboxes.values(),
         ):
             if checkbox:
-                checkbox.stateChanged.connect(w.plugins_ui.on_filters_changed)
-        w.plugins_ui.restore_filter_state()
+                checkbox.stateChanged.connect(w.catalog_ui.on_filters_changed)
+        w.catalog_ui.restore_filter_state()
     w._update_section_reset_buttons_visibility()
 
 

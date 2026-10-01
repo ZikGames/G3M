@@ -204,15 +204,35 @@ def resolve_game_executable(base_dir, executable_type="deltarune"):
         return None
 
 
+def resolve_execution_runtime(
+    executable_path: str | os.PathLike[str] | None,
+    current_platform: str | None = None,
+) -> str:
+    """Return the actual runtime family for a selected executable."""
+    system = current_platform or CURRENT_PLATFORM
+    if system == "Windows":
+        return "windows"
+    path = Path(executable_path) if executable_path else None
+    if path is not None and path.suffix.casefold() == ".exe":
+        return "windows"
+    if system == "Darwin":
+        return "macos"
+    if system == "Linux":
+        return "linux"
+    return "windows"
+
+
 def get_supported_game_data_filenames(
-    preferred_name: str = "", current_platform: str | None = None
+    preferred_name: str = "",
+    current_platform: str | None = None,
+    executable_path: str | os.PathLike[str] | None = None,
 ) -> tuple[str, ...]:
-    platform_name = current_platform or CURRENT_PLATFORM
+    runtime = resolve_execution_runtime(executable_path, current_platform)
     priority = {
-        "Darwin": ("game.ios", "data.win"),
-        "Linux": ("game.unx", "data.win", "game.ios"),
-        "Windows": ("data.win", "game.unx", "game.ios"),
-    }.get(platform_name, ())
+        "macos": ("game.ios", "data.win", "game.unx"),
+        "linux": ("game.unx", "data.win", "game.ios"),
+        "windows": ("data.win", "game.unx", "game.ios"),
+    }[runtime]
     names = tuple(
         dict.fromkeys(
             name.strip()
@@ -227,6 +247,7 @@ def find_supported_game_data_file(
     base_dir: str,
     preferred_name: str = "",
     current_platform: str | None = None,
+    executable_path: str | os.PathLike[str] | None = None,
     fallback_to_supported_names: bool = True,
 ) -> str | None:
     try:
@@ -240,7 +261,7 @@ def find_supported_game_data_file(
             if not fallback_to_supported_names:
                 return None
         preferred_names = get_supported_game_data_filenames(
-            preferred_name, current_platform
+            preferred_name, current_platform, executable_path
         )
         for name in preferred_names:
             candidate = os.path.join(base_dir, name)
@@ -596,6 +617,13 @@ _ICON_DEFS = {
     "tool": ("tool_icon.svg", [('stroke="#000000"', 'stroke="{c}"')]),
     "block": ("block_icon.svg", [('stroke="#000000"', 'stroke="{c}"')]),
     "time": ("time_icon.svg", [('stroke="#000000"', 'stroke="{c}"')]),
+    "operation_patch": ("patch_type_icon.svg", []),
+    "operation_overwrite": ("overwrite_type_icon.svg", []),
+    "operation_extract": (
+        "extract_type_icon.svg",
+        [('stroke="#121923"', 'stroke="{c}"')],
+    ),
+    "operation_info": ("info_type_icon.svg", []),
 }
 
 

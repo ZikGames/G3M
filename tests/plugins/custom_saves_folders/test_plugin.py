@@ -73,9 +73,7 @@ def test_restore_hook_requests_host_state_refresh_after_successful_restore():
     )
     plugin._tr = lambda: lambda key, **_kwargs: key
 
-    assert plugin.on_before_restore_after_exit(plugin._context) == {
-        "refresh_host_deployed_state": True
-    }
+    assert plugin.on_before_restore_after_exit(plugin._context) is True
     backup_manager.restore_backups.assert_called_once_with("deltarune")
     backup_manager.clear_backup_dir.assert_called_once_with()
 
@@ -101,6 +99,24 @@ def test_restore_hook_keeps_session_when_restore_is_incomplete():
     assert plugin._active_session is session
     backup_manager.clear_backup_dir.assert_not_called()
     assert "errors.restore_incomplete" in show_message.call_args.args[-1]
+
+
+def test_commit_hook_discards_plugin_backups_without_restoring(tmp_path):
+    module = _module()
+    plugin = module.CustomSavesFoldersPlugin()
+    backup_manager = Mock()
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    plugin._active_session = SimpleNamespace(
+        game_id="deltarune", work_dir=str(work_dir), backup_manager=backup_manager
+    )
+
+    assert plugin.on_after_mod_apply_committed(None) is True
+
+    backup_manager.restore_backups.assert_not_called()
+    backup_manager.clear_backup_dir.assert_called_once_with()
+    assert plugin._active_session is None
+    assert not work_dir.exists()
 
 
 def test_disabled_folder_can_still_be_used_by_enabled_rule_for_selected_mod():

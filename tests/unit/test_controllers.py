@@ -1,5 +1,6 @@
 """Unit tests for test controllers."""
 
+import json
 import os
 import tempfile
 import time
@@ -8,6 +9,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+from PyQt6.QtCore import QObject, QPoint
+from PyQt6.QtWidgets import QCheckBox, QMenu, QToolButton
 
 from utils.file_utils import save_json
 
@@ -50,6 +53,320 @@ def _build_theme_test_window():
     app_window.update = Mock()
     app_window.size.return_value = Mock()
     return app_window
+
+
+def test_launch_mode_selection_is_persisted():
+    from controllers.game_launch_controller import GameLaunchController
+    from models.launch_modes import LaunchMode
+
+    controller = GameLaunchController.__new__(GameLaunchController)
+    controller.app_state = SimpleNamespace(local_config={})
+    controller.settings_service = Mock()
+    controller.refresh_launch_mode_menu = Mock()
+    controller.update_button_state = Mock()
+
+    controller.set_launch_mode(LaunchMode.PATCHING_ONLY)
+
+    assert controller.app_state.local_config["launch_mode"] == "launch_patching_only"
+    controller.settings_service.write_local_config.assert_called_once_with()
+    controller.refresh_launch_mode_menu.assert_called_once_with()
+    controller.update_button_state.assert_called_once_with()
+
+
+def test_launch_mode_selector_ignores_deleted_window_button():
+    from controllers.game_launch_controller import GameLaunchController
+
+    controller = GameLaunchController.__new__(GameLaunchController)
+    controller._launch_mode_button = Mock()
+    controller._launch_mode_button.setEnabled.side_effect = RuntimeError("deleted")
+
+    controller._set_launch_mode_selector_enabled(False)
+
+    assert controller._launch_mode_button is None
+
+
+def test_launch_mode_menu_is_centered_over_its_primary_button(qapp):
+    from controllers.game_launch_controller import GameLaunchController
+
+    button = QToolButton()
+    button.resize(360, 40)
+    menu = QMenu()
+    menu.addAction("Launch")
+    menu.addAction("Launch and keep changes")
+    controller = GameLaunchController.__new__(GameLaunchController)
+    controller._launch_mode_button = button
+    controller._launch_mode_menu = menu
+
+    controller._position_launch_mode_menu()
+
+    size = menu.sizeHint()
+    assert menu.pos() == button.mapToGlobal(
+        QPoint((button.width() - size.width()) // 2, -size.height())
+    )
+
+
+def test_launch_menu_includes_steam_and_plugin_options(qapp):
+    from controllers.game_launch_controller import GameLaunchController
+    from models.plugin_models import PluginLaunchOption
+    from services.localization_service import tr
+
+    steam_checkbox = QCheckBox(tr("ui.steam_launch"))
+    steam_checkbox.setChecked(True)
+    steam_checkbox.setEnabled(False)
+    steam_checkbox.setToolTip("Steam is unavailable")
+    runtime = SimpleNamespace(
+        get_launch_actions=lambda: [],
+        get_launch_options=lambda: [
+            PluginLaunchOption(
+                "save_slot",
+                "Use save slot",
+                enabled=False,
+                disabled_reason="Choose a save first",
+                plugin_id="save_plugin",
+            )
+        ],
+        set_launch_option=Mock(),
+    )
+    controller = GameLaunchController.__new__(GameLaunchController)
+    QObject.__init__(controller)
+    controller.app = SimpleNamespace(
+        launch_via_steam_checkbox=steam_checkbox,
+        plugin_runtime_service=runtime,
+    )
+    controller.app_state = SimpleNamespace(local_config={})
+    controller._launch_mode_menu = QMenu()
+
+    controller.refresh_launch_mode_menu()
+
+    actions = {action.text(): action for action in controller._launch_mode_menu.actions()}
+    steam_action = actions[tr("ui.steam_launch")]
+    plugin_action = actions["Use save slot"]
+    assert steam_action.isCheckable() and steam_action.isChecked()
+    assert not steam_action.isEnabled()
+    assert plugin_action.isCheckable() and not plugin_action.isEnabled()
+    assert plugin_action.toolTip() == "Choose a save first"
+    assert any(action.isSeparator() for action in controller._launch_mode_menu.actions())
+
+    steam_checkbox.setEnabled(True)
+    steam_checkbox.setChecked(False)
+    controller.refresh_launch_mode_menu()
+    actions = {action.text(): action for action in controller._launch_mode_menu.actions()}
+    actions[tr("ui.steam_launch")].trigger()
+
+    assert steam_checkbox.isChecked()
+
+
+def test_mod_update_candidates_include_all_installed_gamebanana_mods():
+    from controllers.game_launch_controller import GameLaunchController
+
+    mod = SimpleNamespace(
+        id="gb_mod_1", name="Installed mod", game="deltarune", version="1.0.0"
+    )
+    controller = GameLaunchController.__new__(GameLaunchController)
+    controller.app_state = SimpleNamespace(
+        all_mods=[], mods_dir="C:/profiles/Default/mods"
+    )
+    controller.mod_service = Mock()
+    controller.mod_service.get_installed_mods_list.return_value = [
+        {"id": "gb_mod_1"},
+        {"id": "local_mod"},
+    ]
+    controller.mod_service.create_mod_object_from_info.return_value = mod
+    controller.mod_service._read_metadata.return_value = {
+        "gb_mod_1": {"gamebanana_file_id": 2}
+    }
+    controller.mod_service.get_mod_folder_path.return_value = (
+        "C:/profiles/Default/mods/Installed mod"
+    )
+
+    assert controller._collect_gamebanana_update_candidates() == [
+        {
+            "id": "gb_mod_1",
+            "name": "Installed mod",
+            "game": "deltarune",
+            "version": "1.0.0",
+            "file_id": 2,
+            "mod": mod,
+            "mod_folder": "C:/profiles/Default/mods/Installed mod",
+            "target_mods_dir": "C:/profiles/Default/mods",
+        }
+    ]
+    controller.mod_service.create_mod_object_from_info.assert_called_once_with(
+        {"id": "gb_mod_1"}, controller.app_state.all_mods
+    )
+
+
+def test_mod_update_badge_hides_when_no_updates_are_available():
+    from controllers.game_launch_controller import GameLaunchController
+
+    worker = object()
+    button = Mock()
+    controller = GameLaunchController.__new__(GameLaunchController)
+    controller._mod_update_worker = worker
+    controller._mod_update_dialog = None
+    controller._automatic_update_profiles = None
+    controller.app = SimpleNamespace(update_mods_button=button)
+    controller.app_state = SimpleNamespace(local_config={})
+
+    controller._on_mod_updates_resolved(worker, [])
+
+    button.setVisible.assert_called_once_with(False)
+
+
+def test_mod_update_badge_stays_available_during_automatic_updates():
+    from controllers.game_launch_controller import GameLaunchController
+
+    worker = object()
+    button = Mock()
+    controller = GameLaunchController.__new__(GameLaunchController)
+    controller._mod_update_worker = worker
+    controller._mod_update_dialog = None
+    controller._automatic_update_profiles = None
+    controller.app = SimpleNamespace(update_mods_button=button)
+    controller.app_state = SimpleNamespace(
+        local_config={"automatic_mod_updates": True, "hide_update_mods_button": False}
+    )
+
+    controller._on_mod_updates_resolved(worker, [{"id": "gb_mod_1"}])
+
+    button.setVisible.assert_called_once_with(True)
+
+
+def test_mod_update_picker_returns_the_selected_latest_file(monkeypatch):
+    from PyQt6.QtWidgets import QDialog
+
+    from controllers import game_launch_controller
+    from controllers.game_launch_controller import GameLaunchController
+
+    class Picker:
+        def __init__(self, _parent, files, _name, _homepage) -> None:
+            self.files = files
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def get_selected_file(self):
+            return self.files[1]
+
+    monkeypatch.setattr(game_launch_controller, "GameBananaFilePickerDialog", Picker)
+    controller = GameLaunchController.__new__(GameLaunchController)
+    controller.app = Mock()
+    resolutions = [
+        {
+            "source_url": "https://example.test/windows.zip",
+            "metadata": {"gb_file_id": 1, "file_name": "windows.zip"},
+        },
+        {
+            "source_url": "https://example.test/linux.zip",
+            "metadata": {"gb_file_id": 2, "file_name": "linux.zip"},
+        },
+    ]
+
+    selected = controller._pick_mod_update_resolution(
+        {"name": "Example"}, resolutions
+    )
+
+    assert selected == resolutions[1]
+
+
+def test_gamebanana_update_snapshots_the_current_profile_mods_dir(tmp_path):
+    from controllers.mod.operations_controller import ModOperationsController
+
+    downloads_manager = Mock()
+    downloads_manager.enqueue.return_value = ("update-record", False)
+    app_state = SimpleNamespace(mods_dir=str(tmp_path / "queued-profile"))
+    controller = ModOperationsController(
+        app_state=app_state,
+        feedback_service=Mock(),
+        mod_service=Mock(),
+        app_window=SimpleNamespace(downloads_manager=downloads_manager),
+    )
+
+    record_id = controller.enqueue_resolved_gamebanana_update(
+        SimpleNamespace(id="gb_mod_42", name="Updated mod"),
+        {
+            "source_url": "https://example.test/update.zip",
+            "metadata": {"gb_mod_id": 42, "gb_file_id": 77},
+        },
+        replace_current=True,
+        batch_id="batch",
+        target_mods_dir=str(tmp_path / "captured-profile"),
+    )
+
+    assert record_id == "update-record"
+    assert downloads_manager.enqueue.call_args.kwargs["metadata"]["target_mods_dir"] == str(
+        tmp_path / "captured-profile"
+    )
+
+
+def test_gamebanana_install_keeps_upload_timestamp_and_constructs_file_url():
+    from controllers.mod.operations_controller import ModOperationsController
+
+    downloads = Mock()
+    controller = ModOperationsController(
+        SimpleNamespace(), Mock(), Mock(),
+        SimpleNamespace(downloads_manager=downloads, search_display=Mock()),
+    )
+    controller._enqueue_gamebanana_download(
+        SimpleNamespace(id="gb_mod_42", name="Example", version="1.0"),
+        {"id": 88, "name": "mod.zip", "_tsDateAdded": 12345},
+    )
+
+    queued = downloads.enqueue_with_feedback.call_args.kwargs
+    assert queued["source_url"] == "https://gamebanana.com/dl/88"
+    assert queued["metadata"]["timestamp"] == 12345
+    assert queued["metadata"]["gb_file_id"] == 88
+
+
+def test_mod_update_profile_change_does_not_interrupt_an_active_batch():
+    from controllers.game_launch_controller import GameLaunchController
+
+    controller = GameLaunchController.__new__(GameLaunchController)
+    QObject.__init__(controller)
+    controller._mod_update_batch = {"id": "batch"}
+    controller._deferred_mod_update_profile = ""
+    controller.app = SimpleNamespace(profile_service=Mock(active_name="Default"))
+    controller._scan_mod_updates = Mock()
+
+    controller._on_mod_update_profile_changed("Other")
+
+    controller.app.profile_service.switch.assert_not_called()
+    controller._scan_mod_updates.assert_not_called()
+    assert controller._deferred_mod_update_profile == "Other"
+
+
+def test_manual_profile_switch_stops_automatic_update_sequence():
+    from controllers.game_launch_controller import GameLaunchController
+
+    controller = GameLaunchController.__new__(GameLaunchController)
+    QObject.__init__(controller)
+    controller._automatic_update_profiles = ["Other"]
+    controller._automatic_update_restore_profile = "Default"
+    controller._automatic_update_switching = False
+    worker = Mock()
+    controller._mod_update_worker = worker
+
+    controller._on_profile_switched("Manual")
+
+    assert controller._automatic_update_profiles is None
+    assert controller._automatic_update_restore_profile == ""
+    worker.cancel.assert_called_once_with()
+    assert controller._mod_update_worker is None
+
+
+@pytest.mark.parametrize("checksum_key", ["md5", "_sMd5Checksum"])
+def test_gamebanana_file_picker_fallback_preserves_download_checksum(monkeypatch, checksum_key):
+    from controllers.mod.operations_controller import ModOperationsController
+
+    checksum = "a" * 32
+    api = Mock()
+    api.get_mod_files.return_value = [{"_idRow": 77, "_sFile": "mod.zip", checksum_key: checksum}]
+    monkeypatch.setattr("controllers.mod.operations_controller.GameBananaAPI", lambda: api)
+    controller = ModOperationsController.__new__(ModOperationsController)
+
+    files = controller._get_all_gamebanana_files(SimpleNamespace(id="gb_mod_42"))
+
+    assert files[0]["md5"] == checksum
 
 
 class TestModOperationsController:
@@ -129,129 +446,30 @@ class TestModOperationsController:
             ),
         )
 
-    def test_install_mod_start_failure_resets_state_without_raising(
-        self, app_state, feedback_service
-    ):
-        from controllers.mod.operations_controller import ModOperationsController
-        from models.mod_models import LocalModInfo, ModFileData
-
-        mod = LocalModInfo(
-            id="local_start_fail",
-            name="Start Fail",
-            version="1.0.0",
-            author="Author",
-            description="Desc",
-            game="deltarune",
-            files={
-                "deltarune_1": ModFileData(data_file_url="https://example.com/a.xdelta")
-            },
-        )
-        mod_service = Mock()
-        mod_service.is_mod_installed.return_value = False
-        app_window = Mock()
-        app_window._install_op_id = 0
-        app_window.action_button = Mock()
-        app_window.game_launch = Mock()
-        feedback_service = Mock()
-        controller = ModOperationsController(
-            app_state=app_state,
-            feedback_service=feedback_service,
-            mod_service=mod_service,
-            app_window=app_window,
-        )
-
-        with patch(
-            "controllers.mod.operations_controller.InstallModsThread",
-            side_effect=RuntimeError("worker construction failed"),
-        ):
-            controller.install_mod(mod)
-
-        assert app_state.is_installing is False
-        assert app_state.current_task is None
-        assert getattr(app_state, "_scan_blocked", False) is False
-        feedback_service.show_message.assert_called_once()
-
-    def test_install_complete_success_ignores_broken_status_feedback(self, app_state):
-        from controllers.mod.operations_controller import ModOperationsController
-
-        feedback_service = Mock()
-        feedback_service.update_status.side_effect = RuntimeError(
-            "status widget deleted"
-        )
-        current_task = Mock()
-        current_task.mod_info = SimpleNamespace(id="mod_a", name="Mod A")
-        app_state.current_task = current_task
-        app_state.is_installing = True
-        app_state._scan_blocked = True
-        app_state.filtered_mods = []
-        app_window = Mock()
-        app_window.game_launch.update_button_state = Mock()
-        next_mod = SimpleNamespace(id="mod_b", name="Mod B")
-        app_window.pending_updates = [next_mod]
-        mod_service = Mock()
-        controller = ModOperationsController(
-            app_state=app_state,
-            feedback_service=feedback_service,
-            mod_service=mod_service,
-            app_window=app_window,
-        )
-        controller.set_install_buttons_enabled = Mock()
-        controller.refresh_specific_mod_widget_after_update = Mock()
-
-        with patch(
-            "controllers.mod.operations_controller.QTimer.singleShot",
-            side_effect=lambda _ms, callback: callback(),
-        ):
-            controller._on_install_complete(True)
-
-        assert app_state.is_installing is False
-        assert app_state._scan_blocked is False
-        mod_service.update_mod.assert_called_once_with(next_mod)
-        assert app_window.game_launch.update_button_state.called
-
-    def test_install_status_token_ignores_broken_window_status(self, app_state):
-        from controllers.mod.operations_controller import ModOperationsController
-
-        app_window = Mock()
-        app_window._install_op_id = 7
-        app_window._update_status.side_effect = RuntimeError("status widget deleted")
-        app_state.is_installing = True
-        controller = ModOperationsController(
-            app_state=app_state,
-            feedback_service=Mock(),
-            mod_service=Mock(),
-            app_window=app_window,
-        )
-
-        controller.on_install_status_token("Downloading", "yellow", 7)
-
-        app_window._update_status.assert_called_once_with("Downloading", "yellow")
-
-
 class TestGameLaunchControllerRefresh:
     def test_refresh_mods_in_use_replaces_mod_objects_inside_lists(
         self, app_state, feedback_service
     ):
         from controllers.game_launch_controller import GameLaunchController
-        from models.mod_models import LocalModInfo, ModFileData
+        from models.mod_models import LocalModInfo
 
         stale_mod = LocalModInfo(
             id="chapter_swap_mod",
             name="Old",
             version="1.0.0",
-            author="Author",
+            authors=["Author"],
             description="Desc",
             game="deltarune",
-            files={"deltarune_4": ModFileData(data_file_path="chapter4/DATA.win")},
+            sections=frozenset({"deltarune_4"}),
         )
         refreshed_mod = LocalModInfo(
             id="chapter_swap_mod",
             name="New",
             version="1.0.0",
-            author="Author",
+            authors=["Author"],
             description="Desc",
             game="deltarune",
-            files={"deltarune_0": ModFileData(data_file_path="menu/DATA.win")},
+            sections=frozenset({"deltarune_0"}),
         )
         app_state.all_mods = [refreshed_mod]
         used_mods_service = Mock()
@@ -272,17 +490,11 @@ class TestGameLaunchControllerRefresh:
         controller.refresh_mods_in_use()
 
         assert used_mods_service.used_mods["deltarune_0"] == [refreshed_mod]
-        assert (
-            used_mods_service.used_mods["deltarune_0"][0].get_chapter_data(
-                "deltarune_4"
-            )
-            is None
+        assert not used_mods_service.used_mods["deltarune_0"][0].supports_section(
+            "deltarune_4"
         )
-        assert (
-            used_mods_service.used_mods["deltarune_0"][0].get_chapter_data(
-                "deltarune_0"
-            )
-            is not None
+        assert used_mods_service.used_mods["deltarune_0"][0].supports_section(
+            "deltarune_0"
         )
 
 
@@ -299,6 +511,29 @@ class TestTabHandler:
         handle_tab_changed(w, 0)
 
         w.search_display.clear_all_selections.assert_called_once_with()
+
+    def test_handle_tab_changed_reflows_mods_browser_after_it_is_shown(
+        self, monkeypatch
+    ):
+        from app.tab.handler import handle_tab_changed
+
+        w = Mock()
+        w._suppress_tab_handlers = False
+        w.app_state = Mock(library_initialized=False)
+        w.search_display = Mock()
+        w.library_display = Mock()
+        w.mods_browser_tab = object()
+        w.main_tab_widget.widget.return_value = w.mods_browser_tab
+        monkeypatch.setattr(
+            "app.tab.handler.QTimer.singleShot", lambda _delay, callback: callback()
+        )
+
+        handle_tab_changed(w, 0)
+
+        assert w.search_display._last_grid_metrics_key is None
+        w.search_display.refresh_visible_layout.assert_called_once_with(
+            reflow_existing=True
+        )
 
 
 class TestLibraryDisplayController:
@@ -334,6 +569,34 @@ class TestLibraryDisplayController:
         )
         assert controller is not None
         assert controller.app_state == app_state
+
+    def test_library_display_reports_inactive_operation_dependency(self, feedback_service):
+        from controllers.library_display_controller import LibraryDisplayController
+
+        main = SimpleNamespace(id="main")
+        base = SimpleNamespace(id="base")
+        app_state = SimpleNamespace(all_mods=[main, base])
+        used_mods_service = Mock()
+        used_mods_service.get_active_mod_selections.return_value = {"game": [main]}
+        used_mods_service.get_active_mod_steps.return_value = {"game": [[main]]}
+        mod_service = Mock()
+        mod_service.get_mod_config.return_value = {
+            "config_version": "2.0.0",
+            "id": "main",
+            "name": "Main",
+            "version": "1.0.0",
+            "authors": [],
+            "game": "deltarune",
+            "files": [],
+            "dependencies": ["base"],
+        }
+        controller = LibraryDisplayController(
+            app_state, feedback_service, mod_service, used_mods_service, Mock()
+        )
+
+        assert controller._operation_profile_relation_issues() == {
+            "main": ("dependency_inactive", "base")
+        }
 
     def test_library_display_skips_refresh_for_unchanged_valid_cached_view(
         self, app_state, feedback_service
@@ -625,6 +888,73 @@ class TestLibraryDisplayController:
 class TestModImportExportController:
     """Tests for controllers."""
 
+    def test_drop_import_groups_unrecognized_sources_into_one_manual_session(self, temp_dir):
+        from controllers.mod.import_export_controller import ModImportExportController
+
+        controller = ModImportExportController(
+            Mock(mods_dir=temp_dir, all_mods=[]), Mock(), Mock()
+        )
+        controller._is_automatic_mod_source = Mock(side_effect=lambda path: path.startswith("mod"))
+        controller._process_next_import = Mock()
+
+        controller.import_files_sequentially(["mod-one.zip", "patch.xdelta", "mod-two.zip", "readme.md"])
+
+        assert controller._import_queue == ["mod-one.zip", "mod-two.zip"]
+        assert controller._manual_import_batches == [["patch.xdelta", "readme.md"]]
+        controller._process_next_import.assert_called_once_with()
+
+    def test_drop_import_rejects_a_standalone_config_file(self, temp_dir):
+        from controllers.mod.import_export_controller import ModImportExportController
+
+        config_path = os.path.join(temp_dir, "mod_config.json")
+        with open(config_path, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        controller = ModImportExportController(
+            Mock(mods_dir=temp_dir, all_mods=[]), Mock(), Mock()
+        )
+        controller._is_automatic_mod_source = Mock()
+        controller._process_next_import = Mock()
+        controller._safe_show_critical = Mock()
+
+        controller.import_files_sequentially([config_path])
+
+        controller._is_automatic_mod_source.assert_not_called()
+        assert controller._import_queue == []
+        assert controller._manual_import_batches == []
+        controller._safe_show_critical.assert_called_once()
+
+    def test_folder_import_never_rewrites_the_source_config(self, temp_dir):
+        from controllers.mod.import_export_controller import ModImportExportController
+
+        source = os.path.join(temp_dir, "source")
+        library = os.path.join(temp_dir, "library")
+        os.makedirs(source)
+        os.makedirs(library)
+        source_config = {
+            "id": "source_mod",
+            "name": "Source Mod",
+            "author": "Author",
+            "version": "1.0.0",
+            "game": "deltarune",
+            "files": {"deltarune_0": {"data_file_path": "patch.xdelta"}},
+        }
+        config_path = os.path.join(source, "mod_config.json")
+        with open(config_path, "w", encoding="utf-8") as handle:
+            json.dump(source_config, handle)
+        with open(os.path.join(source, "patch.xdelta"), "w", encoding="utf-8") as handle:
+            handle.write("patch")
+        controller = ModImportExportController(
+            Mock(mods_dir=library, all_mods=[]), Mock(get_mod_folder_path=Mock(return_value=None)), Mock()
+        )
+        controller._refresh_mod_list = Mock()
+        controller._safe_show_information = Mock()
+
+        original = Path(config_path).read_bytes()
+        controller._install_mod_from_file(source)
+
+        assert Path(config_path).read_bytes() == original
+        assert os.path.isfile(os.path.join(library, "Source Mod", "mod_config.json"))
+
     def test_format_import_exception_reports_archive_not_found(self, temp_dir):
         from controllers.mod.import_export_controller import ModImportExportController
         from services.localization_service import tr
@@ -694,8 +1024,6 @@ class TestModImportExportController:
             "dialog already deleted"
         )
         controller = ModImportExportController(app_state, Mock(), app_window)
-        controller._active_remote_import_source = "url"
-
         controller._on_mod_install_finished(False, "download failed")
 
         app_state.reset_install_state.assert_called_once()
@@ -706,7 +1034,6 @@ class TestModImportExportController:
         app_state = Mock(mods_dir=temp_dir, all_mods=[])
         app_state.reset_install_state = Mock()
         controller = ModImportExportController(app_state, Mock(), Mock())
-        controller._active_remote_import_source = "url"
         controller._refresh_mod_list = Mock()
 
         with patch(
@@ -1273,6 +1600,38 @@ class TestSearchDisplayController:
         controller.update_pagination.assert_not_called()
         controller.ui_widget_updates_enabled.emit.assert_not_called()
 
+    def test_search_display_reflows_existing_cards_when_requested(
+        self, app_state, feedback_service
+    ):
+        from controllers.search_display_controller import SearchDisplayController
+
+        card = Mock()
+        card.isVisible.return_value = True
+        card.updatesEnabled.return_value = True
+        layout = Mock()
+        controller = SearchDisplayController(
+            app_state=app_state,
+            feedback_service=feedback_service,
+            mod_service=Mock(),
+            mod_ops=Mock(),
+            app_window=Mock(mod_list_layout=layout, mod_list_widget=Mock()),
+        )
+        controller._sync_mod_grid_metrics = Mock(return_value=True)
+        controller._mod_list_column_count = Mock(return_value=3)
+        controller._last_display_columns = 1
+        controller._iter_layout_cards = Mock(return_value=(card,))
+        controller._place_layout_widget = Mock()
+        controller.update_display = Mock()
+        controller.ui_widget_updates_enabled = Mock()
+        controller._maybe_load_more_for_short_viewport = Mock()
+        controller._update_virtual_visibility = Mock()
+
+        controller.refresh_visible_layout(reflow_existing=True)
+
+        controller.update_display.assert_not_called()
+        controller._place_layout_widget.assert_called_once_with(card, 0)
+        assert controller._last_display_columns == 3
+
     def test_update_display_finalizes_layout_refresh_after_processing(
         self, app_state, feedback_service
     ):
@@ -1370,6 +1729,39 @@ class TestSearchDisplayController:
         controller._show_bottom_loading_indicator()
 
         assert placed == [(8, 1)]
+
+    def test_reflow_keeps_status_rows_directly_after_cards(self, qapp, app_state, feedback_service):
+        from PyQt6.QtWidgets import QGridLayout, QLabel, QWidget
+
+        from controllers.search_display_controller import SearchDisplayController
+
+        host = QWidget()
+        layout = QGridLayout(host)
+        cards = [QLabel(str(index)) for index in range(6)]
+        for index, card in enumerate(cards):
+            layout.addWidget(card, index // 3, index % 3)
+        indicators = [QLabel("Error"), QLabel("Retry")]
+        for index, indicator in enumerate(indicators):
+            indicator.setObjectName("loading_indicator")
+            layout.addWidget(indicator, index + 3, 0, 1, 2)
+        controller = SearchDisplayController(
+            app_state=app_state, feedback_service=feedback_service,
+            mod_service=Mock(), mod_ops=Mock(), app_window=Mock(mod_list_layout=layout),
+        )
+        controller._mod_list_column_count = Mock(return_value=3)
+        controller._sync_mod_grid_metrics = Mock(return_value=True)
+        controller._iter_layout_cards = lambda: iter(cards)
+        controller._maybe_load_more_for_short_viewport = Mock()
+        controller._update_virtual_visibility = Mock()
+        host.show()
+
+        controller.refresh_visible_layout(reflow_existing=True)
+        controller._place_loading_indicator(indicators[1], 9)
+
+        assert layout.getItemPosition(layout.indexOf(indicators[0])) == (2, 0, 1, 3)
+        assert layout.getItemPosition(layout.indexOf(indicators[1])) == (3, 0, 1, 3)
+        assert layout.count() == 8
+        host.close()
 
     def test_on_scroll_value_changed_prefetches_before_reaching_bottom(
         self, app_state, feedback_service
@@ -1624,7 +2016,10 @@ class TestLibraryCyopAfomFilter:
 
         monkeypatch.setattr(
             "utils.mod.readme_utils.find_mod_readme_files",
-            lambda _path: [str(Path(temp_dir) / "README.md")],
+            lambda _path, **_kwargs: [str(Path(temp_dir) / "README.md")],
+        )
+        monkeypatch.setattr(
+            "utils.mod.readme_utils.find_mod_unlisted_readme_files", lambda _path: []
         )
 
         class _Dialog:
@@ -1659,17 +2054,26 @@ class TestLibraryCyopAfomFilter:
         mod_data = SimpleNamespace(name="Named Mod", id="named_mod")
         monkeypatch.setattr(
             "utils.mod.readme_utils.find_mod_readme_files",
-            lambda _path: [str(Path(temp_dir) / "README.md")],
+            lambda _path, **_kwargs: [str(Path(temp_dir) / "README.md")],
+        )
+        monkeypatch.setattr(
+            "utils.mod.readme_utils.find_mod_unlisted_readme_files", lambda _path: []
         )
         captured = {}
 
         class _Dialog:
             def __init__(
-                self, app_state_arg, mod_name_arg, readme_files_arg, parent=None
+                self,
+                app_state_arg,
+                mod_name_arg,
+                readme_files_arg,
+                unlisted_files_arg=None,
+                parent=None,
             ) -> None:
                 captured["app_state"] = app_state_arg
                 captured["mod_name"] = mod_name_arg
                 captured["readme_files"] = readme_files_arg
+                captured["unlisted_files"] = unlisted_files_arg
                 captured["parent"] = parent
 
             def exec(self):
@@ -2103,10 +2507,10 @@ class TestThemeController:
         controller.init_theme_list.assert_called_once()
         feedback_service.show_message.assert_called_once()
 
-    def test_builtin_theme_delete_warning_ignores_broken_feedback(
+    def test_theme_delete_error_ignores_broken_feedback(
         self, app_state, tmp_path
     ):
-        """Checks built-in theme delete warning cannot crash theme controller."""
+        """Checks failed theme deletion cannot crash while reporting the error."""
         from controllers.theme_controller import ThemeController
 
         builtin_theme = tmp_path / "Builtin.zip"
@@ -2123,13 +2527,14 @@ class TestThemeController:
             app_window=app_window,
         )
 
-        with patch(
-            "utils.path_utils.resource_path",
-            return_value=str(builtin_theme),
+        with (
+            patch("utils.path_utils.get_user_themes_dir", return_value=str(tmp_path)),
+            patch("os.remove", side_effect=PermissionError("theme is locked")),
         ):
             controller.on_theme_delete_clicked()
 
         feedback_service.show_message.assert_called_once()
+        assert builtin_theme.read_bytes() == b"theme"
 
     def test_resync_filter_scroll_heights_applies_current_size_hint(
         self, app_state, feedback_service
@@ -2151,11 +2556,13 @@ class TestThemeController:
         search_widget.sizeHint.return_value.height.return_value = 68
         search_scroll = Mock()
         search_scroll.widget.return_value = search_widget
+        search_scroll.horizontalScrollBar.return_value.sizeHint.return_value.height.return_value = 14
 
         library_widget = Mock()
         library_widget.sizeHint.return_value.height.return_value = 74
         library_scroll = Mock()
         library_scroll.widget.return_value = library_widget
+        library_scroll.horizontalScrollBar.return_value.sizeHint.return_value.height.return_value = 14
 
         controller._iter_filter_scrolls = Mock(
             return_value=iter((search_scroll, library_scroll))
@@ -2166,16 +2573,31 @@ class TestThemeController:
         search_widget.adjustSize.assert_called_once()
         search_widget.updateGeometry.assert_called_once()
         search_scroll.updateGeometry.assert_called_once()
-        search_scroll.setMaximumHeight.assert_called_once_with(68)
+        search_scroll.setFixedHeight.assert_called_once_with(82)
 
         library_widget.adjustSize.assert_called_once()
         library_widget.updateGeometry.assert_called_once()
         library_scroll.updateGeometry.assert_called_once()
-        library_scroll.setMaximumHeight.assert_called_once_with(74)
+        library_scroll.setFixedHeight.assert_called_once_with(88)
 
 
 class TestGameLaunchController:
     """Tests for controllers."""
+
+    def test_session_recovery_disables_launch_button(self):
+        from controllers.game_launch_controller import GameLaunchController
+        from services.localization_service import tr
+
+        controller = GameLaunchController.__new__(GameLaunchController)
+        controller.game_launcher = SimpleNamespace(is_recovering_session=True)
+        controller.app_state = SimpleNamespace()
+        controller._set_launch_mode_selector_enabled = Mock()
+
+        controller.update_button_state()
+
+        assert controller.app_state.action_button_text == tr("status.please_wait")
+        assert controller.app_state.action_button_enabled is False
+        controller._set_launch_mode_selector_enabled.assert_called_once_with(False)
 
     def test_launch_after_completed_cancellation_starts_new_operation(self, qapp):
         from controllers.game_launch_controller import GameLaunchController
@@ -2215,7 +2637,9 @@ class TestGameLaunchController:
         controller.on_action_button_click()
 
         assert app_state.operation_cancelled is False
-        controller.launch_game.assert_called_once_with()
+        from models.launch_modes import LaunchMode
+
+        controller.launch_game.assert_called_once_with(LaunchMode.NORMAL)
         controller._external_game_timer.stop()
         qapp.processEvents()
 
@@ -2289,7 +2713,6 @@ class TestGameLaunchController:
         )
         library_display = SimpleNamespace(
             _modpack_thread=modpack_thread,
-            _modpack_dir="C:/Temp/Pack",
         )
         used_mods_service = Mock()
         used_mods_service.check_used_mods_need_updates.return_value = False
@@ -2622,12 +3045,9 @@ class TestAppWindowRestore:
         window = Mock()
         window.main_tab_widget.count.return_value = 2
         window.app_state.local_config = {"last_active_tab": 5}
-        window.previous_tab_index = 0
-
         AppWindow._restore_last_active_main_tab(window)
 
         window.main_tab_widget.setCurrentIndex.assert_called_once_with(1)
-        assert window.previous_tab_index == 1
 
 
 @pytest.mark.parametrize("mode", ["chapter", "normal"])

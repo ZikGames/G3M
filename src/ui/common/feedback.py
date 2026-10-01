@@ -124,6 +124,167 @@ class FeedbackManager(QObject):
         reply = msg_box.exec()
         return reply == QMessageBox.StandardButton.Yes
 
+    def ask_text_question(
+        self, title: str, message: str, *, default_yes: bool = False
+    ) -> bool:
+        if not self._should_show_dialog():
+            return False
+        msg_box = QMessageBox(self.parent_widget)
+        msg_box.setIcon(QMessageBox.Icon.Question)
+        msg_box.setWindowTitle(title)
+        msg_box.setTextFormat(Qt.TextFormat.RichText)
+        msg_box.setText(self._format_html(message))
+        msg_box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        msg_box.setDefaultButton(
+            QMessageBox.StandardButton.Yes
+            if default_yes
+            else QMessageBox.StandardButton.No
+        )
+        return msg_box.exec() == QMessageBox.StandardButton.Yes
+
+    def ask_relation_arrangement(self, message: str, details: str = "") -> str:
+        """Offer the one safe profile-order change suggested by operation relations."""
+        if not self._should_show_dialog():
+            return "cancel"
+        msg_box = QMessageBox(self.parent_widget)
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle(self._tr("dialogs.patching_warning.title"))
+        text = self._format_html(message)
+        if details:
+            text = f"{text}<br><br>{self._format_html(details)}"
+        msg_box.setTextFormat(Qt.TextFormat.RichText)
+        msg_box.setText(text)
+        apply_button = msg_box.addButton(
+            self._tr("dialogs.patching_warning.apply_arrangement"),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        continue_button = msg_box.addButton(
+            self._tr("dialogs.patching_warning.launch_without_changes"),
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        msg_box.addButton(
+            self._tr("dialogs.patching_warning.cancel_button"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        msg_box.setDefaultButton(continue_button)
+        msg_box.exec()
+        if msg_box.clickedButton() is apply_button:
+            return "apply"
+        if msg_box.clickedButton() is continue_button:
+            return "continue"
+        return "cancel"
+
+    def ask_dependency_activation(self, message: str, details: str = "") -> str:
+        """Offer to activate installed dependencies without changing launch implicitly."""
+        if not self._should_show_dialog():
+            return "cancel"
+        msg_box = QMessageBox(self.parent_widget)
+        msg_box.setIcon(QMessageBox.Icon.Question)
+        msg_box.setWindowTitle(self._tr("dialogs.patching_warning.title"))
+        text = self._format_html(message)
+        if details:
+            text = f"{text}<br><br>{self._format_html(details)}"
+        msg_box.setTextFormat(Qt.TextFormat.RichText)
+        msg_box.setText(text)
+        activate_button = msg_box.addButton(
+            self._tr("dialogs.patching_warning.activate_dependencies"),
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        continue_button = msg_box.addButton(
+            self._tr("dialogs.patching_warning.launch_without_dependencies"),
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        msg_box.addButton(
+            self._tr("dialogs.patching_warning.cancel_button"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        msg_box.setDefaultButton(activate_button)
+        msg_box.exec()
+        if msg_box.clickedButton() is activate_button:
+            return "activate"
+        if msg_box.clickedButton() is continue_button:
+            return "continue"
+        return "cancel"
+
+    def ask_operation_recovery_conflict(self, message: str, details: str = "") -> str:
+        """Let the user resolve external edits detected during session recovery."""
+        if not self._should_show_dialog():
+            return "cancel"
+        msg_box = QMessageBox(self.parent_widget)
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle(self._tr("dialogs.patching_warning.title"))
+        text = self._format_html(message)
+        if details:
+            text = f"{text}<br><br>{self._format_html(details)}"
+        msg_box.setTextFormat(Qt.TextFormat.RichText)
+        msg_box.setText(text)
+        force_button = msg_box.addButton(
+            self._tr("dialogs.patching_warning.force_restore"),
+            QMessageBox.ButtonRole.DestructiveRole,
+        )
+        keep_button = msg_box.addButton(
+            self._tr("dialogs.patching_warning.keep_external_changes"),
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        msg_box.addButton(
+            self._tr("dialogs.patching_warning.cancel_button"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        msg_box.setDefaultButton(keep_button)
+        msg_box.exec()
+        if msg_box.clickedButton() is force_button:
+            return "force"
+        if msg_box.clickedButton() is keep_button:
+            return "keep"
+        return "cancel"
+
+    def ask_dependency_resolution(
+        self,
+        message: str,
+        details: str = "",
+        can_download: bool = False,
+        can_activate: bool = True,
+    ) -> str:
+        """Let the user resolve required mods or explicitly launch without them."""
+        if not self._should_show_dialog():
+            return "cancel"
+        msg_box = QMessageBox(self.parent_widget)
+        msg_box.setIcon(QMessageBox.Icon.Question)
+        msg_box.setWindowTitle(self._tr("dialogs.patching_warning.title"))
+        text = self._format_html(message)
+        if details:
+            text = f"{text}<br><br>{self._format_html(details)}"
+        msg_box.setTextFormat(Qt.TextFormat.RichText)
+        msg_box.setText(text)
+        resolve_button = None
+        if can_download or can_activate:
+            resolve_button = msg_box.addButton(
+                self._tr(
+                    "dialogs.patching_warning.install_and_activate_dependencies"
+                    if can_download
+                    else "dialogs.patching_warning.activate_dependencies"
+                ),
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+        continue_button = msg_box.addButton(
+            self._tr("dialogs.patching_warning.launch_selected_mods"),
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        msg_box.addButton(
+            self._tr("dialogs.patching_warning.cancel_button"),
+            QMessageBox.ButtonRole.RejectRole,
+        )
+        msg_box.setDefaultButton(resolve_button or continue_button)
+        msg_box.exec()
+        clicked_button = msg_box.clickedButton()
+        if resolve_button is not None and clicked_button is resolve_button:
+            return "resolve"
+        if clicked_button is continue_button:
+            return "continue"
+        return "cancel"
+
     def ask_patching_warning(
         self,
         message: str | WarningEvent,

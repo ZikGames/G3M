@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 
+from models.catalog_models import THEME_TAGS
 from models.plugin_models import PLUGIN_TAGS
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ class PluginStateService:
             "enabled": {},
             "settings": {},
             "filters": {"installed_only": False, "tags": []},
+            "theme_filters": {"installed_only": False, "tags": []},
             "install_meta": {},
         }
 
@@ -42,11 +44,12 @@ class PluginStateService:
         for key in state:
             value = data.get(key, state[key])
             state[key] = value if isinstance(value, type(state[key])) else state[key]
-        filters = state["filters"]
-        filters["installed_only"] = bool(filters.get("installed_only", False))
-        filters["tags"] = [
-            tag for tag in filters.get("tags", []) if isinstance(tag, str) and tag in PLUGIN_TAGS
-        ]
+        for key, allowed_tags in (("filters", PLUGIN_TAGS), ("theme_filters", THEME_TAGS)):
+            filters = state[key]
+            filters["installed_only"] = bool(filters.get("installed_only", False))
+            filters["tags"] = [
+                tag for tag in filters.get("tags", []) if isinstance(tag, str) and tag in allowed_tags
+            ]
         self._write_state(state)
         return state
 
@@ -78,16 +81,17 @@ class PluginStateService:
             self._state[section].pop(plugin_id, None)
         self._save()
 
-    def get_filters(self) -> dict:
+    def get_filters(self, *, themes: bool = False) -> dict:
+        filters = self._state["theme_filters" if themes else "filters"]
         return {
-            "installed_only": bool(self._state["filters"].get("installed_only", False)),
-            "tags": list(self._state["filters"].get("tags", [])),
+            "installed_only": bool(filters.get("installed_only", False)),
+            "tags": list(filters.get("tags", [])),
         }
 
-    def set_filters(self, *, installed_only: bool, tags: list[str]) -> None:
-        self._state["filters"] = {
+    def set_filters(self, *, installed_only: bool, tags: list[str], themes: bool = False) -> None:
+        self._state["theme_filters" if themes else "filters"] = {
             "installed_only": bool(installed_only),
-            "tags": [tag for tag in tags if tag in PLUGIN_TAGS],
+            "tags": [tag for tag in tags if tag in (THEME_TAGS if themes else PLUGIN_TAGS)],
         }
         self._save()
 

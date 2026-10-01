@@ -1,4 +1,4 @@
-name: Build and Release G3M (Linux + macOS x64 & arm64 + Windows)
+name: Build and Release G3M (Linux, macOS, and Windows x64 + arm64)
 
 on:
   workflow_dispatch:
@@ -16,8 +16,12 @@ on:
         description: "Release name (e.g., G3M 3.1.0) - Required if publishing release"
         required: false
         type: string
-      archive_name_linux:
-        description: "Archive name for Linux (e.g., G3M-Linux-3.1.0)"
+      archive_name_linux_x64:
+        description: "Archive name for Linux x64 (e.g., G3M-Linux-x86_64-3.4.0)"
+        required: false
+        type: string
+      archive_name_linux_arm64:
+        description: "Archive name for Linux arm64 (e.g., G3M-Linux-arm64-3.4.0)"
         required: false
         type: string
       archive_name_macos_x64:
@@ -28,12 +32,20 @@ on:
         description: "Archive name for macOS arm64 (e.g., G3M-macOS-arm64-3.1.0)"
         required: false
         type: string
-      archive_name_windows:
-        description: "Archive name for Windows Portable (e.g., G3M-Windows-3.1.0)"
+      archive_name_windows_x64:
+        description: "Archive name for Windows x64 Portable (e.g., G3M-Windows-x86_64-3.4.0)"
         required: false
         type: string
-      archive_name_windows_setup:
-        description: "Archive name for Windows Setup (e.g., G3M-Windows-Setup-3.1.0)"
+      archive_name_windows_x64_setup:
+        description: "Archive name for Windows x64 Setup (e.g., G3M-Windows-x86_64-Setup-3.4.0)"
+        required: false
+        type: string
+      archive_name_windows_arm64:
+        description: "Archive name for Windows arm64 Portable (e.g., G3M-Windows-arm64-3.4.0)"
+        required: false
+        type: string
+      archive_name_windows_arm64_setup:
+        description: "Archive name for Windows arm64 Setup (e.g., G3M-Windows-arm64-Setup-3.4.0)"
         required: false
         type: string
 
@@ -57,30 +69,52 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: Linux
+          - label: Linux x64
             runs_on: ubuntu-24.04
-            artifact_name: G3M-Linux
+            architecture: x64
+            artifact_name: G3M-Linux-x86_64
             g3mtool_runtime: linux-x64
+            g3mtool_dir: src/assets/bin/g3mtool_linux
+            startup_target: archive_content/G3M
+          - label: Linux arm64
+            runs_on: ubuntu-24.04-arm
+            architecture: arm64
+            artifact_name: G3M-Linux-arm64
+            g3mtool_runtime: linux-arm64
             g3mtool_dir: src/assets/bin/g3mtool_linux
             startup_target: archive_content/G3M
           - label: macOS x64
             runs_on: macos-15-intel
+            architecture: x64
             artifact_name: G3M-macOS-x86_64
             g3mtool_runtime: osx-x64
             g3mtool_dir: src/assets/bin/g3mtool_macos
             startup_target: G3M.app/Contents/MacOS/G3M
           - label: macOS arm64
             runs_on: macos-15
+            architecture: arm64
             artifact_name: G3M-macOS-arm64
             g3mtool_runtime: osx-arm64
             g3mtool_dir: src/assets/bin/g3mtool_macos
             startup_target: G3M.app/Contents/MacOS/G3M
-          - label: Windows
+          - label: Windows x64
             runs_on: windows-latest
-            artifact_name: G3M-Windows
+            architecture: x64
+            artifact_name: G3M-Windows-x86_64
             g3mtool_runtime: win-x64
             g3mtool_dir: src/assets/bin/g3mtool_windows
             startup_target: G3M.exe
+            installer_architecture: x64compatible
+            installer_architecture_name: x86_64
+          - label: Windows arm64
+            runs_on: windows-11-arm
+            architecture: arm64
+            artifact_name: G3M-Windows-arm64
+            g3mtool_runtime: win-arm64
+            g3mtool_dir: src/assets/bin/g3mtool_windows
+            startup_target: G3M.exe
+            installer_architecture: arm64
+            installer_architecture_name: arm64
     steps:
       - uses: actions/checkout@v7
 
@@ -89,9 +123,13 @@ jobs:
         shell: pwsh
         run: |
           switch ('${{ matrix.label }}') {
-            'Linux' {
-              $archiveName = "${{ github.event.inputs.archive_name_linux }}"
-              if (-not $archiveName) { $archiveName = "G3M-Linux-${{ env.RELEASE_VERSION }}" }
+            'Linux x64' {
+              $archiveName = "${{ github.event.inputs.archive_name_linux_x64 }}"
+              if (-not $archiveName) { $archiveName = "G3M-Linux-x86_64-${{ env.RELEASE_VERSION }}" }
+            }
+            'Linux arm64' {
+              $archiveName = "${{ github.event.inputs.archive_name_linux_arm64 }}"
+              if (-not $archiveName) { $archiveName = "G3M-Linux-arm64-${{ env.RELEASE_VERSION }}" }
             }
             'macOS x64' {
               $archiveName = "${{ github.event.inputs.archive_name_macos_x64 }}"
@@ -101,11 +139,18 @@ jobs:
               $archiveName = "${{ github.event.inputs.archive_name_macos_arm64 }}"
               if (-not $archiveName) { $archiveName = "G3M-macOS-arm64-${{ env.RELEASE_VERSION }}" }
             }
-            'Windows' {
-              $archiveName = "${{ github.event.inputs.archive_name_windows }}"
-              if (-not $archiveName) { $archiveName = "G3M-Windows-${{ env.RELEASE_VERSION }}" }
-              $setupName = "${{ github.event.inputs.archive_name_windows_setup }}"
-              if (-not $setupName) { $setupName = "G3M-Windows-Setup-${{ env.RELEASE_VERSION }}" }
+            'Windows x64' {
+              $archiveName = "${{ github.event.inputs.archive_name_windows_x64 }}"
+              if (-not $archiveName) { $archiveName = "G3M-Windows-x86_64-${{ env.RELEASE_VERSION }}" }
+              $setupName = "${{ github.event.inputs.archive_name_windows_x64_setup }}"
+              if (-not $setupName) { $setupName = "G3M-Windows-x86_64-Setup-${{ env.RELEASE_VERSION }}" }
+              "setup_archive_path=$($setupName).zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            }
+            'Windows arm64' {
+              $archiveName = "${{ github.event.inputs.archive_name_windows_arm64 }}"
+              if (-not $archiveName) { $archiveName = "G3M-Windows-arm64-${{ env.RELEASE_VERSION }}" }
+              $setupName = "${{ github.event.inputs.archive_name_windows_arm64_setup }}"
+              if (-not $setupName) { $setupName = "G3M-Windows-arm64-Setup-${{ env.RELEASE_VERSION }}" }
               "setup_archive_path=$($setupName).zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             }
           }
@@ -125,6 +170,7 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.architecture }}
           cache: pip
           cache-dependency-path: pyproject.toml
 
@@ -260,7 +306,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" builds/G3MWindowsInstaller.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            /DAppArchitecture=${{ matrix.installer_architecture }} `
+            /DAppArchitectureName=${{ matrix.installer_architecture_name }} `
+            builds/G3MWindowsInstaller.iss
 
       - name: Create archive for setup exe
         if: runner.os == 'Windows'
@@ -273,7 +322,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: runner.os == 'Windows'
         with:
-          name: G3M-Windows-Setup
+          name: ${{ matrix.artifact_name }}-Setup
           path: ${{ steps.set_names.outputs.setup_archive_path }}
 
   release:

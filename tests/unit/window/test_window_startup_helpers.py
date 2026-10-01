@@ -122,10 +122,30 @@ def test_trigger_initial_mods_refresh_builds_callbacks():
         game_launch.update_button_state.assert_called_once()
 
 
-def test_mod_scan_error_ignores_broken_status_feedback():
-    """Checks scan failure still re-enables the window if status UI is gone."""
+def test_mod_scan_callback_delegates_cache_conversion_to_mod_service():
+    scan_cache = {"mod": {"id": "mod"}}
+    mod_service = SimpleNamespace(
+        _on_scan_completed=Mock(),
+        load_local_mods=Mock(),
+    )
     window = SimpleNamespace(
-        mod_service=SimpleNamespace(load_local_mods=Mock(side_effect=RuntimeError("scan failed"))),
+        mod_service=mod_service,
+        app_state=SimpleNamespace(local_config={"chapter_mode_enabled": False}),
+        _load_used_mods_debounce=SimpleNamespace(call=Mock()),
+        used_mods_service=SimpleNamespace(load_used_mods_state=Mock()),
+    )
+
+    with patch("app.window.startup.trigger_initial_mods_refresh") as refresh:
+        on_mod_scan_finished(window, scan_cache)
+
+    mod_service._on_scan_completed.assert_called_once_with(scan_cache)
+    mod_service.load_local_mods.assert_called_once()
+    refresh.assert_called_once_with(window, saved_chapter_mode=False)
+
+
+def test_mod_scan_error_ignores_broken_status_feedback():
+    window = SimpleNamespace(
+        mod_service=SimpleNamespace(_on_scan_completed=Mock(side_effect=RuntimeError("scan failed"))),
         feedback_service=SimpleNamespace(
             update_status=Mock(side_effect=RuntimeError("status deleted"))
         ),

@@ -17,6 +17,8 @@ from ui.common.styling import clear_layout_widgets, show_empty_message_in_layout
 from ui.dialogs.mod.priority_steps_dialog import ModPriorityStepsDialog
 from ui.utils.thread_lifetime import ManagedQThread, retire_qthread
 from ui.widgets.mod.installed_mod_widget import InstalledModWidget
+from utils.mod.config import MOD_CONFIG_VERSION
+from utils.mod.relations import analyze_mod_relations
 from utils.mod.utils import get_mod_id
 from utils.native_integration import (
     get_save_file_name,
@@ -232,7 +234,7 @@ class LibraryDisplayController:
             tab_mods = [
                 mod
                 for mod in mods_list
-                if hasattr(mod, "get_chapter_data") and mod.get_chapter_data(tab.tab_id)
+                if mod.supports_section(tab.tab_id)
             ]
             if tab_mods:
                 chapter_mods[tab.tab_id] = tab_mods
@@ -536,6 +538,7 @@ class LibraryDisplayController:
         selected_chapter_id = (
             self.app_state.selected_chapter_id if is_chapter_mode else None
         )
+        relation_issues = self._operation_profile_relation_issues()
         for i in range(self.app.installed_mods_layout.count() - 1):
             item = self.app.installed_mods_layout.itemAt(i)
             if item:
@@ -553,6 +556,73 @@ class LibraryDisplayController:
                             widget.mod_data, check_chapter_id
                         )
                     widget.set_active(is_used)
+                    mod_id = get_mod_id(widget.mod_data)
+                    issue = (
+                        relation_issues.get(mod_id)
+                        if isinstance(mod_id, str)
+                        else None
+                    )
+                    widget.set_operation_issue(*(issue or (None, "")))
+
+    def _operation_profile_relation_issues(self) -> dict[str, tuple[str, str]]:
+        """Return only active-profile relation issues; never inspect archive contents here."""
+        try:
+            selections = self.used_mods_service.get_active_mod_selections()
+            steps_by_scope = self.used_mods_service.get_active_mod_steps()
+        except Exception:
+            return {}
+        active_ids = {
+            mod_id
+            for mods in selections.values()
+            if isinstance(mods, list)
+            for mod in mods
+            if isinstance((mod_id := get_mod_id(mod)), str) and mod_id
+        }
+        configs: dict[str, dict[str, object]] = {}
+        for mod_id in active_ids:
+            try:
+                config = self.mod_service.get_mod_config(mod_id)
+            except Exception as error:
+                logger.debug("Could not read active mod config %s: %s", mod_id, error)
+                continue
+            if isinstance(config, dict) and config.get("config_version") == MOD_CONFIG_VERSION:
+                configs[mod_id] = config
+        if not configs:
+            return {}
+        for mod in getattr(self.app_state, "all_mods", ()) or ():
+            mod_id = get_mod_id(mod)
+            if isinstance(mod_id, str) and mod_id:
+                configs.setdefault(mod_id, {})
+        ranks = {
+            "dependency_cycle": 0,
+            "dependency_missing": 1,
+            "dependency_inactive": 2,
+            "dependency_relation_unsatisfied": 3,
+            "conflict_active": 4,
+        }
+        issues: dict[str, tuple[str, str]] = {}
+
+        def record(mod_id: str, code: str, related_id: str) -> None:
+            current = issues.get(mod_id)
+            if current is None or ranks.get(code, 99) < ranks.get(current[0], 99):
+                issues[mod_id] = (code, related_id)
+
+        for steps in steps_by_scope.values():
+            profile_steps: tuple[tuple[str, ...], ...] = tuple(
+                tuple(
+                    mod_id
+                    for mod in row
+                    if isinstance((mod_id := get_mod_id(mod)), str) and mod_id
+                )
+                for row in steps
+                if isinstance(row, list) and row
+            )
+            for finding in analyze_mod_relations(configs, profile_steps):
+                if finding.mod_id in active_ids:
+                    record(finding.mod_id, finding.code, finding.related_id)
+                if finding.code == "conflict_active" and finding.related_id in active_ids:
+                    record(finding.related_id, finding.code, finding.mod_id)
+        return issues
 
     def on_mod_clicked(self, mod_data):
         target_widget = None
@@ -612,7 +682,16 @@ class LibraryDisplayController:
             if chapter_id is not None
             else False
         )
-        summary.show_mod(mod_data, mod_folder=mod_folder, is_active=is_active)
+        summary.show_mod(
+            mod_data,
+            mod_folder=mod_folder,
+            is_active=is_active,
+            relation_issue=(
+                self._operation_profile_relation_issues().get(key)
+                if isinstance(key, str)
+                else None
+            ),
+        )
 
     def _get_selected_widget(self):
         for i in range(self.app.installed_mods_layout.count() - 1):
@@ -754,10 +833,14 @@ class LibraryDisplayController:
                 return
             mod_name = getattr(mod_data, "name", "") or "Mod"
 
-            from utils.mod.readme_utils import find_mod_readme_files
+            from utils.mod.readme_utils import (
+                find_mod_readme_files,
+                find_mod_unlisted_readme_files,
+            )
 
-            readme_files = find_mod_readme_files(mod_folder)
-            if not readme_files:
+            readme_files = find_mod_readme_files(mod_folder, include_unlisted=False)
+            unlisted_files = find_mod_unlisted_readme_files(mod_folder)
+            if not readme_files and not unlisted_files:
                 self._safe_information(
                     tr("dialogs.info"),
                     tr("dialogs.no_readme_files", mod_name=mod_name),
@@ -769,6 +852,7 @@ class LibraryDisplayController:
                 self.app_state,
                 mod_name,
                 readme_files,
+                unlisted_files,
                 parent=self.app,
             )
             dialog.exec()
@@ -1060,6 +1144,16 @@ class LibraryDisplayController:
                 self.app,
                 xdelta_modpack=xdelta_modpack,
             )
+            from services.mod_operation_support import (
+                confirm_direct_operation_path_details,
+            )
+
+            if not confirm_direct_operation_path_details(
+                self.feedback_service,
+                self.app_state.local_config,
+                thread.direct_operation_path_details(),
+            ):
+                return
             thread.progress_update.connect(self._on_modpack_progress)
             thread.status_update.connect(self._on_modpack_status)
             thread.warning_confirmation_needed.connect(
@@ -1075,7 +1169,6 @@ class LibraryDisplayController:
             self.app_state.action_button_text = tr("ui.cancel_button")
             self.app_state.action_button_enabled = True
             self._modpack_thread = thread
-            self._modpack_dir = modpack_dir
             thread.start()
         except Exception as e:
             logger.error(f"Error creating modpack: {e}", exc_info=True)
@@ -1139,7 +1232,6 @@ class LibraryDisplayController:
             and (thread.isInterruptionRequested() or getattr(thread, "_cancelled", False))
         )
         self._modpack_thread = None
-        self._modpack_dir = None
         self.app_state.is_patching = False
         self.app_state.progress_bar_visible = False
         self.app_state.action_button_text = tr("ui.launch_button")

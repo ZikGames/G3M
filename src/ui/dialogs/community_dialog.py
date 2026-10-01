@@ -23,9 +23,11 @@ from PyQt6.QtWidgets import (
 )
 
 from models.game_modes import get_search_game_entries
+from models.plugin_models import PluginCommunityFeed
 from services.gamebanana_rss_service import (
     GameBananaFeedItem,
     fetch_gamebanana_rss,
+    fetch_rss_feed,
     merge_gamebanana_feeds,
 )
 from services.localization_service import tr
@@ -49,17 +51,35 @@ class _CommunityFeedWorker(ManagedQThread):
     failed = pyqtSignal()
     progress = pyqtSignal(int, int)
 
-    def __init__(self, app_state, games: list[_FeedGame], feed: str) -> None:
+    def __init__(
+        self,
+        app_state,
+        games: list[_FeedGame],
+        feed: str,
+        plugin_feed: PluginCommunityFeed | None = None,
+    ) -> None:
         super().__init__()
         self._app_state = app_state
         self._games = games
         self._feed = feed
+        self._plugin_feed = plugin_feed
 
     def run(self) -> None:
         feeds: list[list[GameBananaFeedItem]] = []
         errors: list[str] = []
         try:
             session = get_session(self._app_state)
+            if self._plugin_feed is not None:
+                items = fetch_rss_feed(
+                    session,
+                    self._plugin_feed.url,
+                    feed_id=self._plugin_feed.id,
+                    feed_name=self._plugin_feed.label,
+                )
+                if not self.isInterruptionRequested():
+                    self.progress.emit(1, 1)
+                    self.loaded.emit((items, 0))
+                return
             for index, game in enumerate(self._games, start=1):
                 if self.isInterruptionRequested():
                     return
@@ -170,6 +190,12 @@ class CommunityDialog(QDialog):
     def __init__(self, parent, app_state) -> None:
         super().__init__(parent)
         self._app_state = app_state
+        runtime_service = getattr(parent, "plugin_runtime_service", None)
+        get_feeds = getattr(runtime_service, "get_community_feeds", None)
+        plugin_feeds = get_feeds() if callable(get_feeds) else []
+        self._plugin_feeds = (
+            plugin_feeds if isinstance(plugin_feeds, (list, tuple)) else []
+        )
         self._worker: _CommunityFeedWorker | None = None
         self._loaded_once = False
         self._cards: list[_FeedCard] = []
@@ -199,6 +225,8 @@ class CommunityDialog(QDialog):
         self.feed_label.setBuddy(self.feed_combo)
         self.feed_combo.addItem("", "New")
         self.feed_combo.addItem("", "Featured")
+        for feed in self._plugin_feeds:
+            self.feed_combo.addItem(feed.label, feed)
         self.refresh_button = QPushButton()
         self.game_combo.currentIndexChanged.connect(self._reload_if_shown)
         self.feed_combo.currentIndexChanged.connect(self._reload_if_shown)
@@ -261,20 +289,32 @@ class CommunityDialog(QDialog):
         )
 
     def _reload_if_shown(self) -> None:
+        self.game_combo.setEnabled(self._selected_plugin_feed() is None)
         if self._loaded_once:
             self.reload(use_cache=True)
 
+    def _selected_plugin_feed(self) -> PluginCommunityFeed | None:
+        selected = self.feed_combo.currentData()
+        return selected if isinstance(selected, PluginCommunityFeed) else None
+
+    def _cache_key(self) -> tuple[str, tuple[int, ...]]:
+        plugin_feed = self._selected_plugin_feed()
+        if plugin_feed is not None:
+            return plugin_feed.id, ()
+        return (
+            str(self.feed_combo.currentData()),
+            tuple(game.gamebanana_id for game in self._selected_games()),
+        )
+
     def reload(self, *, use_cache: bool = False) -> None:
+        plugin_feed = self._selected_plugin_feed()
         games = self._selected_games()
         self._clear_cards()
         self._stop_worker()
-        if not games:
+        if plugin_feed is None and not games:
             self.status_label.setText(tr("community_feed.no_games"))
             return
-        cache_key = (
-            str(self.feed_combo.currentData()),
-            tuple(game.gamebanana_id for game in games),
-        )
+        cache_key = self._cache_key()
         cached = self._feed_cache.get(cache_key)
         if (
             use_cache
@@ -283,9 +323,12 @@ class CommunityDialog(QDialog):
         ):
             self._display_items(cached[1])
             return
-        self._set_loading(0, len(games))
+        self._set_loading(0, 1 if plugin_feed is not None else len(games))
         worker = _CommunityFeedWorker(
-            self._app_state, games, str(self.feed_combo.currentData())
+            self._app_state,
+            games,
+            str(self.feed_combo.currentData()),
+            plugin_feed,
         )
         self._worker = worker
         worker.loaded.connect(self._on_loaded)
@@ -299,11 +342,7 @@ class CommunityDialog(QDialog):
         if worker is not self._worker:
             return
         items, failed_count = result
-        games = self._selected_games()
-        cache_key = (
-            str(self.feed_combo.currentData()),
-            tuple(game.gamebanana_id for game in games),
-        )
+        cache_key = self._cache_key()
         if not failed_count:
             self._feed_cache[cache_key] = (time.monotonic(), items)
         self._display_items(items, failed_count=failed_count)

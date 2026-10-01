@@ -1,14 +1,55 @@
+import json
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QDialog, QScrollArea
+from PyQt6.QtWidgets import QDialog, QScrollArea, QWidget
 
 from models.game_version_models import GameVersionRecord
 from ui.dialogs.game.create_version_dialog import CreateVersionDialog
-from ui.dialogs.game.versions_dialog import _VersionRecordWidget
+from ui.dialogs.game.versions_dialog import GameVersionsDialog, _VersionRecordWidget
 from ui.dialogs.mod.versions_dialog import _VersionItemWidget
+
+
+def test_game_snapshot_resolves_selected_profile_and_patch_steps(qapp, app_state, tmp_path):
+    profile_root = tmp_path / "Other"
+    data = {
+        "selected_game_type": "undertale",
+        "used_mods_undertale": {"undertale": ["alpha", "beta", "gamma"]},
+        "mod_steps_undertale": {"undertale": [["beta", "alpha"], ["gamma"]]},
+    }
+    for mod_id in ("alpha", "beta", "gamma"):
+        folder = profile_root / mod_id
+        folder.mkdir(parents=True)
+        (folder / "mod_config.json").write_text(json.dumps({
+            "config_version": "2.0.0", "id": mod_id, "name": mod_id,
+            "version": "1.0.0", "authors": [], "game": "undertale", "files": [],
+        }), encoding="utf-8")
+    parent = QWidget()
+    parent.feedback_service = Mock()
+    parent.settings_service = Mock()
+    manager = Mock()
+    manager.records_for_game.return_value = []
+    profile_service = SimpleNamespace(_read_profile=lambda _name: data, _profile_dir=lambda _name: profile_root)
+    app_state.local_config = {"active_profile": "Default", "merge_code": True}
+    dialog = GameVersionsDialog(manager, app_state, parent=parent)
+
+    selections, state, mods = dialog._resolve_profile_mods("Other", "undertale", profile_service)
+
+    assert [[entry["id"] for entry in step] for step in selections["undertale"]] == [["beta", "alpha"], ["gamma"]]
+    assert state.game_mode.game_id == "undertale"
+    assert state.local_config["active_profile"] == "Other"
+    assert state.local_config["merge_code"] is True
+    assert mods.get_mod_folder_path("alpha") == str(profile_root / "alpha")
+    assert app_state.local_config == {"active_profile": "Default", "merge_code": True}
+    data["used_mods_undertale"]["undertale"].append("missing")
+    with pytest.raises(ValueError, match="Selected mod is unavailable"):
+        dialog._resolve_profile_mods("Other", "undertale", profile_service)
+    data["used_mods_undertale"]["undertale"] = [{}]
+    with pytest.raises(ValueError, match="Invalid mod selections"):
+        dialog._resolve_profile_mods("Other", "undertale", profile_service)
 
 
 def test_create_version_requires_name_and_preserves_profile(qtbot, app_state):

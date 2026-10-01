@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -22,18 +23,25 @@ from controllers.shortcut_controller import (
     _validate_shortcut_prerequisites,
     _write_shortcut_file,
 )
-from models.execution_plan import PatchPlan
 from services.game_runner import (
-    _execute_patch_plan,
+    _execute_operation_plan,
     _find_mod_source_dir,
     _launch_game,
+    _legacy_operation_is_selected,
     _parse_shortcut_arg,
+    _restore_operation_session,
+    _restore_shortcut_state,
+    _shortcut_legacy_sections,
+    _shortcut_merge_steps,
+    _shortcut_mod_ids,
     _wait_for_game_exit,
+    run_shortcut,
 )
 from services.plugins.shortcut_service import (
     ShortcutPluginContext,
     execute_shortcut_plugin_hook,
 )
+from utils.mod.archive import ArchiveVirtualPath
 
 
 @pytest.fixture
@@ -95,7 +103,15 @@ def shortcut_temp_dir():
 def mod_on_disk(shortcut_temp_dir):
     mod_dir = os.path.join(shortcut_temp_dir, "profiles", "Default", "test_mod_001")
     os.makedirs(mod_dir, exist_ok=True)
-    config = {"id": "test_mod_001", "name": "Test Mod", "game": "deltarune"}
+    config = {
+        "config_version": "2.0.0",
+        "id": "test_mod_001",
+        "name": "Test Mod",
+        "version": "1.0.0",
+        "authors": [],
+        "game": "deltarune",
+        "files": [],
+    }
     with open(os.path.join(mod_dir, "mod_config.json"), "w", encoding="utf-8") as f:
         json.dump(config, f)
     chapter_dir = os.path.join(mod_dir, "chapter_2")
@@ -108,7 +124,7 @@ class TestParseShortcutArg:
 
     def test_parse_base64(self):
         """Checks that parsing base64."""
-        cfg = {"game_id": "deltarune", "chapter_mods": {"deltarune_2": "gb_mod_123"}}
+        cfg = {"game_id": "deltarune", "mod_ids": ["gb_mod_123"]}
         b64 = base64.b64encode(json.dumps(cfg).encode()).decode()
         result = _parse_shortcut_arg(b64)
         assert result == cfg
@@ -121,7 +137,7 @@ class TestParseShortcutArg:
 
     def test_parse_file_path(self, shortcut_temp_dir):
         """Checks that parsing file path."""
-        cfg = {"game_id": "deltarune", "chapter_mods": {"deltarune_2": "test"}}
+        cfg = {"game_id": "deltarune", "mod_ids": ["test"]}
         path = os.path.join(shortcut_temp_dir, "cfg.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cfg, f)
@@ -135,6 +151,254 @@ class TestParseShortcutArg:
 
 
 class TestShortcutLaunch:
+    def test_reads_mod_ids_from_legacy_shortcut_configs(self):
+        assert _shortcut_mod_ids(
+            {
+                "launch_plan": {
+                    "patch_plan": {
+                        "sections": {
+                            "chapter_2": [["chapter-two"]],
+                            "chapter_1": [["base"], ["addon"]],
+                        }
+                    }
+                }
+            }
+        ) == ("base", "addon", "chapter-two")
+        assert _shortcut_mod_ids(
+            {"chapter_mods": {"chapter_2": "chapter-two", "chapter_1": "base"}}
+        ) == ("base", "chapter-two")
+        assert _shortcut_legacy_sections(
+            {"chapter_mods": {"chapter_2": "chapter-two", "chapter_1": "base"}}
+        ) == {"chapter_2": ("chapter-two",), "chapter_1": ("base",)}
+
+    def test_legacy_shortcut_filters_archive_targets_by_chapter(self, tmp_path):
+        game_path = tmp_path / "game"
+        operation = SimpleNamespace(
+            mod_id="chapter-mod",
+            target=ArchiveVirtualPath(
+                game_path / "chapter2_windows" / "data.zip",
+                "data.win",
+                False,
+                "zip",
+            ),
+        )
+
+        assert not _legacy_operation_is_selected(
+            operation, {"chapter-mod": {"deltarune_1"}}, game_path
+        )
+        assert _legacy_operation_is_selected(
+            operation, {"chapter-mod": {"deltarune_2"}}, game_path
+        )
+
+    @pytest.mark.parametrize("missing_unselected_source", [False, True])
+    @pytest.mark.parametrize("missing_selected_source", [False, True])
+    @pytest.mark.parametrize("current_format", [False, True])
+    def test_legacy_shortcut_only_applies_selected_chapter_operations(self, monkeypatch, tmp_path, missing_unselected_source, missing_selected_source, current_format):
+        monkeypatch.setattr("services.game_runner.platform.system", lambda: "Windows")
+        mod_root = tmp_path / "mod"
+        mod_root.mkdir()
+        if not missing_selected_source:
+            (mod_root / "one.xdelta").write_text("one", encoding="utf-8")
+        if not missing_unselected_source:
+            (mod_root / "two.xdelta").write_text("two", encoding="utf-8")
+        (mod_root / "mod_config.json").write_text(
+            json.dumps(
+                {
+                    "config_version": "2.0.0",
+                    "id": "chapter-mod",
+                    "name": "Chapter mod",
+                    "version": "1.0.0",
+                    "authors": [],
+                    "game": "deltarune",
+                    "files": [
+                        {
+                            "source": "${mod_path}/one.xdelta",
+                            "target": "${game_path}/chapter1_windows/data.win",
+                            "type": "patch",
+                        },
+                        {
+                            "source": "${mod_path}/two.xdelta",
+                            "target": "${game_path}/chapter2_windows/data.win",
+                            "type": "patch",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        game_path = tmp_path / "game"
+        game_path.mkdir()
+        for chapter in ("chapter1_windows", "chapter2_windows"):
+            chapter_path = game_path / chapter
+            chapter_path.mkdir()
+            (chapter_path / "data.win").write_bytes(b"base")
+        captured = {}
+
+        def execute(_executor, plan):
+            captured["plan"] = plan
+            captured["merger"] = _executor.merger
+            return MagicMock()
+
+        game = SimpleNamespace(
+            game_id="deltarune",
+            executable_type="deltarune",
+            get_data_path=lambda _config: None,
+            get_custom_exec_config_key=lambda: "",
+        )
+        monkeypatch.setattr("services.game_runner._find_mod_source_dir", lambda *_args: str(mod_root))
+        monkeypatch.setattr("services.game_runner.get_user_data_root", lambda: str(tmp_path))
+        monkeypatch.setattr("services.mod_operation_executor.ModOperationExecutor.execute", execute)
+
+        if current_format:
+            state = SimpleNamespace(
+                current_mode="chapter",
+                game_mode=SimpleNamespace(game_id="deltarune", steam_app_id=None),
+                local_config={},
+            )
+            config = _build_shortcut_config(
+                state, ["chapter-mod"],
+                section_mod_objects={"deltarune_1": [{"id": "chapter-mod"}], "deltarune_2": []},
+            )
+            selections = _shortcut_legacy_sections(config)
+            assert config["section_mod_ids"] == {"deltarune_1": ["chapter-mod"], "deltarune_2": []}
+        else:
+            selections = {"chapter_1": ("chapter-mod",)}
+        journal = _execute_operation_plan(
+            ("chapter-mod",),
+            str(game_path),
+            game,
+            {},
+            legacy_sections=selections,
+        )
+
+        if missing_selected_source:
+            assert journal is None
+            assert "plan" not in captured
+            return
+        assert [operation.target for operation in captured["plan"].operations] == [
+            game_path / "chapter1_windows" / "data.win"
+        ]
+        assert captured["merger"] is not None
+        assert not captured["plan"].has_errors
+
+    @pytest.mark.parametrize("sections", [{}, {"chapter_1": ["other-mod"]}, {"unknown": ["selected"]}])
+    def test_current_shortcut_rejects_invalid_section_assignments(self, sections):
+        with pytest.raises(ValueError):
+            _shortcut_legacy_sections({"game_id": "deltarune", "mod_ids": ["selected"], "section_mod_ids": sections})
+
+    def test_keeps_saved_merge_steps(self):
+        assert _shortcut_merge_steps(
+            {"merge_steps": [["base", "addon"]]}, ("base", "addon")
+        ) == (("base", "addon"),)
+
+    def test_runner_passes_saved_merge_steps_to_operations(self, monkeypatch, tmp_path):
+        game = SimpleNamespace(
+            get_game_path=lambda _config: str(tmp_path),
+            get_data_path=lambda _config: str(tmp_path),
+        )
+        journal = MagicMock()
+        execute = MagicMock(return_value=journal)
+        monkeypatch.setattr("services.game_runner._configure_logging", lambda: None)
+        monkeypatch.setattr("services.game_runner.get_game", lambda _game_id: game)
+        monkeypatch.setattr("services.game_runner._load_config", lambda: {"active_profile": "Other"})
+        monkeypatch.setattr(
+            "services.game_runner.get_profile_mods_root", lambda _profile: str(tmp_path)
+        )
+        monkeypatch.setattr(
+            "services.mod_config_migration_service.migrate_managed_mods",
+            lambda _root: SimpleNamespace(issues=()),
+        )
+        monkeypatch.setattr("services.game_runner.execute_shortcut_plugin_hook", lambda *_args: True)
+        monkeypatch.setattr("services.game_runner._execute_operation_plan", execute)
+        monkeypatch.setattr("services.game_runner._launch_game", lambda *_args: None)
+        monkeypatch.setattr("services.game_runner._restore_operation_session", lambda _journal: None)
+
+        run_shortcut(
+            json.dumps(
+                {
+                    "game_id": "deltarune",
+                    "active_profile": "Captured",
+                    "mod_ids": ["base", "addon"],
+                    "merge_steps": [["base", "addon"]],
+                    "section_mod_ids": {"deltarune_1": ["base", "addon"]},
+                }
+            )
+        )
+
+        assert execute.call_args.kwargs["merge_steps"] == (("base", "addon"),)
+        assert execute.call_args.kwargs["legacy_sections"] == {"deltarune_1": ("base", "addon")}
+        assert execute.call_args.args[3]["active_profile"] == "Captured"
+
+    def test_runner_restores_plugin_state_when_plan_fails(self, monkeypatch, tmp_path):
+        game = SimpleNamespace(get_game_path=lambda _config: str(tmp_path))
+        hooks = []
+        monkeypatch.setattr("services.game_runner._configure_logging", lambda: None)
+        monkeypatch.setattr("services.game_runner.get_game", lambda _game_id: game)
+        monkeypatch.setattr("services.game_runner._load_config", lambda: {})
+        monkeypatch.setattr(
+            "services.game_runner.get_profile_mods_root", lambda _profile: str(tmp_path)
+        )
+        monkeypatch.setattr(
+            "services.mod_config_migration_service.migrate_managed_mods",
+            lambda _root: SimpleNamespace(issues=()),
+        )
+        monkeypatch.setattr(
+            "services.game_runner.execute_shortcut_plugin_hook",
+            lambda _runtime, hook, *_args: hooks.append(hook) or True,
+        )
+        monkeypatch.setattr("services.game_runner._execute_operation_plan", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr("services.game_runner._restore_operation_session", lambda _journal: hooks.append("restore"))
+
+        with pytest.raises(SystemExit):
+            run_shortcut(json.dumps({"game_id": "deltarune", "mod_ids": ["base"]}))
+
+        assert hooks == [
+            "before_mod_apply_shortcut",
+            "before_restore_after_exit_shortcut",
+            "restore",
+            "after_restore_after_exit_shortcut",
+        ]
+
+    def test_runner_restores_state_when_checkpoint_fails(self, monkeypatch, tmp_path):
+        game = SimpleNamespace(get_game_path=lambda _config: str(tmp_path))
+        journal = MagicMock()
+        journal.checkpoint.side_effect = OSError("journal write failed")
+        hooks = []
+        monkeypatch.setattr("services.game_runner._configure_logging", lambda: None)
+        monkeypatch.setattr("services.game_runner.get_game", lambda _game_id: game)
+        monkeypatch.setattr("services.game_runner._load_config", lambda: {})
+        monkeypatch.setattr(
+            "services.game_runner.get_profile_mods_root", lambda _profile: str(tmp_path)
+        )
+        monkeypatch.setattr(
+            "services.mod_config_migration_service.migrate_managed_mods",
+            lambda _root: SimpleNamespace(issues=()),
+        )
+        monkeypatch.setattr(
+            "services.game_runner.execute_shortcut_plugin_hook",
+            lambda _runtime, hook, *_args: hooks.append(hook) or True,
+        )
+        monkeypatch.setattr(
+            "services.game_runner._execute_operation_plan",
+            lambda *_args, **_kwargs: journal,
+        )
+        monkeypatch.setattr(
+            "services.game_runner._restore_operation_session",
+            lambda _journal: hooks.append("restore"),
+        )
+
+        with pytest.raises(SystemExit):
+            run_shortcut(json.dumps({"game_id": "deltarune", "mod_ids": ["base"]}))
+
+        journal.checkpoint.assert_called_once_with()
+        assert hooks == [
+            "before_mod_apply_shortcut",
+            "after_mod_apply_before_launch_shortcut",
+            "before_restore_after_exit_shortcut",
+            "restore",
+            "after_restore_after_exit_shortcut",
+        ]
+
     def test_wait_for_game_exit_does_not_stop_after_ten_minutes(self):
         tracker = MagicMock()
         tracker.refresh.side_effect = [True] * 301 + [False] * 4
@@ -283,7 +547,7 @@ class TestShortcutLaunch:
 
     def test_base64_roundtrip_unicode(self):
         """Checks that base64ing roundtrip unicode."""
-        cfg = {"game_id": "deltarune", "chapter_mods": {"deltarune_2": "мод_тест"}}
+        cfg = {"game_id": "deltarune", "mod_ids": ["мод_тест"]}
         b64 = base64.b64encode(
             json.dumps(cfg, ensure_ascii=False).encode("utf-8")
         ).decode("ascii")
@@ -319,14 +583,14 @@ class TestFindModSourceDir:
             result = _find_mod_source_dir("test_mod_001", {})
             assert result is None
 
-    def test_find_mod_folder_name_fallback(self, shortcut_temp_dir):
-        """Checks that finding mod folder name fallback."""
+    def test_rejects_mod_folder_without_a_current_config(self, shortcut_temp_dir):
+        """A folder name alone never grants a shortcut mod identity."""
         profile_dir = os.path.join(shortcut_temp_dir, "profiles", "Default")
         folder = os.path.join(profile_dir, "my_cool_mod")
         os.makedirs(folder, exist_ok=True)
         with patch(self.PATCH_TARGET, return_value=profile_dir):
             result = _find_mod_source_dir("my_cool_mod", {})
-            assert result == folder
+            assert result is None
 
 
 class TestCollectChapterData:
@@ -338,8 +602,8 @@ class TestCollectChapterData:
         """Checks that chaptering mode all vanilla."""
         result = _collect_section_data(mock_used_mods_service_empty, mock_app_state)
         assert result is not None
-        patch_plan, chapter_objs = result
-        assert not patch_plan.sections
+        mod_ids, chapter_objs = result
+        assert not mod_ids
         assert all(not v for v in chapter_objs.values())
         assert len(chapter_objs) > 1
 
@@ -349,19 +613,21 @@ class TestCollectChapterData:
         """Checks that chaptering mode single mod per chapter."""
         result = _collect_section_data(mock_used_mods_service, mock_app_state)
         assert result is not None
-        patch_plan, _chapter_objs = result
-        for _section, steps in patch_plan.sections:
-            assert steps == (("test_mod_001",),)
+        mod_ids, _chapter_objs = result
+        assert mod_ids == ["test_mod_001"]
 
-    def test_chapter_mode_rejects_multiple_mods_in_one_step(self, mock_app_state):
-        """A shortcut step cannot contain mods that need merging."""
+    def test_chapter_mode_keeps_multiple_mods_in_one_step(self, mock_app_state):
         svc = MagicMock()
         svc.get_mod_steps.return_value = None
         svc.get_used_mods_list.return_value = [
             MagicMock(id="base"),
             MagicMock(id="addon"),
         ]
-        assert _collect_section_data(svc, mock_app_state) is None
+        mod_ids, _, merge_steps = _collect_section_data(
+            svc, mock_app_state, include_merge_steps=True
+        )
+        assert mod_ids == ["base", "addon"]
+        assert merge_steps == [["base", "addon"]]
 
     def test_chapter_mode_allows_multiple_single_mod_steps(self, mock_app_state):
         """Sequential shortcut patching remains available for dependent mods."""
@@ -374,10 +640,8 @@ class TestCollectChapterData:
         result = _collect_section_data(svc, mock_app_state)
 
         assert result is not None
-        patch_plan, _ = result
-        assert all(
-            steps == (("base",), ("addon",)) for _section, steps in patch_plan.sections
-        )
+        mod_ids, _ = result
+        assert mod_ids == ["base", "addon"]
 
     def test_non_chapter_mode_vanilla(
         self, mock_used_mods_service_empty, mock_app_state
@@ -386,8 +650,8 @@ class TestCollectChapterData:
         mock_app_state.current_mode = "full"
         result = _collect_section_data(mock_used_mods_service_empty, mock_app_state)
         assert result is not None
-        patch_plan, chapter_objs = result
-        assert not patch_plan.sections
+        mod_ids, chapter_objs = result
+        assert not mod_ids
         assert len(chapter_objs) == len(mock_app_state.game_mode.tabs)
 
     def test_non_chapter_mode_expands_to_chapters_with_data(self, mock_app_state):
@@ -396,86 +660,221 @@ class TestCollectChapterData:
         mod = MagicMock()
         mod.id = "test_mod_001"
         mod.name = "Test Mod"
-        mod.get_chapter_data = lambda tab_id: tab_id in ("deltarune_1", "deltarune_2")
+        mod.supports_section = lambda tab_id: tab_id in ("deltarune_1", "deltarune_2")
         svc = MagicMock()
         svc.get_used_mods_list.return_value = [mod]
         result = _collect_section_data(svc, mock_app_state)
         assert result is not None
-        patch_plan, _ = result
-        sections = dict(patch_plan.sections)
-        assert sections["deltarune_1"] == (("test_mod_001",),)
-        assert sections["deltarune_2"] == (("test_mod_001",),)
-        assert "deltarune_0" not in sections
-        assert "deltarune_3" not in sections
+        mod_ids, _ = result
+        assert mod_ids == ["test_mod_001"]
 
 
-def test_shortcut_executes_serialized_plan_through_canonical_patcher(
+def test_shortcut_rejects_unresolved_mod_without_legacy_patcher(monkeypatch, game_mode, tmp_path):
+    monkeypatch.setattr("services.game_runner.get_profile_mods_root", lambda _profile: str(tmp_path))
+    assert _execute_operation_plan(("base", "addon"), str(tmp_path), game_mode, {}) is None
+
+
+def test_shortcut_executes_and_restores_a_operation_operation_plan(
     monkeypatch, game_mode, tmp_path
 ):
-    calls = []
+    from utils.mod.config import write_mod_config
 
-    class Patcher:
-        def __init__(self, app_state, mod_service, parent) -> None:
-            del parent
-            self.app_state = app_state
-            self.mod_service = mod_service
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "Operation Mod"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / "replacement.txt").write_text("replacement", encoding="utf-8")
+    write_mod_config(
+        mod_dir / "mod_config.json",
+        {
+            "config_version": "2.0.0",
+            "id": "operation_mod",
+            "name": "Operation Mod",
+            "version": "1.0.0",
+            "authors": ["Author"],
+            "game": "deltarune",
+            "files": [
+                {
+                    "source": "${mod_path}/replacement.txt",
+                    "target": "${game_path}/target.txt",
+                    "type": "overwrite",
+                }
+            ],
+        },
+    )
+    game_path = tmp_path / "game"
+    game_path.mkdir()
+    target = game_path / "target.txt"
+    target.write_text("original", encoding="utf-8")
+    monkeypatch.setattr("services.game_runner.get_profile_mods_root", lambda _profile: str(mods_dir))
+    monkeypatch.setattr("services.game_runner.get_user_data_root", lambda: str(tmp_path))
+    journal = _execute_operation_plan(("operation_mod",), str(game_path), game_mode, {})
 
-        def set_override_game_path(self, path):
-            calls.append(("path", path))
+    assert journal is not None
+    assert target.read_text(encoding="utf-8") == "replacement"
+    retry_journal = _execute_operation_plan(
+        ("operation_mod",), str(game_path), game_mode, {}
+    )
+    assert retry_journal is not None
+    _restore_operation_session(retry_journal)
+    assert target.read_text(encoding="utf-8") == "original"
 
-        def process_patch_plan(self, plan, resolver, is_modpack=False):
-            calls.append(("plan", plan, resolver("base"), is_modpack))
+
+def test_shortcut_requires_explicit_direct_path_approval(
+    monkeypatch, game_mode, tmp_path
+):
+    from utils.mod.config import write_mod_config
+
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "Direct Paths"
+    mod_dir.mkdir(parents=True)
+    source = mod_dir / "replacement.txt"
+    source.write_text("replacement", encoding="utf-8")
+    game_path = tmp_path / "game"
+    game_path.mkdir()
+    target = game_path / "target.txt"
+    target.write_text("original", encoding="utf-8")
+    write_mod_config(
+        mod_dir / "mod_config.json",
+        {
+            "config_version": "2.0.0",
+            "id": "direct_paths",
+            "name": "Direct Paths",
+            "version": "1.0.0",
+            "authors": [],
+            "game": "deltarune",
+            "files": [
+                {
+                    "source": source.as_posix(),
+                    "target": target.as_posix(),
+                    "type": "overwrite",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr("services.game_runner.get_profile_mods_root", lambda _profile: str(mods_dir))
+    monkeypatch.setattr("services.game_runner.get_user_data_root", lambda: str(tmp_path))
+    config = {"warning_preferences": {"skip_all": True}}
+
+    assert _execute_operation_plan(("direct_paths",), str(game_path), game_mode, config) is None
+    assert target.read_text(encoding="utf-8") == "original"
+
+    config["warning_preferences"]["warning_overrides"] = {
+        "direct_absolute_operation_paths": False
+    }
+    journal = _execute_operation_plan(("direct_paths",), str(game_path), game_mode, config)
+
+    assert journal is not None
+    _restore_operation_session(journal)
+
+
+def test_shortcut_uses_xdelta_backend_for_a_operation_patch(monkeypatch, game_mode, tmp_path):
+    from utils.mod.config import write_mod_config
+
+    monkeypatch.setattr("services.game_runner.platform.system", lambda: "Windows")
+
+    class _G3MTool:
+        def is_available(self):
             return True
 
-    monkeypatch.setattr(
-        "services.g3mtool_patching_service.G3MToolPatchingService", Patcher
+        def get_unavailable_reason(self):
+            return "unavailable"
+
+        def xpatch_apply(self, original, patch, output):
+            assert Path(original).read_text(encoding="utf-8") == "original"
+            assert Path(patch).name == "data.xdelta"
+            Path(output).write_text("patched", encoding="utf-8")
+            return 0, "", ""
+
+        def apply_patch(self, *_args):
+            raise AssertionError("xdelta must use xpatch_apply")
+
+    mods_dir = tmp_path / "mods"
+    mod_dir = mods_dir / "Operation Patch"
+    mod_dir.mkdir(parents=True)
+    (mod_dir / "data.xdelta").write_bytes(b"patch")
+    write_mod_config(
+        mod_dir / "mod_config.json",
+        {
+            "config_version": "2.0.0",
+            "id": "operation_patch",
+            "name": "Operation Patch",
+            "version": "1.0.0",
+            "authors": [],
+            "game": "deltarune",
+            "files": [
+                {
+                    "source": "${mod_path}/data.xdelta",
+                    "target": "${game_path}/data.win",
+                    "type": "patch",
+                }
+            ],
+        },
     )
-    monkeypatch.setattr(
-        "services.game_runner._load_installed_mod", lambda mod_id, _cfg: mod_id
+    game_path = tmp_path / "game"
+    game_path.mkdir()
+    target = game_path / "data.win"
+    target.write_text("original", encoding="utf-8")
+    monkeypatch.setattr("services.game_runner.get_profile_mods_root", lambda _profile: str(mods_dir))
+    monkeypatch.setattr("services.game_runner.get_user_data_root", lambda: str(tmp_path))
+    monkeypatch.setattr("adapters.g3mtool_adapter.G3MToolManager", _G3MTool)
+
+    journal = _execute_operation_plan(
+        ("operation_patch",),
+        str(game_path),
+        game_mode,
+        {},
     )
-    monkeypatch.setattr(
-        "services.game_runner.get_user_data_root", lambda: str(tmp_path)
+
+    assert journal is not None
+    assert target.read_text(encoding="utf-8") == "patched"
+    _restore_operation_session(journal)
+    assert target.read_text(encoding="utf-8") == "original"
+
+
+def test_restore_operation_session_uses_the_journal() -> None:
+    journal = MagicMock()
+
+    _restore_operation_session(journal)
+
+    journal.restore.assert_called_once_with()
+
+
+@pytest.mark.parametrize("external_change", [False, True])
+def test_shortcut_plugin_restoration_checkpoints_only_verified_changes(tmp_path, external_change):
+    from services.mod_operation_executor import ModOperationExecutor
+    from utils.mod.operation_plan import ModPathContext, build_mod_operation_plan
+
+    mod_root = tmp_path / "mod"
+    game_root = tmp_path / "game"
+    mod_root.mkdir()
+    game_root.mkdir()
+    target = game_root / "data.win"
+    target.write_bytes(b"original")
+    (mod_root / "data.win").write_bytes(b"deployed")
+    plan = build_mod_operation_plan(
+        {"config_version": "2.0.0", "id": "mod", "name": "Mod", "version": "1.0.0", "authors": [], "game": "deltarune", "files": [
+            {"source": "${mod_path}/data.win", "target": "${game_path}/data.win", "type": "overwrite"},
+        ]},
+        ModPathContext.create(mod_path=mod_root, game_path=game_root, game_data_path=None, user_path=tmp_path, runtime="windows"),
     )
-    plan = PatchPlan.from_dict({"sections": {"deltarune_2": [["base"], ["addon"]]}})
+    journal = ModOperationExecutor(tmp_path / "journal").execute(plan)
+    if external_change:
+        target.write_bytes(b"external")
+    runtime = MagicMock()
+    runtime.has_enabled_hook.return_value = True
 
-    patcher = _execute_patch_plan(plan, str(tmp_path), game_mode, {})
+    def restore_plugin(hook, *_args, **_kwargs):
+        if hook == "before_restore_after_exit_shortcut":
+            target.write_bytes(b"plugin-restored")
+        return [True]
 
-    assert patcher is not None
-    assert calls == [
-        ("path", str(tmp_path)),
-        ("plan", plan, "base", False),
-    ]
+    runtime.execute_hook_with_runtime.side_effect = restore_plugin
+    restored = _restore_shortcut_state(runtime, ShortcutPluginContext({}), {}, journal)
 
-
-def test_execute_patch_plan_restores_before_cleanup_on_failure(monkeypatch, tmp_path):
-    calls = []
-
-    class Patcher:
-        def __init__(self, *_args) -> None:
-            pass
-
-        def set_override_game_path(self, _path):
-            pass
-
-        def process_patch_plan(self, *_args, **_kwargs):
-            return False
-
-        def restore_all_backups(self):
-            calls.append("restore")
-
-        def cleanup(self, *, force=False):
-            calls.append(("cleanup", force))
-
-    monkeypatch.setattr(
-        "services.g3mtool_patching_service.G3MToolPatchingService", Patcher
-    )
-    monkeypatch.setattr(
-        "services.game_runner.get_user_data_root", lambda: str(tmp_path)
-    )
-    plan = PatchPlan.from_dict({"sections": {}})
-
-    assert _execute_patch_plan(plan, str(tmp_path), MagicMock(), {}) is None
-    assert calls == ["restore", ("cleanup", True)]
+    assert restored is (not external_change)
+    assert target.read_bytes() == (b"external" if external_change else b"original")
+    if external_change:
+        runtime.execute_hook_with_runtime.assert_not_called()
 
 
 class TestBuildShortcutConfig:
@@ -483,31 +882,46 @@ class TestBuildShortcutConfig:
 
     def test_basic_config(self, mock_app_state):
         """Checks that basicing config."""
-        patch_plan = PatchPlan.from_dict({"sections": {"deltarune_2": [["test_mod"]]}})
-        cfg = _build_shortcut_config(mock_app_state, patch_plan)
+        mock_app_state.local_config["active_profile"] = "Captured"
+        cfg = _build_shortcut_config(mock_app_state, ["test_mod"])
         assert cfg["game_id"] == "deltarune"
         assert cfg["chapter_mode"] is True
-        assert cfg["chapter_mods"] == {"deltarune_2": "test_mod"}
+        assert cfg["mod_ids"] == ["test_mod"]
+        assert cfg["active_profile"] == "Captured"
         assert "launch_via_steam" in cfg
+
+    def test_config_includes_merge_steps(self, mock_app_state):
+        cfg = _build_shortcut_config(
+            mock_app_state, ["base", "addon"], merge_steps=[["base", "addon"]]
+        )
+
+        assert cfg["merge_steps"] == [["base", "addon"]]
 
     def test_steam_launch(self, mock_app_state):
         """Checks that steaming launch."""
         mock_app_state.local_config["launch_via_steam"] = True
-        cfg = _build_shortcut_config(mock_app_state, PatchPlan())
+        cfg = _build_shortcut_config(mock_app_state, [])
         assert cfg["launch_via_steam"] is True
+
+    def test_steam_launch_is_ignored_without_steam_app_id(self, mock_app_state):
+        mock_app_state.local_config["launch_via_steam"] = True
+        mock_app_state.game_mode.steam_app_id = ""
+
+        cfg = _build_shortcut_config(mock_app_state, [])
+
+        assert cfg["launch_via_steam"] is False
 
     def test_non_chapter_mode(self, mock_app_state):
         """Checks that noning chapter mode."""
         mock_app_state.current_mode = "full"
-        cfg = _build_shortcut_config(mock_app_state, PatchPlan())
+        cfg = _build_shortcut_config(mock_app_state, [])
         assert cfg["chapter_mode"] is False
 
     def test_includes_plugin_state_when_present(self, mock_app_state):
-        patch_plan = PatchPlan.from_dict({"sections": {"deltarune_2": [["test_mod"]]}})
         plugin_context = ShortcutPluginContext({"game_id": "deltarune"})
         plugin_context.set_plugin_state("custom_saves_folders", {"folder": "SOJ"})
         plugin_context.add_summary_line("Save Folder", "SOJ")
-        cfg = _build_shortcut_config(mock_app_state, patch_plan, plugin_context)
+        cfg = _build_shortcut_config(mock_app_state, ["test_mod"], plugin_context)
 
         assert cfg["plugin_states"] == {"custom_saves_folders": {"folder": "SOJ"}}
         assert cfg["plugin_summary"] == [{"label": "Save Folder", "value": "SOJ"}]
@@ -599,7 +1013,7 @@ class TestWriteShortcutFile:
         """Checks that writing creates file."""
         cfg = {
             "game_id": "deltarune",
-            "chapter_mods": {"deltarune_2": "test"},
+            "mod_ids": ["test"],
             "chapter_mode": True,
         }
         filepath = os.path.join(shortcut_temp_dir, f"test{_get_platform_extension()}")
@@ -608,7 +1022,7 @@ class TestWriteShortcutFile:
 
     def test_write_embeds_base64_config(self, shortcut_temp_dir):
         """Checks that writing embeds base64 config."""
-        cfg = {"game_id": "deltarune", "chapter_mods": {"deltarune_2": "test_mod"}}
+        cfg = {"game_id": "deltarune", "mod_ids": ["test_mod"]}
         filepath = os.path.join(shortcut_temp_dir, f"test{_get_platform_extension()}")
         _write_shortcut_file(filepath, cfg)
         with open(filepath, encoding="utf-8") as f:
@@ -649,7 +1063,7 @@ class TestWriteShortcutFile:
         """Checks that configing roundtrip via base64."""
         cfg = {
             "game_id": "deltarune",
-            "chapter_mods": {"deltarune_0": None, "deltarune_2": "gb_mod_12345"},
+            "mod_ids": ["gb_mod_12345"],
             "chapter_mode": True,
             "launch_via_steam": True,
         }
@@ -842,7 +1256,7 @@ class TestShortcutPluginHooks:
 
     def test_execute_shortcut_plugin_hook_returns_false_when_plugin_blocks(self):
         runtime = MagicMock()
-        runtime.execute_hook.return_value = [True, False]
+        runtime.execute_hook_with_runtime.return_value = [True, False]
 
         result = execute_shortcut_plugin_hook(
             runtime,
@@ -851,6 +1265,38 @@ class TestShortcutPluginHooks:
         )
 
         assert result is False
+
+    def test_execute_shortcut_plugin_hook_blocks_on_plugin_exception(self):
+        runtime = MagicMock()
+        runtime.execute_hook_with_runtime.side_effect = OSError("save backup failed")
+        context = ShortcutPluginContext({"game_id": "deltarune"})
+
+        assert not execute_shortcut_plugin_hook(runtime, "before_mod_apply_shortcut", context)
+        runtime.execute_hook_with_runtime.assert_called_once_with(
+            "before_mod_apply_shortcut", None, context, raise_errors=True
+        )
+
+    def test_shortcut_retains_journal_when_plugin_restoration_fails(self):
+        runtime = MagicMock()
+        runtime.execute_hook_with_runtime.return_value = [False]
+        journal = MagicMock()
+
+        assert not _restore_shortcut_state(
+            runtime, ShortcutPluginContext({"game_id": "deltarune"}), {}, journal
+        )
+        journal.restore.assert_not_called()
+        assert runtime.execute_hook_with_runtime.call_count == 1
+
+    def test_shortcut_skips_after_restore_hook_when_journal_restore_fails(self):
+        runtime = MagicMock()
+        runtime.execute_hook_with_runtime.return_value = [True]
+        journal = MagicMock()
+        journal.restore.side_effect = OSError("restore failed")
+
+        assert not _restore_shortcut_state(
+            runtime, ShortcutPluginContext({"game_id": "deltarune"}), {}, journal
+        )
+        assert runtime.execute_hook_with_runtime.call_count == 1
 
     def test_execute_shortcut_plugin_hook_defaults_true_without_runtime(self):
         assert (

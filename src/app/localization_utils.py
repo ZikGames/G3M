@@ -113,11 +113,11 @@ def relocalize_texts(w):
         w.settings_tab_widget.setTabText(2, tr("ui.settings_tab_game"))
         w.settings_tab_widget.setTabText(3, tr("ui.settings_tab_mods_browser"))
         w.settings_tab_widget.setTabText(4, get_settings_library_tab_title(w.app_state))
-        if hasattr(w, "plugins_tab"):
-            plugins_index = w.settings_tab_widget.indexOf(w.plugins_tab)
-            if plugins_index >= 0:
+        if hasattr(w, "catalog_tab"):
+            catalog_index = w.settings_tab_widget.indexOf(w.catalog_tab)
+            if catalog_index >= 0:
                 w.settings_tab_widget.setTabText(
-                    plugins_index, tr("ui.settings_tab_plugins")
+                    catalog_index, tr("ui.settings_tab_catalog")
                 )
     update_settings_library_tab(w)
     if hasattr(w, "_section_headers"):
@@ -204,11 +204,19 @@ def relocalize_texts(w):
         btn.setText(tr("diagnostics.button"))
         btn.setToolTip(tr("diagnostics.tooltip"))
         btn.setAccessibleName(tr("diagnostics.title"))
+    btn = getattr(w, "update_mods_button", None)
+    if btn:
+        btn.setToolTip(tr("mod_updates.tooltip"))
+        if hasattr(w, "game_launch"):
+            w.game_launch.refresh_mod_update_badge()
+    update_dialog = getattr(getattr(w, "game_launch", None), "_mod_update_dialog", None)
+    if update_dialog is not None and hasattr(update_dialog, "relocalize_ui"):
+        update_dialog.relocalize_ui()
     summary = getattr(w, "mod_summary_panel", None)
     if summary and hasattr(summary, "update_labels_text"):
         summary.update_labels_text()
-    if hasattr(w, "plugins_ui") and w.plugins_ui:
-        w.plugins_ui.relocalize_ui()
+    if hasattr(w, "catalog_ui") and w.catalog_ui:
+        w.catalog_ui.relocalize_ui()
     if hasattr(w, "_refresh_localized_status"):
         w._refresh_localized_status()
 

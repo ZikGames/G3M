@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from utils.archive_utils import _ensure_unrar_available, _get_unrar_path
+from utils.mod.archive import _ensure_unrar_available, _get_unrar_path
 
 
 class TestUnrarProvisioning(unittest.TestCase):

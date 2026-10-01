@@ -1,24 +1,29 @@
 {
-    "config_version": "1.0.0",
-    "id": "local_test_mod_multiple_chapters",
-    "name": "Test Mod Multiple Chapters",
-    "version": "1.0.0",
-    "author": "Test Author",
-    "description": "Test mod for multiple chapters - place files in chapter_0/, chapter_1/, chapter_2/",
-    "game": "deltarune",
-    "game_version": "1.0.0",
-    "files": {
-        "deltarune_0": {
-            "description": "Menu modification",
-            "data_file_path": "data.win"
-        },
-        "deltarune_1": {
-            "description": "Chapter 1 modification",
-            "data_file_path": "data.win"
-        },
-        "deltarune_2": {
-            "description": "Chapter 2 modification",
-            "data_file_path": "data.win"
-        }
+  "config_version": "2.0.0",
+  "id": "local_test_mod_multiple_chapters",
+  "name": "Test Mod Multiple Chapters",
+  "version": "1.0.0",
+  "authors": [
+    "Test Author"
+  ],
+  "game": "deltarune",
+  "description": "Test mod for multiple chapters - place files in chapter_0/, chapter_1/, chapter_2/",
+  "game_version": "1.0.0",
+  "files": [
+    {
+      "source": "${mod_path}/data.win",
+      "target": "${game_path}/data.win",
+      "type": "patch"
+    },
+    {
+      "source": "${mod_path}/data.win",
+      "target": "${game_path}/chapter1_windows/data.win",
+      "type": "patch"
+    },
+    {
+      "source": "${mod_path}/data.win",
+      "target": "${game_path}/chapter2_windows/data.win",
+      "type": "patch"
     }
+  ]
 }

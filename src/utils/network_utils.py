@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urljoin, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -23,8 +24,9 @@ from config.config import (
 
 logger = logging.getLogger(__name__)
 
-_session_lock = threading.Lock()
-_shared_session = None
+_thread_local = threading.local()
+_REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+GAMEBANANA_DOWNLOAD_HOSTS = frozenset({"gamebanana.com"})
 
 
 def get_session(app_state=None):
@@ -34,13 +36,11 @@ def get_session(app_state=None):
         and app_state.network_session is not None
     ):
         return app_state.network_session
-    global _shared_session
-    if _shared_session is not None:
-        return _shared_session
-    with _session_lock:
-        if _shared_session is None:
-            _shared_session = _build_session()
-    return _shared_session
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = _build_session()
+        _thread_local.session = session
+    return session
 
 
 def _build_session():
@@ -91,6 +91,35 @@ def get_filename_from_url(s, url):
     return Path(url.split("?", 1)[0]).name or "file.tmp"
 
 
+def _validate_trusted_download_url(url: str, allowed_hosts: frozenset[str]) -> None:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").casefold()
+    if (
+        parsed.scheme != "https"
+        or not host
+        or not any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts)
+    ):
+        raise RuntimeError(f"download URL is outside the trusted HTTPS hosts: {url}")
+
+
+def _download_request(session, method: str, url: str, *, allowed_hosts, **kwargs):
+    if not allowed_hosts:
+        return getattr(session, method)(url, allow_redirects=True, **kwargs)
+    current_url = url
+    for _ in range(6):
+        _validate_trusted_download_url(current_url, allowed_hosts)
+        response = getattr(session, method)(current_url, allow_redirects=False, **kwargs)
+        if getattr(response, "status_code", 0) not in _REDIRECT_STATUS_CODES:
+            return response
+        location = response.headers.get("location")
+        with contextlib.suppress(Exception):
+            response.close()
+        if not location:
+            raise RuntimeError("trusted download redirect has no destination")
+        current_url = urljoin(current_url, location)
+    raise RuntimeError("trusted download exceeded the redirect limit")
+
+
 def download_file(
     session,
     url,
@@ -101,13 +130,19 @@ def download_file(
     max_retries=MAX_DOWNLOAD_RETRIES,
     cancel_check=None,
     on_response=None,
+    allowed_hosts: frozenset[str] | None = None,
 ):
+    session = session or get_session()
     if downloaded_ref is None:
         downloaded_ref = [0]
     try:
         expected_size = int(
-            session.head(
-                url, allow_redirects=True, timeout=NETWORK_TIMEOUT_HEAD
+            _download_request(
+                session,
+                "head",
+                url,
+                allowed_hosts=allowed_hosts,
+                timeout=NETWORK_TIMEOUT_HEAD,
             ).headers.get("content-length", 0)
         )
     except (requests.RequestException, ValueError):
@@ -120,13 +155,13 @@ def download_file(
                 if expected_size and 0 < current_size < expected_size
                 else {}
             )
-            if session is None:
-                session = get_session()
-            r = session.get(
+            r = _download_request(
+                session,
+                "get",
                 url,
+                allowed_hosts=allowed_hosts,
                 stream=True,
                 timeout=NETWORK_TIMEOUT_LONG,
-                allow_redirects=True,
                 headers=headers,
             )
             r.raise_for_status()

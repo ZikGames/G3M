@@ -1,4 +1,4 @@
-"""Exact launch-result diagnostics and portable report export."""
+"""Execute current mod operations in a disposable staging area for diagnostics."""
 
 from __future__ import annotations
 
@@ -10,12 +10,18 @@ import shutil
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
 
-from models.execution_plan import PatchPlan
-from utils.patching import mod_content_utils as mod_content
+from services.mod_operation_executor import (
+    ModOperationCancelledError,
+    ModOperationExecutionError,
+    ModOperationExecutor,
+)
+from services.mod_operation_support import create_g3mtool_merger, create_g3mtool_patcher
+from utils.mod.archive import ArchiveVirtualPath
+from utils.mod.filesystem import DirectoryTraversalError, iter_directory_tree
+from utils.mod.operation_plan import ModOperationPlan, PlannedModOperation
 
 
 @dataclass(frozen=True)
@@ -123,70 +129,38 @@ def export_preflight_report(report: PreflightReport, html_path: str) -> tuple[st
     with open(html_path, "w", encoding="utf-8", newline="\n") as handle:
         handle.write(_report_html(report))
     with open(json_path, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(
-            report.to_dict(), handle, ensure_ascii=False, indent=2, sort_keys=True
-        )
+        json.dump(report.to_dict(), handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     return html_path, json_path
 
 
-def _file_digest(path: str) -> str:
+def _file_digest(path: Path) -> str:
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
+    with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
-def _snapshot_files(root: str) -> tuple[dict[str, tuple[int, str]], list[str]]:
-    snapshot = {}
-    errors = []
-    for current, dirs, files in os.walk(root):
-        dirs[:] = [
-            name for name in dirs if not os.path.islink(os.path.join(current, name))
+def _snapshot_files(root: Path, label: str) -> tuple[dict[str, tuple[int, str]], list[str]]:
+    snapshot: dict[str, tuple[int, str]] = {}
+    errors: list[str] = []
+    if not root.exists():
+        return snapshot, errors
+    for current, directories, files in os.walk(root):
+        directories[:] = [
+            name for name in directories if not (Path(current) / name).is_symlink()
         ]
         for name in files:
-            path = os.path.join(current, name)
-            if os.path.islink(path):
+            path = Path(current) / name
+            if path.is_symlink():
                 continue
-            relative = os.path.relpath(path, root).replace("\\", "/")
+            relative = f"{label}/{path.relative_to(root).as_posix()}"
             try:
-                snapshot[relative] = (os.path.getsize(path), _file_digest(path))
+                snapshot[relative] = (path.stat().st_size, _file_digest(path))
             except OSError as error:
                 errors.append(f"Cannot inspect {relative}: {error}")
     return snapshot, errors
-
-
-def _validate_staging_tree(root: str) -> None:
-    is_junction = getattr(os.path, "isjunction", lambda _path: False)
-    for current, dirs, files in os.walk(root, followlinks=False):
-        for name in [*dirs, *files]:
-            path = os.path.join(current, name)
-            if os.path.islink(path) or is_junction(path):
-                raise OSError(f"Preflight staging refuses link or junction: {path}")
-
-
-def _probe_write_access(directory: str, data_path: str | None) -> str:
-    probe_path = ""
-    failure = ""
-    try:
-        descriptor, probe_path = tempfile.mkstemp(
-            prefix=".g3m-preflight-", dir=directory
-        )
-        os.close(descriptor)
-        if data_path:
-            with open(data_path, "rb+"):
-                pass
-    except OSError as error:
-        failure = f"Cannot write launch target {directory}: {error}"
-    finally:
-        if probe_path:
-            try:
-                os.unlink(probe_path)
-            except OSError as error:
-                if not failure:
-                    failure = f"Cannot remove write probe {probe_path}: {error}"
-    return failure
 
 
 def _compare_snapshots(
@@ -203,17 +177,10 @@ def _compare_snapshots(
         current = after.get(relative_path)
         if previous == current:
             continue
-        operation = (
-            "added"
-            if previous is None
-            else "removed"
-            if current is None
-            else "modified"
-        )
         changes.append(
             PreflightFileChange(
                 relative_path=relative_path,
-                operation=operation,
+                operation="added" if previous is None else "removed" if current is None else "modified",
                 before_size=previous[0] if previous else None,
                 after_size=current[0] if current else None,
                 before_hash=previous[1] if previous else "",
@@ -226,372 +193,213 @@ def _compare_snapshots(
     return tuple(changes)
 
 
-def _default_data_file_locator(root: str, section_id: str, app_state) -> str | None:
-    from utils.path_utils import find_chapter_resource_dir
-
-    game_mode = getattr(app_state, "game_mode", None)
-    target = find_chapter_resource_dir(
-        root,
-        section_id,
-        getattr(game_mode, "macos_app_names", ("DELTARUNE.app",)),
-    )
-    if not target:
-        target = root
-    return mod_content.find_data_win(
-        target,
-        game_id=getattr(game_mode, "game_id", ""),
-        preferred_name=getattr(game_mode, "data_file_name", "") or "",
-    )
-
-
-def _manifest_resources(
-    manifest: dict[str, Any],
-    section_id: str,
-    step_index: int,
-    mod_ids: tuple[str, ...],
-) -> tuple[PreflightResourceChange, ...]:
-    resources = manifest.get("resources") if isinstance(manifest, dict) else None
-    if not isinstance(resources, dict):
-        return ()
-    changes = []
-    for resource_type, operations in resources.items():
-        if not isinstance(operations, dict):
-            continue
-        for operation in ("new", "changed", "deleted"):
-            items = (
-                operations.get(operation)
-                or operations.get(operation.capitalize())
-                or []
-            )
-            if not isinstance(items, list):
-                continue
-            for item in items:
-                if isinstance(item, dict):
-                    name = str(item.get("name") or "")
-                    raw_files = item.get("files") or []
-                    file_values = (
-                        raw_files.values() if isinstance(raw_files, dict) else raw_files
-                    )
-                    files = tuple(str(value) for value in file_values if value)
-                else:
-                    name = str(item)
-                    files = ()
-                changes.append(
-                    PreflightResourceChange(
-                        section_id=section_id,
-                        step_index=step_index,
-                        resource_type=str(resource_type),
-                        operation=operation,
-                        name=name,
-                        mod_ids=mod_ids,
-                        files=files,
-                        details=(
-                            json.dumps(
-                                item, ensure_ascii=False, indent=2, sort_keys=True
-                            )
-                            if isinstance(item, dict)
-                            else ""
-                        ),
-                    )
-                )
-    return tuple(changes)
-
-
-def _merge_report_conflicts(
-    report_path: str,
-    section_id: str,
-    step_index: int,
-    mod_ids: tuple[str, ...],
-) -> tuple[PreflightResourceChange, ...]:
-    try:
-        lines = Path(report_path).read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ()
-    resource_type = "Merge"
-    conflicts = []
-    for line in lines:
-        if line.startswith("## "):
-            resource_type = line[3:].strip()
-        elif line.startswith("|") and "**Conflict**" in line:
-            columns = [column.strip() for column in line.strip("|").split("|")]
-            if columns:
-                conflicts.append(
-                    PreflightResourceChange(
-                        section_id=section_id,
-                        step_index=step_index,
-                        resource_type=resource_type,
-                        operation="conflict",
-                        name=columns[0],
-                        mod_ids=mod_ids,
-                        details=" | ".join(columns[2:]),
-                    )
-                )
-    return tuple(conflicts)
-
-
 class DiagnosticsPreflightService:
-    """Execute a launch plan in a disposable game copy and inspect actual changes."""
+    """Run resolved operations against copies of the paths they are allowed to change."""
 
-    def __init__(
-        self,
-        app_state,
-        mod_service,
-        *,
-        patcher_factory=None,
-        data_file_locator=None,
-        resource_diff_builder=None,
-    ) -> None:
+    def __init__(self, app_state) -> None:
         self.app_state = app_state
-        self.mod_service = mod_service
-        self._patcher_factory = patcher_factory
-        self._data_file_locator = data_file_locator
-        self._resource_diff_builder = resource_diff_builder
         self._cancelled = False
-        self._patcher = None
+        self._patcher = create_g3mtool_patcher(
+            app_state, is_cancelled=lambda: self._cancelled
+        )
+        self._merger = create_g3mtool_merger(
+            app_state, is_cancelled=lambda: self._cancelled
+        )
 
     def cancel(self) -> None:
         self._cancelled = True
-        if self._patcher is not None:
-            self._patcher.cancel()
 
-    def _new_patcher(self):
-        if self._patcher_factory is not None:
-            return self._patcher_factory(self.app_state, self.mod_service, None)
-        from services.g3mtool_patching_service import G3MToolPatchingService
+    @staticmethod
+    def _map_path(path: Path, roots: tuple[tuple[Path, Path], ...], *, target: bool) -> Path:
+        resolved_path = path.resolve(strict=False)
+        for original, staged in roots:
+            try:
+                return staged / resolved_path.relative_to(original.resolve(strict=False))
+            except ValueError:
+                continue
+        if target:
+            parts = resolved_path.parts
+            root_id = hashlib.sha256(str(resolved_path.anchor).encode("utf-8")).hexdigest()[:16]
+            return roots[0][1].parent / "custom" / root_id / Path(*parts[1:])
+        return path
 
-        return G3MToolPatchingService(self.app_state, self.mod_service, None)
-
-    def _locate_data(self, root: str, section_id: str) -> str | None:
-        if self._data_file_locator is not None:
-            return self._data_file_locator(root, section_id)
-        return _default_data_file_locator(root, section_id, self.app_state)
-
-    def _resource_diff(
-        self,
-        before_path: str,
-        after_path: str,
-        section_id: str,
-        step_index: int,
-        mod_ids: tuple[str, ...],
-        temp_dir: str,
-    ) -> tuple[tuple[PreflightResourceChange, ...], str]:
-        if self._resource_diff_builder is not None:
-            return tuple(
-                self._resource_diff_builder(
-                    before_path, after_path, section_id, step_index, mod_ids
+    @classmethod
+    def _map_operation(
+        cls,
+        operation: PlannedModOperation,
+        roots: tuple[tuple[Path, Path], ...],
+    ) -> PlannedModOperation:
+        def map_value(value, *, target: bool):
+            if isinstance(value, ArchiveVirtualPath):
+                return ArchiveVirtualPath(
+                    archive=cls._map_path(value.archive, roots, target=target),
+                    member=value.member,
+                    directory=value.directory,
+                    format=value.format,
                 )
-            ), ""
-        patch_path = os.path.join(
-            temp_dir, f"resources_{section_id}_{step_index}.g3mpatch"
-        )
-        returncode, stdout, stderr = self._patcher.g3mtool.patch_create(
-            before_path, after_path, patch_path
-        )
-        if returncode != 0 or not os.path.isfile(patch_path):
-            return (
-                (),
-                f"G3MTool resource diff failed for {section_id} step {step_index}: {stderr or stdout}",
-            )
-        import zipfile
+            return cls._map_path(value, roots, target=target)
 
-        try:
-            with (
-                zipfile.ZipFile(patch_path) as archive,
-                archive.open("g3mpatch.json") as handle,
+        source = map_value(operation.source, target=False)
+        target = map_value(operation.target, target=True) if operation.target else None
+        return replace(operation, source=source, target=target)
+
+    @staticmethod
+    def _copy_to_stage(source: Path, destination: Path) -> None:
+        if not source.exists():
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
+            try:
+                for path, relative, directory in iter_directory_tree(source):
+                    target = destination.joinpath(*relative.split("/"))
+                    if directory:
+                        target.mkdir(parents=True, exist_ok=True)
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        if not target.exists():
+                            shutil.copy2(path, target)
+            except DirectoryTraversalError as error:
+                raise ModOperationExecutionError(str(error)) from error
+        elif not destination.exists():
+            shutil.copy2(source, destination)
+
+    @classmethod
+    def _stage_inputs(
+        cls,
+        plan: ModOperationPlan,
+        roots: tuple[tuple[Path, Path], ...],
+    ) -> ModOperationPlan:
+        for operation in plan.operations:
+            target = operation.target
+            if isinstance(target, ArchiveVirtualPath):
+                target = target.archive
+            if target is not None and not any(target.is_relative_to(original) for original, _staged in roots):
+                roots = (*roots, (target, cls._map_path(target, roots, target=True)))
+        for operation in plan.operations:
+            if (
+                operation.type == "hard-overwrite"
+                and not operation.target_is_directory
+                and isinstance(operation.target, Path)
             ):
-                manifest = json.loads(handle.read().decode("utf-8"))
-        except (OSError, ValueError, KeyError, json.JSONDecodeError, zipfile.BadZipFile):
-            return (), f"Cannot read resource diff for {section_id} step {step_index}"
-        return _manifest_resources(manifest, section_id, step_index, mod_ids), ""
+                staged_target = cls._map_path(operation.target, roots, target=True)
+                cls._copy_to_stage(operation.target.parent, staged_target.parent)
+        staged_operations = []
+        for operation in plan.operations:
+            staged = cls._map_operation(operation, roots)
+            pairs = ((operation.source, staged.source), (operation.target, staged.target))
+            for original, copied in pairs:
+                if original is None or copied is None:
+                    continue
+                original_path = original.archive if isinstance(original, ArchiveVirtualPath) else original
+                copied_path = copied.archive if isinstance(copied, ArchiveVirtualPath) else copied
+                if original_path != copied_path:
+                    cls._copy_to_stage(original_path, copied_path)
+            staged_operations.append(staged)
+        return ModOperationPlan(tuple(staged_operations), plan.findings)
+
+    @staticmethod
+    def _snapshot_roots(roots: tuple[tuple[Path, Path], ...]) -> tuple[dict[str, tuple[int, str]], list[str]]:
+        snapshot: dict[str, tuple[int, str]] = {}
+        errors: list[str] = []
+        for _original, staged in roots:
+            files, file_errors = _snapshot_files(staged, staged.name)
+            snapshot.update(files)
+            errors.extend(file_errors)
+        return snapshot, errors
 
     def run(
         self,
-        plan: PatchPlan,
-        resolver: Callable[[str], Any | None],
+        plan: ModOperationPlan,
         game_path: str,
+        game_data_path: str | None = None,
+        user_path: str | None = None,
         progress: Callable[[int, str], None] | None = None,
     ) -> PreflightReport:
         started = time.monotonic()
-        steps: list[PreflightStepResult] = []
-        resources: list[PreflightResourceChange] = []
-        files: list[PreflightFileChange] = []
-        issues: list[str] = []
-        conflict_count = 0
-        success = True
+        issues = [finding.message for finding in plan.findings]
         if self._cancelled:
             return PreflightReport(False, True, time.monotonic() - started)
-        resolved = plan.resolve(resolver)
-        total_steps = sum(len(section_steps) for section_steps in resolved.values())
-        completed = 0
+        if plan.has_errors:
+            return PreflightReport(False, False, time.monotonic() - started, issues=tuple(issues))
+        game_root = Path(game_path)
+        if not game_root.is_dir():
+            return PreflightReport(False, False, time.monotonic() - started, issues=(f"game path does not exist: {game_root}",))
 
         def emit(value: int, message: str) -> None:
             if progress:
                 progress(max(0, min(value, 100)), message)
 
-        checked_targets: set[tuple[str, str]] = set()
-        for section_id in resolved:
-            data_path = self._locate_data(game_path, section_id)
-            directory = os.path.dirname(data_path) if data_path else game_path
-            target = (os.path.normcase(os.path.abspath(directory)), data_path or "")
-            if target in checked_targets:
-                continue
-            checked_targets.add(target)
-            permission_error = _probe_write_access(directory, data_path)
-            if permission_error:
-                return PreflightReport(
-                    False,
-                    False,
-                    time.monotonic() - started,
-                    issues=(permission_error,),
+        with tempfile.TemporaryDirectory(prefix="g3m_diagnostics_") as temporary_name:
+            temporary = Path(temporary_name).resolve(strict=False)
+            game_root = game_root.resolve(strict=False)
+            roots = [(game_root, temporary / "game")]
+            if game_data_path:
+                roots.append((Path(game_data_path).resolve(strict=False), temporary / "game_data"))
+            if user_path:
+                roots.append((Path(user_path).resolve(strict=False), temporary / "user"))
+            roots.sort(key=lambda item: len(item[0].parts), reverse=True)
+            root_pairs = (*roots, (temporary / "__custom__", temporary / "custom"))
+            if any(
+                operation.target is not None
+                and not any(
+                    (operation.target.archive if isinstance(operation.target, ArchiveVirtualPath) else operation.target).resolve(strict=False).is_relative_to(root.resolve(strict=False))
+                    for root, _staged in roots
                 )
-
-        with tempfile.TemporaryDirectory(prefix="g3m_diagnostics_") as workspace:
-            staged_game = os.path.join(workspace, "game")
-            emit(2, "staging_game")
-            _validate_staging_tree(game_path)
-            shutil.copytree(game_path, staged_game, symlinks=False)
-            patcher = self._new_patcher()
-            self._patcher = patcher
+                for operation in plan.operations
+            ):
+                issues.append(
+                    "Custom targets are staged in isolation; launch will use their exact configured paths."
+                )
             try:
-                patch_messages: list[str] = []
-                merge_reports: list[tuple[str, int]] = []
+                staged_plan = self._stage_inputs(plan, root_pairs)
+            except ModOperationExecutionError as error:
+                return PreflightReport(False, False, time.monotonic() - started, issues=(*issues, str(error)))
 
-                def reject_warning(
-                    event, details: str, _report_path: str | None
-                ) -> bool:
-                    if event.warning_id == "merge_conflicts_detected" and _report_path:
-                        merge_reports.append(
-                            (_report_path, int(event.context.get("count", 0) or 0))
-                        )
-                    message = details or event.fallback_message or event.warning_id
-                    patch_messages.append(message)
-                    return False
-
-                patcher.strict_warning_handler = reject_warning
-                status_signal = getattr(patcher, "status_update", None)
-                if status_signal is not None:
-                    status_signal.connect(
-                        lambda message, severity: patch_messages.append(
-                            f"{severity}: {message}"
-                        )
-                    )
-                patcher.set_override_game_path(staged_game)
-                patcher.set_backup_root_override(os.path.join(workspace, "backups"))
-                for section_id, section_steps in resolved.items():
-                    for step_index, mods in enumerate(section_steps, 1):
-                        if self._cancelled:
-                            success = False
-                            break
-                        mod_ids = tuple(
-                            str(
-                                getattr(mod, "id", "")
-                                or (mod.get("id") if isinstance(mod, dict) else "")
-                            )
-                            for mod in mods
-                        )
-                        before_files, scan_errors = _snapshot_files(staged_game)
-                        if scan_errors:
-                            issues.extend(scan_errors)
-                            success = False
-                            break
-                        before_data = self._locate_data(staged_game, section_id)
-                        before_copy = ""
-                        if before_data and os.path.isfile(before_data):
-                            before_copy = os.path.join(
-                                workspace,
-                                f"before_{section_id}_{step_index}{Path(before_data).suffix}",
-                            )
-                            shutil.copy2(before_data, before_copy)
-                        step_started = time.monotonic()
-                        emit(
-                            8 + int(completed / max(total_steps, 1) * 72),
-                            f"patching_step:{section_id}:{completed + 1}:{total_steps}",
-                        )
-                        step_plan = PatchPlan.from_runtime({section_id: [list(mods)]})
-                        patch_messages.clear()
-                        merge_reports.clear()
-                        step_success = patcher.process_patch_plan(
-                            step_plan, resolver, is_modpack=False
-                        )
-                        for report_path, count in merge_reports:
-                            conflict_count += count
-                            resources.extend(
-                                _merge_report_conflicts(
-                                    report_path,
-                                    section_id,
-                                    step_index,
-                                    mod_ids,
-                                )
-                            )
-                        error = (
-                            ""
-                            if step_success
-                            else "\n".join(patch_messages)
-                            or "Patch failed without diagnostic output"
-                        )
-                        steps.append(
-                            PreflightStepResult(
-                                section_id=section_id,
-                                step_index=step_index,
-                                mod_ids=mod_ids,
-                                success=step_success,
-                                duration_seconds=time.monotonic() - step_started,
-                                error=error,
-                            )
-                        )
-                        if not step_success:
-                            issues.append(f"{section_id} step {step_index}: {error}")
-                            success = False
-                            break
-                        after_files, scan_errors = _snapshot_files(staged_game)
-                        if scan_errors:
-                            issues.extend(scan_errors)
-                            success = False
-                            break
-                        files.extend(
-                            _compare_snapshots(
-                                before_files,
-                                after_files,
-                                section_id=section_id,
-                                step_index=step_index,
-                                mod_ids=mod_ids,
-                            )
-                        )
-                        after_data = self._locate_data(staged_game, section_id)
-                        if before_copy and after_data and os.path.isfile(after_data):
-                            resource_changes, resource_error = self._resource_diff(
-                                before_copy,
-                                after_data,
-                                section_id,
-                                step_index,
-                                mod_ids,
-                                workspace,
-                            )
-                            resources.extend(resource_changes)
-                            if resource_error:
-                                issues.append(resource_error)
-                                success = False
-                                break
-                        completed += 1
-                    if self._cancelled or not success:
-                        break
-                emit(94, "building_report")
-            finally:
+            executor = ModOperationExecutor(
+                temporary / "journal", patcher=self._patcher, merger=self._merger
+            )
+            steps: list[PreflightStepResult] = []
+            files: list[PreflightFileChange] = []
+            total = len(staged_plan.operations)
+            completed = 0
+            handled: set[int] = set()
+            for operation in staged_plan.operations:
+                if id(operation) in handled:
+                    continue
+                if self._cancelled:
+                    return PreflightReport(False, True, time.monotonic() - started, tuple(steps), files=tuple(files), issues=tuple(issues))
+                operation_group = executor.merge_operations(staged_plan.operations, operation)
+                operation_group = operation_group or (operation,)
+                before, errors = self._snapshot_roots(root_pairs)
+                if errors:
+                    return PreflightReport(False, False, time.monotonic() - started, tuple(steps), files=tuple(files), issues=(*issues, *errors))
+                step_started = time.monotonic()
+                section = "/".join(operation.group_path) or "global"
+                mod_ids = tuple(
+                    item.mod_id for item in operation_group if item.mod_id
+                )
                 try:
-                    patcher.cleanup(force=True)
-                finally:
-                    self._patcher = None
-        emit(
-            100,
-            "completed" if success else "cancelled" if self._cancelled else "failed",
-        )
-        return PreflightReport(
-            success=success and not self._cancelled,
-            cancelled=self._cancelled,
-            duration_seconds=time.monotonic() - started,
-            steps=tuple(steps),
-            resources=tuple(resources),
-            files=tuple(files),
-            issues=tuple(issues),
-            conflict_count=conflict_count,
-        )
+                    executor.execute(
+                        ModOperationPlan(operation_group, ()),
+                        is_cancelled=lambda: self._cancelled,
+                    )
+                except ModOperationExecutionError as error:
+                    if self._cancelled or isinstance(error, ModOperationCancelledError):
+                        return PreflightReport(False, True, time.monotonic() - started, tuple(steps), files=tuple(files), issues=tuple(issues))
+                    steps.append(PreflightStepResult(section, operation.index, mod_ids, False, time.monotonic() - step_started, str(error)))
+                    return PreflightReport(False, False, time.monotonic() - started, tuple(steps), files=tuple(files), issues=(*issues, str(error)))
+                after, errors = self._snapshot_roots(root_pairs)
+                files.extend(_compare_snapshots(before, after, section_id=section, step_index=operation.index, mod_ids=mod_ids))
+                if errors:
+                    issues.extend(errors)
+                    return PreflightReport(False, False, time.monotonic() - started, tuple(steps), files=tuple(files), issues=tuple(issues))
+                steps.append(PreflightStepResult(section, operation.index, mod_ids, True, time.monotonic() - step_started))
+                handled.update(id(item) for item in operation_group)
+                completed += len(operation_group)
+                emit(
+                    8 + int(completed * 86 / max(total, 1)),
+                    f"patching_step:{section}:{completed}:{total}",
+                )
+            emit(100, "complete")
+            return PreflightReport(True, False, time.monotonic() - started, tuple(steps), files=tuple(files), issues=tuple(issues))

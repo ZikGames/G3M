@@ -267,14 +267,14 @@ class GameDefinition:
 
     @staticmethod
     def _is_visible_mod(mod) -> bool:
-        return not mod.hide_mod and not mod.ban_status
+        return not getattr(mod, "hide_mod", False) and not getattr(mod, "ban_status", False)
 
     def _filter_visible_mods(self, all_mods, predicate):
         return [m for m in all_mods if self._is_visible_mod(m) and predicate(m)]
 
     def filter_mods_for_tab(self, tab: GameTab, all_mods: list) -> list:
         return self._filter_visible_mods(
-            all_mods, lambda m: m.game == self.game_id and m.get_chapter_data(tab.tab_id)
+            all_mods, lambda m: m.game == self.game_id and m.supports_section(tab.tab_id)
         )
 
     def filter_mods_for_ui(self, all_mods: list) -> dict[int, list]:
@@ -313,7 +313,7 @@ class DeltaruneGame(GameDefinition):
     def filter_mods_for_tab(self, tab, all_mods):
         return self._filter_visible_mods(
             all_mods,
-            lambda m, t=tab: m.game == "deltarune" and m.get_chapter_data(t.tab_id),
+            lambda m, t=tab: m.game == "deltarune" and m.supports_section(t.tab_id),
         )
 
 
@@ -341,7 +341,10 @@ class DeltaruneDemoGame(GameDefinition):
     used_mods_config_key = "used_mods_deltarunedemo"
 
     def filter_mods_for_tab(self, tab, all_mods):
-        return self._filter_visible_mods(all_mods, lambda m: m.is_valid_for_demo())
+        return self._filter_visible_mods(
+            all_mods,
+            lambda m, t=tab: m.game == self.game_id and m.supports_section(t.tab_id),
+        )
 
 
 class UndertaleGame(GameDefinition):
@@ -440,7 +443,7 @@ class PizzaTowerGame(GameDefinition):
 
     def filter_mods_for_tab(self, tab, all_mods):
         return self._filter_visible_mods(
-            all_mods, lambda m, t=tab: m.game == "pizzatower" and m.get_chapter_data(t.tab_id)
+            all_mods, lambda m, t=tab: m.game == "pizzatower" and m.supports_section(t.tab_id)
         )
 
 
@@ -538,7 +541,6 @@ BUILTIN_GAME_REGISTRY: dict[str, GameDefinition] = {
         Frickbears3Game(),
     )
 }
-DEFAULT_GAME_ORDER = tuple(BUILTIN_GAME_REGISTRY)
 GAME_REGISTRY: dict[str, GameDefinition] = dict(BUILTIN_GAME_REGISTRY)
 GAME_ENTRIES: dict[str, GameEntry] = {
     game_id: GameEntry(

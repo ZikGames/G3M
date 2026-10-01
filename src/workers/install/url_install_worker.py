@@ -224,41 +224,14 @@ class UrlInstallThread(BaseInstallWorker):
         return None
 
     def _detect_content_type(self, archive_path: str) -> str:
-        import tarfile
-        import zipfile
-
-        archive_lower = archive_path.lower()
         try:
-            if archive_lower.endswith(".zip"):
-                with zipfile.ZipFile(archive_path, "r") as zf:
-                    result = self._detect_from_names(zf.namelist())
-                    if result:
-                        return result
-            elif archive_lower.endswith(".tar.gz"):
-                with tarfile.open(archive_path, "r:gz") as tf:
-                    result = self._detect_from_names(m.name for m in tf.getmembers())
-                    if result:
-                        return result
-            elif archive_lower.endswith(".rar"):
-                try:
-                    import rarfile
+            from utils.mod.archive import list_archive_members
 
-                    with rarfile.RarFile(archive_path, "r") as rf:
-                        result = self._detect_from_names(rf.namelist())
-                        if result:
-                            return result
-                except (OSError, ImportError) as e:
-                    logger.debug(f"Could not open RAR: {e}")
-            elif archive_lower.endswith(".7z"):
-                try:
-                    import py7zr
-
-                    with py7zr.SevenZipFile(archive_path, mode="r") as zf:
-                        result = self._detect_from_names(zf.getnames())
-                        if result:
-                            return result
-                except (OSError, ImportError) as e:
-                    logger.debug(f"Could not open 7z: {e}")
+            result = self._detect_from_names(
+                member.name for member in list_archive_members(archive_path)
+            )
+            if result:
+                return result
         except Exception as e:
             logger.error(f"Error detecting content type: {e}", exc_info=True)
         return self._detect_content_type_from_extracted(archive_path) or ""

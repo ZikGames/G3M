@@ -1,5 +1,6 @@
 """UI tests for test widgets."""
 
+import sys
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast
@@ -73,7 +74,7 @@ class TestModWidgets:
             id="test_mod",
             name="Scaled Search Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Search card scaling should remain stable across repeated UI scale changes.",
             game_version="",
             description_url="",
@@ -114,7 +115,7 @@ class TestModWidgets:
             id="test_mod",
             name="Scaled Installed Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -142,7 +143,7 @@ class TestModWidgets:
             id="test_mod",
             name="Scaled Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Scaled description",
             game_version="",
             description_url="",
@@ -173,7 +174,7 @@ class TestModWidgets:
             id="test_mod",
             name="Very Long Mod Name That Should Wrap Across Two Lines And Then Get Ellipsized At The End",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description for the search card.",
             game_version="",
             description_url="",
@@ -230,7 +231,7 @@ class TestModWidgets:
             id="test_mod",
             name="Scaled Search Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -325,7 +326,7 @@ class TestModWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -352,7 +353,7 @@ class TestModWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -380,7 +381,7 @@ class TestModWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -398,6 +399,90 @@ class TestModWidgets:
         widget.deleteLater()
         _drain_events(qapp)
 
+    def test_installed_mod_widget_shows_operation_relation_issue(self, qapp):
+        from unittest.mock import patch
+
+        from models.mod_models import ModInfo
+        from services.localization_service import tr
+        from ui.widgets.mod.installed_mod_widget import InstalledModWidget
+
+        mod_data = ModInfo(
+            id="test_mod",
+            name="Test Mod",
+            version="1.0.0",
+            authors=["Test Author"],
+            description="Test description",
+            game_version="",
+            description_url="",
+            downloads=0,
+            game="deltarune",
+        )
+        with patch("ui.widgets.mod.base_mod_widget.load_mod_icon_universal"):
+            widget = InstalledModWidget(mod_data, parent=None)
+        widget._is_broken_cache = False
+        widget.set_operation_issue("dependency_inactive", "base_mod")
+
+        assert widget.status_indicator.text() == "⚠"
+        assert widget.status_indicator.toolTip() == tr(
+            "tooltips.dependency_inactive", mod_id="base_mod"
+        )
+        widget.deleteLater()
+        _drain_events(qapp)
+
+    def test_installed_mod_widget_accepts_valid_operation_mod_without_legacy_files(
+        self, qapp, tmp_path
+    ):
+        """Operation no longer requires the legacy per-section file projection."""
+        import zipfile
+        from unittest.mock import Mock, patch
+
+        from models.mod_models import ModInfo
+        from services.localization_service import tr
+        from ui.widgets.mod.installed_mod_widget import InstalledModWidget
+
+        host = QWidget()
+        host.app_state = SimpleNamespace(local_config={})
+        operation_config = {
+            "config_version": "2.0.0",
+            "id": "test_mod",
+            "name": "Metadata only",
+            "version": "1.0.0",
+            "authors": [],
+            "game": "deltarune",
+            "files": [],
+        }
+        host.mod_service = SimpleNamespace(
+            get_mod_folder_path=Mock(return_value=str(tmp_path)),
+            get_mod_config=Mock(return_value=operation_config),
+        )
+        mod_data = ModInfo(
+            id="test_mod",
+            name="Metadata only",
+            version="1.0.0",
+            authors=[""],
+            description="",
+            game_version="",
+            description_url="",
+            downloads=0,
+            game="deltarune",
+        )
+
+        with patch("ui.widgets.mod.base_mod_widget.load_mod_icon_universal"):
+            widget = InstalledModWidget(mod_data, parent=host, parent_app=host)
+
+        assert not widget._is_mod_broken()
+        assert widget.status_indicator.toolTip() == tr("tooltips.mod_valid")
+        with zipfile.ZipFile(tmp_path / "sources.zip", "w") as archive:
+            archive.writestr("README.md", "readme")
+        operation_config["files"] = [
+            {"source": "${mod_path}/sources.zip/README.md", "type": "info"}
+        ]
+        widget._is_broken_cache = None
+        assert not widget._is_mod_broken()
+        widget.deleteLater()
+        host.deleteLater()
+        _drain_events(qapp)
+
     def test_mod_card_widget_creation(self, qapp):
         """Checks that mod card widget creation."""
         from unittest.mock import patch
@@ -409,7 +494,7 @@ class TestModWidgets:
             id="gb_mod_999",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -442,7 +527,7 @@ class TestModWidgets:
             id="gb_mod_123",
             name="Test Mod",
             version="1.0.0",
-            author="Test",
+            authors=["Test"],
             description="Test",
             game_version="",
             description_url="",
@@ -488,7 +573,7 @@ class TestModWidgets:
             id="gb_mod_124",
             name="Test Mod",
             version="1.0.0",
-            author="Test",
+            authors=["Test"],
             description="Test",
             game_version="",
             description_url="",
@@ -549,7 +634,7 @@ class TestModWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -590,7 +675,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -618,7 +703,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -646,7 +731,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="",
             game_version="",
             description_url="",
@@ -685,7 +770,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="1.0",
             description_url="",
@@ -724,7 +809,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="1.0",
             description_url="",
@@ -752,7 +837,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="",
             game_version="",
             description_url="",
@@ -778,7 +863,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="",
             game_version="",
             description_url="",
@@ -800,7 +885,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="",
             game_version="",
             description_url="",
@@ -829,7 +914,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="",
             game_version="",
             description_url="",
@@ -854,7 +939,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="",
             game_version="",
             description_url="",
@@ -890,7 +975,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="",
             game_version="",
             description_url="",
@@ -922,7 +1007,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="1.0",
             description_url="",
@@ -939,11 +1024,11 @@ class TestCommonWidgets:
         host.deleteLater()
         _drain_events(qapp)
 
-    def test_mod_summary_panel_shows_only_final_file_and_folder_names(self, qapp):
-        """Checks that mod summary panel shows only final file and folder names."""
+    def test_mod_summary_panel_shows_operation_relation_issue(self, qapp):
         from unittest.mock import patch
 
-        from models.mod_models import ModFileData, ModInfo
+        from models.mod_models import ModInfo
+        from services.localization_service import tr
         from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
 
         host = QWidget()
@@ -952,53 +1037,239 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
+            description="Test description",
+            game_version="",
+            description_url="",
+            downloads=0,
+            game="deltarune",
+        )
+        with patch("ui.widgets.mod.mod_summary_panel.load_mod_icon_universal"):
+            panel = ModSummaryPanel(host)
+            panel.show_mod(
+                mod_data,
+                relation_issue=("dependency_missing", "base_mod"),
+            )
+
+        assert not panel._state_label.isHidden()
+        assert tr("tooltips.dependency_missing", mod_id="base_mod") in panel._state_label.text()
+        panel.deleteLater()
+        host.deleteLater()
+        _drain_events(qapp)
+
+    def test_mod_summary_panel_summarizes_operations_and_shows_all_on_demand(self, qapp, tmp_path):
+        from unittest.mock import patch
+
+        from models.mod_models import ModInfo
+        from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
+        from utils.mod.config import MOD_CONFIG_VERSION, write_mod_config
+
+        write_mod_config(
+            tmp_path / "mod_config.json",
+            {
+                "config_version": MOD_CONFIG_VERSION,
+                "id": "test_mod",
+                "name": "Test Mod",
+                "version": "1.0.0",
+                "authors": ["Test Author"],
+                "game": "deltarune",
+                "files": [
+                    {
+                        "Core": [
+                            {
+                                "source": "${mod_path}/patches/data.xdelta",
+                                "target": "${game_path}/data.win",
+                                "type": "patch",
+                            },
+                            {"source": "${mod_path}/README.md", "type": "info"},
+                        ]
+                    }
+                ],
+            },
+        )
+        host = QWidget()
+        host.local_config = {}
+        mod_data = ModInfo(
+            id="test_mod",
+            name="Test Mod",
+            version="1.0.0",
+            authors=["Test Author"],
             description="Test description",
             game_version="1.0",
             description_url="",
             downloads=0,
             game="deltarune",
-            files={
-                "deltarune_1": ModFileData(
-                    data_file_path="folder/something.thing",
-                    extra_files=[
-                        "older/somefolder/",
-                        "nested/final.bin",
-                    ],
-                )
-            },
         )
+
         with patch("ui.widgets.mod.mod_summary_panel.load_mod_icon_universal"):
             panel = ModSummaryPanel(host)
-            panel.show_mod(mod_data, is_active=False)
-            assert "something." in panel._data_label.text()
-            assert "thing" in panel._data_label.text()
-            assert "folder/something.thing" not in panel._data_label.text()
-            assert "somefolder/" in panel._extra_label.text()
-            assert "older/somefolder/" not in panel._extra_label.text()
-            assert "final." in panel._extra_label.text()
-            assert "bin" in panel._extra_label.text()
-            assert "nested/final.bin" not in panel._extra_label.text()
+            panel.show_mod(mod_data, str(tmp_path), is_active=False)
+            summary = panel._data_label.text()
+            assert "Patch: 1" in summary
+            assert "Info: 1" in summary
+            assert "data" in summary
+            assert "Core" not in summary
+            assert "README" not in summary
+            assert "data:image/svg+xml;base64," in summary
+            assert panel._operations_toggle.text() == "Show all"
+            assert panel._operations_tree.topLevelItemCount() == 0
+
+            panel._operations_toggle.click()
+            assert panel._operations_tree.topLevelItemCount() == 2
+            assert panel._operations_tree.topLevelItem(0).text(1).endswith(
+                "patches/data.xdelta"
+            )
+            assert panel._operations_tree.topLevelItem(0).text(2).endswith("data.win")
+            assert panel._operations_toggle.text() == "Show summary"
+
         panel.deleteLater()
         host.deleteLater()
         _drain_events(qapp)
 
-    def test_mod_summary_panel_groups_extra_files_by_target(self):
-        from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
+    def test_mod_summary_panel_shows_placeholders_and_resolved_path_tooltips(
+        self, qapp, tmp_path
+    ):
+        from unittest.mock import patch
 
-        grouped = ModSummaryPanel._collect_extra_paths(
-            [
-                "lang/en.json",
-                {"file_path": "tools/compiler.csx", "target": "none"},
-                {"file_path": "saves/config.json", "target": "game_data_folder"},
-            ]
+        from models.mod_models import ModInfo
+        from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
+        from utils.mod.config import MOD_CONFIG_VERSION, write_mod_config
+
+        game_path = tmp_path / "game"
+        write_mod_config(
+            tmp_path / "mod_config.json",
+            {
+                "config_version": MOD_CONFIG_VERSION,
+                "id": "test_mod",
+                "name": "Test Mod",
+                "version": "1.0.0",
+                "authors": ["Test Author"],
+                "game": "deltarune",
+                "files": [
+                    {
+                        "Core": [
+                            {
+                                "source": "${mod_path}/patches/data.xdelta",
+                                "target": "${game_path}/data.win",
+                                "type": "patch",
+                            }
+                        ]
+                    }
+                ],
+            },
+        )
+        host = QWidget()
+        host.local_config = {"game_path": str(game_path)}
+        host.game_mode = SimpleNamespace(
+            get_game_path=lambda config: config["game_path"],
+            get_data_path=lambda _config: "",
+        )
+        mod_data = ModInfo(
+            id="test_mod",
+            name="Test Mod",
+            version="1.0.0",
+            authors=["Test Author"],
+            description="Test description",
+            game_version="1.0",
+            description_url="",
+            downloads=0,
+            game="deltarune",
         )
 
-        assert grouped == {
-            "game_folder": ["lang/en.json"],
-            "none": ["tools/compiler.csx"],
-            "game_data_folder": ["saves/config.json"],
-        }
+        with patch("ui.widgets.mod.mod_summary_panel.load_mod_icon_universal"):
+            panel = ModSummaryPanel(host)
+            panel.show_mod(mod_data, str(tmp_path), is_active=False)
+
+        assert "game_&#8203;path" in panel._data_label.text()
+        target_name = (
+            "game.ios"
+            if sys.platform == "darwin"
+            else ("game.unx" if sys.platform.startswith("linux") else "data.win")
+        )
+        expected_target = str((game_path / target_name).resolve())
+        assert panel._operation_path_tooltips["target_1"] == expected_target
+        panel._on_operation_path_hover("target_1")
+        assert panel._data_label.toolTip() == expected_target
+        panel._operations_toggle.click()
+        item = panel._operations_tree.topLevelItem(0)
+        assert item.text(1).endswith("patches/data.xdelta")
+        assert item.toolTip(1) == str((tmp_path / "patches/data.xdelta").resolve())
+        assert item.toolTip(2) == expected_target
+        panel.deleteLater()
+        host.deleteLater()
+        _drain_events(qapp)
+
+    def test_mod_summary_panel_defers_large_operation_list_until_show_all(self, qapp, tmp_path):
+        from unittest.mock import patch
+
+        from models.mod_models import ModInfo
+        from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
+        from utils.mod.config import MOD_CONFIG_VERSION, write_mod_config
+
+        operations = [
+            {
+                "source": f"${{mod_path}}/file_{index}.txt",
+                "type": "info",
+            }
+            for index in range(1001)
+        ]
+        write_mod_config(
+            tmp_path / "mod_config.json",
+            {
+                "config_version": MOD_CONFIG_VERSION,
+                "id": "large_mod",
+                "name": "Large Mod",
+                "version": "1.0.0",
+                "authors": ["Test Author"],
+                "game": "deltarune",
+                "files": operations,
+            },
+        )
+        host = QWidget()
+        host.local_config = {}
+        mod_data = ModInfo(
+            id="large_mod",
+            name="Large Mod",
+            version="1.0.0",
+            authors=["Test Author"],
+            description="",
+            game_version="",
+            description_url="",
+            downloads=0,
+            game="deltarune",
+        )
+        with patch("ui.widgets.mod.mod_summary_panel.load_mod_icon_universal"):
+            panel = ModSummaryPanel(host)
+            panel.show_mod(mod_data, str(tmp_path), is_active=False)
+
+        assert "Info: 1001" in panel._data_label.text()
+        assert panel._operations_tree.topLevelItemCount() == 0
+        panel._operations_toggle.click()
+        assert panel._operations_tree.topLevelItemCount() == 1001
+        assert panel._all_operations_title.text() == "All operations (1001)"
+        panel.deleteLater()
+        host.deleteLater()
+        _drain_events(qapp)
+
+    def test_mod_summary_panel_scrolls_long_operation_paths_horizontally(self, qapp):
+        """Checks that unbroken operation paths remain reachable."""
+        from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
+
+        host = QWidget()
+        host.local_config = {}
+        panel = ModSummaryPanel(host)
+        panel.resize(300, 400)
+        panel._empty_label.hide()
+        panel._scroll.show()
+        panel._data_label.setText("patch: " + "x" * 512)
+        panel.show()
+        qapp.processEvents()
+
+        assert panel._scroll.horizontalScrollBar().maximum() > 0
+
+        panel.deleteLater()
+        host.deleteLater()
+        _drain_events(qapp)
 
     def test_mod_summary_panel_keeps_full_description_visible(self, qapp):
         """Checks that mod summary panel keeps the full description text."""
@@ -1014,7 +1285,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Test Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description=description,
             game_version="1.0",
             description_url="",
@@ -1025,43 +1296,6 @@ class TestCommonWidgets:
             panel = ModSummaryPanel(host)
             panel.show_mod(mod_data, is_active=False)
             assert panel._description_label.text() == description
-        panel.deleteLater()
-        host.deleteLater()
-        _drain_events(qapp)
-
-    def test_mod_summary_panel_inserts_wrap_opportunities_for_long_file_names(
-        self, qapp
-    ):
-        """Checks that mod summary panel can wrap long file names in popup layouts."""
-        from unittest.mock import patch
-
-        from models.mod_models import ModFileData, ModInfo
-        from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
-
-        host = QWidget()
-        host.local_config = {}
-        mod_data = ModInfo(
-            id="test_mod",
-            name="Test Mod",
-            version="1.0.0",
-            author="Test Author",
-            description="Test description",
-            game_version="1.0",
-            description_url="",
-            downloads=0,
-            game="deltarune",
-            files={
-                "deltarune_4": ModFileData(
-                    data_file_path="chapter4/Ch4_Dojo_allStar.xdelta",
-                    extra_files=["audio/extra_file_mus_castle_town_ch4USDX.ogg.zip"],
-                )
-            },
-        )
-        with patch("ui.widgets.mod.mod_summary_panel.load_mod_icon_universal"):
-            panel = ModSummaryPanel(host)
-            panel.show_mod(mod_data, is_active=False)
-            assert "&#8203;" in panel._data_label.text()
-            assert "&#8203;" in panel._extra_label.text()
         panel.deleteLater()
         host.deleteLater()
         _drain_events(qapp)
@@ -1119,7 +1353,7 @@ class TestCommonWidgets:
             id="test_mod",
             name="Lazy Export Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",
@@ -1164,7 +1398,7 @@ class TestCommonWidgets:
             id="gb_wip_123",
             name="WIP Search Mod",
             version="1.0.0",
-            author="Test Author",
+            authors=["Test Author"],
             description="Test description",
             game_version="",
             description_url="",

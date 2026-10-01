@@ -36,7 +36,7 @@ FORMAT_LINE_RANGES = {1: (10311, 10328), 2: (3046, 3065)}
 SAVE_PATH_RE = re.compile(r"filech(?P<chapter>\d+)_(?P<slot>\d+)$")
 
 
-def tr(k, **kw):
+def tr(k, **_kw):
     return k
 
 

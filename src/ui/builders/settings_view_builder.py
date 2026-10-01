@@ -29,6 +29,7 @@ from config.config import (
     SETTINGS_COLOR_CONFIG,
 )
 from config.settings_schema import get_theme_color_key
+from models.catalog_models import THEME_TAGS
 from models.game_modes import get_visible_game_entries
 from services.localization_service import (
     get_settings_library_tab_title,
@@ -85,51 +86,25 @@ class _FilesDropWidget(QWidget):
 
 
 class _CenteredSectionHeader(QWidget):
-    """Keep a section title centered while its reset button stays at the edge."""
+    """Keep a section title and its reset control together."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.title_toggle = None
         self.reset_button = None
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(6)
+        self._layout.addStretch()
 
     def set_controls(self, title_toggle: SectionToggle, reset_button: QPushButton) -> None:
         title_toggle.setParent(self)
         reset_button.setParent(self)
         self.title_toggle = title_toggle
         self.reset_button = reset_button
-        self._position_controls()
-
-    def sizeHint(self) -> QSize:
-        sizes = [
-            control.sizeHint()
-            for control in (self.title_toggle, self.reset_button)
-            if control is not None
-        ]
-        if not sizes:
-            return super().sizeHint()
-        return QSize(max(size.width() for size in sizes), max(size.height() for size in sizes))
-
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._position_controls()
-
-    def _position_controls(self) -> None:
-        if self.title_toggle is not None:
-            size = self.title_toggle.sizeHint()
-            self.title_toggle.setGeometry(
-                (self.width() - size.width()) // 2,
-                (self.height() - size.height()) // 2,
-                size.width(),
-                size.height(),
-            )
-        if self.reset_button is not None and self.reset_button.isVisible():
-            size = self.reset_button.sizeHint()
-            self.reset_button.setGeometry(
-                self.width() - size.width(),
-                (self.height() - size.height()) // 2,
-                size.width(),
-                size.height(),
-            )
+        self._layout.addWidget(title_toggle)
+        self._layout.addWidget(reset_button)
+        self._layout.addStretch()
 
 
 class _ElidedPathLineEdit(QLineEdit):
@@ -220,9 +195,10 @@ class SettingsViewBuilder:
             self._build_library_tab(tab_widget),
             get_settings_library_tab_title(self.app_state),
         )
-        plugins_tab = self._build_plugins_tab(tab_widget)
-        tab_widget.addTab(plugins_tab, tr("ui.settings_tab_plugins"))
-        self.widgets["plugins_tab"] = plugins_tab
+        catalog_tab = self._build_catalog_tab(tab_widget)
+        tab_widget.addTab(catalog_tab, tr("ui.settings_tab_catalog"))
+        self.widgets["catalog_tab"] = catalog_tab
+        self.widgets["plugins_tab"] = catalog_tab
         settings_layout.addWidget(tab_widget, stretch=1)
 
         settings_layout.addStretch()
@@ -908,6 +884,42 @@ class SettingsViewBuilder:
         )
         layout.addWidget(sec)
 
+        sec, cl = self._collapsible_section(
+            tr("mod_updates.title"),
+            "library_mod_updates",
+            "mod_updates.title",
+            parent=page,
+        )
+        hide_update_mods_button_cb = self._styled_checkbox(
+            tr("mod_updates.hide_button"),
+            tr("mod_updates.hide_button_tooltip"),
+            "hide_update_mods_button",
+        )
+        cl.addWidget(
+            hide_update_mods_button_cb, alignment=Qt.AlignmentFlag.AlignCenter
+        )
+        automatic_mod_updates_cb = self._styled_checkbox(
+            tr("mod_updates.automatic"),
+            tr("mod_updates.automatic_tooltip"),
+            "automatic_mod_updates",
+        )
+        cl.addWidget(automatic_mod_updates_cb, alignment=Qt.AlignmentFlag.AlignCenter)
+        automatic_mod_updates_replace_cb = self._styled_checkbox(
+            tr("mod_updates.automatic_replace_current"),
+            tr("mod_updates.automatic_replace_current_tooltip"),
+            "automatic_mod_updates_replace_current",
+        )
+        cl.addWidget(
+            automatic_mod_updates_replace_cb, alignment=Qt.AlignmentFlag.AlignCenter
+        )
+        update_scope = QComboBox(page)
+        update_scope.addItem(tr("mod_updates.scope_game"), "game")
+        update_scope.addItem(tr("mod_updates.scope_profile"), "profile")
+        update_scope.addItem(tr("mod_updates.scope_all_profiles"), "all_profiles")
+        update_scope.setToolTip(tr("mod_updates.scope_tooltip"))
+        cl.addWidget(update_scope, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(sec)
+
         layout.addStretch()
 
         self.widgets["hide_library_tab_checkbox"] = hide_library_tab_checkbox
@@ -915,6 +927,12 @@ class SettingsViewBuilder:
         self.widgets["game_versions_full_replace_checkbox"] = (
             game_versions_full_replace_cb
         )
+        self.widgets["automatic_mod_updates_checkbox"] = automatic_mod_updates_cb
+        self.widgets["hide_update_mods_button_checkbox"] = hide_update_mods_button_cb
+        self.widgets["automatic_mod_updates_replace_current_checkbox"] = (
+            automatic_mod_updates_replace_cb
+        )
+        self.widgets["automatic_mod_updates_scope_combo"] = update_scope
         return self._wrap_in_scroll(page, parent)
 
     def _build_game_tab(self, parent: QWidget | None = None) -> QWidget:
@@ -1023,7 +1041,7 @@ class SettingsViewBuilder:
             "dont_hide_window_on_launch",
         )
         cl.addWidget(dont_hide_window_checkbox, alignment=Qt.AlignmentFlag.AlignCenter)
-        is_linux = platform.system() == "Linux"
+        supports_portproton = platform.system() in {"Linux", "Darwin"}
         use_portproton_checkbox = self._styled_checkbox(
             tr("ui.use_portproton"),
             "<html><body style='white-space: normal;'>"
@@ -1031,7 +1049,7 @@ class SettingsViewBuilder:
             + "</body></html>",
             "use_portproton",
         )
-        if not is_linux:
+        if not supports_portproton:
             use_portproton_checkbox.setVisible(False)
         cl.addWidget(use_portproton_checkbox, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(sec)
@@ -1114,7 +1132,7 @@ class SettingsViewBuilder:
             browse_tooltip=tr("tooltips.custom_wine_binary"),
             reset_config_key="custom_wine_path",
         )
-        wine_row.setVisible(is_linux)
+        wine_row.setVisible(supports_portproton)
         cl_adv.addWidget(wine_row, alignment=Qt.AlignmentFlag.AlignCenter)
 
         (
@@ -1129,7 +1147,7 @@ class SettingsViewBuilder:
             browse_tooltip=tr("tooltips.custom_portproton_binary"),
             reset_config_key="custom_portproton_path",
         )
-        portproton_row.setVisible(is_linux)
+        portproton_row.setVisible(supports_portproton)
         cl_adv.addWidget(portproton_row, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(sec_adv)
 
@@ -1175,7 +1193,7 @@ class SettingsViewBuilder:
         self.widgets["settings_reset_portproton_button"] = portproton_reset_button
         return self._wrap_in_scroll(page, parent)
 
-    def _build_plugins_tab(self, parent: QWidget | None = None) -> QWidget:
+    def _build_catalog_tab(self, parent: QWidget | None = None) -> QWidget:
         page, layout = self._build_simple_tab_page()
 
         filters = QWidget(page)
@@ -1183,14 +1201,14 @@ class SettingsViewBuilder:
         filters_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         filters_layout.setSpacing(12)
         installed_only_checkbox = self._styled_checkbox(
-            tr("plugins.filters_installed_only")
+            tr("catalog.filters_installed_only")
         )
-        plugins_tag_interface = self._styled_checkbox(tr("plugins.tag_interface"))
+        plugins_tag_interface = self._styled_checkbox(tr("catalog.tag_interface"))
         plugins_tag_game_experience = self._styled_checkbox(
-            tr("plugins.tag_game_experience")
+            tr("catalog.tag_game_experience")
         )
-        plugins_tag_tool = self._styled_checkbox(tr("plugins.tag_tool"))
-        plugins_tag_other = self._styled_checkbox(tr("plugins.tag_other"))
+        plugins_tag_tool = self._styled_checkbox(tr("catalog.tag_tool"))
+        plugins_tag_other = self._styled_checkbox(tr("catalog.tag_other"))
         for checkbox in (
             installed_only_checkbox,
             plugins_tag_interface,
@@ -1201,45 +1219,71 @@ class SettingsViewBuilder:
             filters_layout.addWidget(checkbox)
         layout.addWidget(filters)
 
-        plugins_container = QFrame(page)
-        plugins_container.setObjectName("plugins_settings_container")
-        plugins_container.setMinimumHeight(600)
-        plugins_container.setSizePolicy(
+        theme_filters = QWidget(page)
+        theme_filters_layout = QHBoxLayout(theme_filters)
+        theme_filters_layout.setContentsMargins(0, 0, 0, 0)
+        theme_filters_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        theme_filters_layout.setSpacing(12)
+        theme_tag_checkboxes = {
+            tag: self._styled_checkbox(tr(f"catalog.theme_tag_{tag}"))
+            for tag in THEME_TAGS
+        }
+        for checkbox in theme_tag_checkboxes.values():
+            theme_filters_layout.addWidget(checkbox)
+        theme_filters.hide()
+        filters_layout.addWidget(theme_filters)
+
+        catalog_container = QFrame(page)
+        catalog_container.setObjectName("catalog_settings_container")
+        catalog_container.setMinimumHeight(600)
+        catalog_container.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
         )
-        plugins_container_layout = QVBoxLayout(plugins_container)
-        plugins_container_layout.setContentsMargins(12, 12, 12, 12)
-        plugins_scroll = QScrollArea(plugins_container)
-        plugins_scroll.setWidgetResizable(True)
-        plugins_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        plugins_scroll.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        plugins_widget = _FilesDropWidget(plugins_scroll)
-        plugins_layout = QVBoxLayout(plugins_widget)
-        plugins_layout.setContentsMargins(8, 8, 8, 8)
-        plugins_layout.setSpacing(12)
-        plugins_layout.addStretch()
-        plugins_scroll.setWidget(plugins_widget)
-        viewport = plugins_scroll.viewport()
-        if viewport is not None:
-            viewport.setAcceptDrops(True)
-        plugins_container_layout.addWidget(plugins_scroll)
-        layout.addWidget(plugins_container)
+        catalog_container_layout = QVBoxLayout(catalog_container)
+        catalog_container_layout.setContentsMargins(12, 12, 12, 12)
+        catalog_type_tabs = QTabWidget(catalog_container)
+        catalog_plugins_page, catalog_plugins_layout = self._build_catalog_page(catalog_type_tabs, drop=True)
+        catalog_themes_page, catalog_themes_layout = self._build_catalog_page(catalog_type_tabs)
+        catalog_type_tabs.addTab(catalog_plugins_page, tr("catalog.plugins"))
+        catalog_type_tabs.addTab(catalog_themes_page, tr("catalog.themes"))
+        catalog_container_layout.addWidget(catalog_type_tabs)
+        layout.addWidget(catalog_container)
         layout.addStretch()
 
-        self.widgets["plugins_installed_only_checkbox"] = installed_only_checkbox
-        self.widgets["plugins_tag_interface_checkbox"] = plugins_tag_interface
-        self.widgets["plugins_tag_game_experience_checkbox"] = (
+        self.widgets["catalog_installed_only_checkbox"] = installed_only_checkbox
+        self.widgets["catalog_theme_tag_checkboxes"] = theme_tag_checkboxes
+        self.widgets["catalog_theme_filters_widget"] = theme_filters
+        self.widgets["catalog_tag_interface_checkbox"] = plugins_tag_interface
+        self.widgets["catalog_tag_game_experience_checkbox"] = (
             plugins_tag_game_experience
         )
+        self.widgets["catalog_tag_tool_checkbox"] = plugins_tag_tool
+        self.widgets["catalog_tag_other_checkbox"] = plugins_tag_other
+        self.widgets["catalog_type_tabs"] = catalog_type_tabs
+        self.widgets["catalog_plugins_layout"] = catalog_plugins_layout
+        self.widgets["catalog_themes_layout"] = catalog_themes_layout
+        self.widgets["catalog_widget"] = catalog_plugins_page
+        self.widgets["catalog_container"] = catalog_container
+        self.widgets["catalog_layout"] = catalog_plugins_layout
+        # Compatibility aliases for extensions built against the pre-catalog UI.
+        self.widgets["plugins_tab"] = self.widgets.get("catalog_tab")
+        self.widgets["plugins_installed_only_checkbox"] = installed_only_checkbox
+        self.widgets["plugins_tag_interface_checkbox"] = plugins_tag_interface
+        self.widgets["plugins_tag_game_experience_checkbox"] = plugins_tag_game_experience
         self.widgets["plugins_tag_tool_checkbox"] = plugins_tag_tool
         self.widgets["plugins_tag_other_checkbox"] = plugins_tag_other
-        self.widgets["plugins_scroll"] = plugins_scroll
-        self.widgets["plugins_widget"] = plugins_widget
-        self.widgets["plugins_layout"] = plugins_layout
-        self.widgets["plugins_container"] = plugins_container
+        self.widgets["plugins_layout"] = catalog_plugins_layout
+        self.widgets["plugins_widget"] = catalog_plugins_page
+        self.widgets["plugins_container"] = catalog_container
         return self._wrap_in_scroll(page, parent)
+
+    def _build_catalog_page(self, parent, *, drop=False):
+        widget = _FilesDropWidget(parent) if drop else QWidget(parent)
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(12)
+        layout.addStretch()
+        return widget, layout
 
     def get_widgets(self) -> dict[str, Any]:
         return self.widgets

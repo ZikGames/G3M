@@ -36,6 +36,7 @@ _ALLOWED_TRANSITIONS: dict[LaunchState, set[LaunchState]] = {
         LaunchState.RECOVERING,
         LaunchState.BACKING_UP,
         LaunchState.LAUNCHING,
+        LaunchState.COMPLETED,
         LaunchState.CANCELLED,
         LaunchState.FAILED,
     },
@@ -59,6 +60,7 @@ _ALLOWED_TRANSITIONS: dict[LaunchState, set[LaunchState]] = {
     LaunchState.DEPLOYED: {
         LaunchState.LAUNCHING,
         LaunchState.RESTORING,
+        LaunchState.COMPLETED,
         LaunchState.FAILED,
     },
     LaunchState.LAUNCHING: {
@@ -66,7 +68,11 @@ _ALLOWED_TRANSITIONS: dict[LaunchState, set[LaunchState]] = {
         LaunchState.RESTORING,
         LaunchState.FAILED,
     },
-    LaunchState.RUNNING: {LaunchState.RESTORING, LaunchState.FAILED},
+    LaunchState.RUNNING: {
+        LaunchState.RESTORING,
+        LaunchState.COMPLETED,
+        LaunchState.FAILED,
+    },
     LaunchState.RESTORING: {LaunchState.COMPLETED, LaunchState.FAILED},
     LaunchState.COMPLETED: {LaunchState.PREPARING, LaunchState.RECOVERING},
     LaunchState.CANCELLED: {
@@ -123,22 +129,9 @@ class LaunchTransaction:
     def mark_running(self) -> None:
         self.transition(LaunchState.RUNNING)
 
-    def restore(self, callback: Callable[[], bool]) -> bool:
-        if self.state != LaunchState.RESTORING:
-            self.transition(LaunchState.RESTORING)
-        if callback():
+    def complete(self) -> None:
+        if self.state != LaunchState.COMPLETED:
             self.transition(LaunchState.COMPLETED)
-            return True
-        self.fail("restore")
-        return False
-
-    def recover(self, callback: Callable[[], bool]) -> bool:
-        self.transition(LaunchState.RECOVERING)
-        if callback():
-            self.transition(LaunchState.COMPLETED)
-            return True
-        self.fail("recovery")
-        return False
 
     def fail(self, reason: str) -> None:
         self.failure_reason = reason

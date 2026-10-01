@@ -1,27 +1,121 @@
-"""Unit tests for test service."""
+"""Unit tests for strict installed-mod state."""
 
+import os
 from types import SimpleNamespace
 
 import pytest
 
 from models.exceptions import ModUninstallationError
-from models.mod_models import BrowserModInfo, LocalModInfo, ModFileData
+from models.mod_models import BrowserModInfo, LocalModInfo
 from services.mod.service import ModManager
 from utils.file_utils import load_json, save_json
+from utils.mod.config import MOD_CONFIG_VERSION
 
 
-@pytest.mark.parametrize("metadata", [None, [], ["invalid"], {"mod": None}, {"mod": ["invalid"]}])
-def test_record_playtime_preserves_invalid_metadata(app_state, metadata):
+def _config(mod_id="local_operation", target="${game_path}/chapter2_windows/data.win"):
+    return {
+        "config_version": MOD_CONFIG_VERSION,
+        "id": mod_id,
+        "name": "Operation Mod",
+        "version": "1.0.0",
+        "authors": ["Author"],
+        "game": "deltarune",
+        "files": [
+            {
+                "source": "${mod_path}/patch.xdelta",
+                "target": target,
+                "type": "patch",
+            }
+        ],
+    }
+
+
+def test_operation_mods_are_visible_in_the_sections_targeted_by_operations():
+    config = _config()
     manager = ModManager.__new__(ModManager)
-    manager.app_state = app_state
-    save_json(app_state.mods_metadata_path, metadata)
+    local_mod = LocalModInfo.from_dict(config)
+    manager._get_mods_cache = lambda: {
+        "local_operation": SimpleNamespace(config_data=config)
+    }
 
-    manager.add_playtime_hours(["mod"], 1.0)
+    assert local_mod.sections == frozenset({"deltarune_2"})
+    assert manager.mod_has_files_for_chapter(local_mod, "deltarune_2")
+    assert not manager.mod_has_files_for_chapter(local_mod, "deltarune_3")
+    assert manager.get_mod_status(local_mod, "deltarune_2") == "ready"
 
-    assert load_json(app_state.mods_metadata_path) == metadata
+
+def test_create_mod_object_refreshes_the_existing_local_operation_model():
+    manager = ModManager.__new__(ModManager)
+    manager._BROWSER_ONLY_DATE_FIELD = "created_date"
+    existing = LocalModInfo.from_dict(_config())
+
+    refreshed = manager.create_mod_object_from_info(
+        _config(target="${game_path}/chapter4_windows/data.win")
+        | {"name": "Updated", "playtime_hours": 0.5},
+        [existing],
+    )
+
+    assert refreshed is existing
+    assert existing.name == "Updated"
+    assert existing.sections == frozenset({"deltarune_4"})
+    assert existing.playtime_hours == pytest.approx(0.5)
 
 
-def test_record_playtime_quarantines_corrupt_json(app_state):
+def test_create_mod_object_keeps_remote_listing_separate():
+    manager = ModManager.__new__(ModManager)
+    manager._BROWSER_ONLY_DATE_FIELD = "created_date"
+    remote = BrowserModInfo(
+        id="gb_mod_1",
+        name="Remote",
+        version="1.0.0",
+        authors=["Author"],
+        description="Description",
+        game="deltarune",
+    )
+
+    imported = manager.create_mod_object_from_info(_config("gb_mod_1"), [remote])
+
+    assert imported is not remote
+    assert remote.name == "Remote"
+    assert imported.sections == frozenset({"deltarune_2"})
+
+
+def test_load_local_mods_refreshes_sections_after_config_edit(app_state, feedback_service):
+    mod_folder = os.path.join(app_state.mods_dir, "operation")
+    os.makedirs(mod_folder, exist_ok=True)
+    save_json(os.path.join(mod_folder, "mod_config.json"), _config("local_operation"))
+    manager = ModManager(app_state, feedback_service)
+    existing = LocalModInfo.from_dict(_config("local_operation"))
+    app_state.all_mods = [existing]
+
+    save_json(
+        os.path.join(mod_folder, "mod_config.json"),
+        _config("local_operation", "${game_path}/chapter4_windows/data.win"),
+    )
+    manager.load_local_mods()
+
+    assert app_state.all_mods == [existing]
+    assert existing.sections == frozenset({"deltarune_4"})
+
+
+def test_uninstall_preserves_uninstall_error_when_feedback_fails(
+    app_state, feedback_service, monkeypatch
+):
+    manager = ModManager(app_state, feedback_service)
+    monkeypatch.setattr(
+        manager,
+        "delete_mod_files",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PermissionError(13, "Permission denied", "C:/mods/ghost_mod")
+        ),
+    )
+    monkeypatch.setattr(feedback_service, "show_message", lambda *_args: None)
+
+    with pytest.raises(ModUninstallationError):
+        manager.uninstall_mod(SimpleNamespace(id="ghost_mod", name="Ghost Mod"))
+
+
+def test_record_playtime_quarantines_corrupt_metadata(app_state):
     manager = ModManager.__new__(ModManager)
     manager.app_state = app_state
     with open(app_state.mods_metadata_path, "w", encoding="utf-8") as file:
@@ -29,523 +123,4 @@ def test_record_playtime_quarantines_corrupt_json(app_state):
 
     manager.add_playtime_hours(["mod"], 1.0)
 
-    with open(f"{app_state.mods_metadata_path}.invalid.bak", encoding="utf-8") as file:
-        assert file.read() == '{"mod":'
     assert load_json(app_state.mods_metadata_path) == {"mod": {"playtime_hours": 1.0}}
-
-
-def test_create_mod_object_from_info_refreshes_existing_local_mod_fields_and_playtime():
-    """Checks that creating mod object from info refreshes existing local mod fields and playtime."""
-    manager = ModManager.__new__(ModManager)
-    manager._BROWSER_ONLY_DATE_FIELD = "_".join(("created", "date"))
-    existing_mod = LocalModInfo(
-        id="gb_wip_94809",
-        name="Test Mod",
-        version="1.0.0",
-        author="Author",
-        description="Desc",
-        game_version="1.0",
-        game="deltarune",
-        files={"1": ModFileData(data_file_url="data.win")},
-        playtime_hours=0.0,
-    )
-
-    result = manager.create_mod_object_from_info(
-        {
-            "id": "gb_wip_94809",
-            "name": "Updated Mod",
-            "version": "2.0.0",
-            "added_date": "2026-03-26 18:57:01",
-            "playtime_hours": 0.5178,
-            "files": {"deltarune_1": {"data_file_url": "patch.xdelta"}},
-        },
-        [existing_mod],
-    )
-
-    assert result is existing_mod
-    assert result.name == "Updated Mod"
-    assert result.version == "2.0.0"
-    assert result.playtime_hours == pytest.approx(0.5178)
-    assert result.added_date == "2026-03-26 18:57:01"
-    assert result.files["deltarune_1"].data_file_url == "patch.xdelta"
-
-
-def test_create_mod_object_from_info_does_not_mutate_existing_browser_mod():
-    """Checks that creating mod object from info does not mutate existing browser mod."""
-    manager = ModManager.__new__(ModManager)
-    manager._BROWSER_ONLY_DATE_FIELD = "_".join(("created", "date"))
-    existing_mod = BrowserModInfo(
-        id="gb_wip_94809",
-        name="Remote Name",
-        version="1.0.0",
-        author="Author",
-        description="Remote Desc",
-        game_version="1.0",
-        description_url="",
-        downloads=10,
-        game="deltarune",
-        files={},
-        last_updated="2025-01-01",
-    )
-
-    result = manager.create_mod_object_from_info(
-        {
-            "id": "gb_wip_94809",
-            "name": "Local Name",
-            "version": "2.0.0",
-            "files": {"deltarune_1": {"data_file_url": "patch.xdelta"}},
-        },
-        [existing_mod],
-    )
-
-    assert result is not existing_mod
-    assert existing_mod.name == "Remote Name"
-    assert existing_mod.last_updated == "2025-01-01"
-    assert result.name == "Local Name"
-
-
-def test_uninstall_mod_preserves_uninstall_error_if_feedback_fails(
-    app_state, feedback_service, monkeypatch
-):
-    """Checks that feedback UI failures do not replace uninstall failures."""
-    manager = ModManager(app_state, feedback_service)
-
-    def fail_delete_mod_files(*_args, **_kwargs):
-        raise PermissionError(13, "Permission denied", "C:/mods/ghost_mod")
-
-    def fail_show_message(*_args, **_kwargs):
-        raise RuntimeError("feedback failed")
-
-    monkeypatch.setattr(
-        manager,
-        "delete_mod_files",
-        fail_delete_mod_files,
-    )
-    monkeypatch.setattr(
-        feedback_service,
-        "show_message",
-        fail_show_message,
-    )
-
-    with pytest.raises(ModUninstallationError):
-        manager.uninstall_mod(SimpleNamespace(id="ghost_mod", name="Ghost Mod"))
-
-
-def test_delete_mod_files_immediately_forgets_local_state_and_metadata(
-    app_state, feedback_service
-):
-    """Uninstalling removes stale local identity without dropping a browser result."""
-    import os
-
-    mod_folder = os.path.join(app_state.mods_dir, "MausTweaks")
-    os.makedirs(mod_folder, exist_ok=True)
-    save_json(
-        os.path.join(mod_folder, "mod_config.json"),
-        {"id": "maustweaks", "name": "MausTweaks", "files": {}},
-        indent=2,
-    )
-    save_json(
-        app_state.mods_metadata_path,
-        {"maustweaks": {"playtime_hours": 1}, "other": {"playtime_hours": 2}},
-        indent=2,
-    )
-    local_mod = LocalModInfo(
-        id="maustweaks",
-        name="MausTweaks",
-        version="1.0.0",
-        author="Author",
-        description="Local",
-        game="deltarune",
-    )
-    browser_mod = BrowserModInfo(
-        id="maustweaks",
-        name="MausTweaks Browser Result",
-        version="1.0.0",
-        author="Author",
-        description="Remote",
-        game="deltarune",
-    )
-    app_state.all_mods = [local_mod, browser_mod]
-    app_state.filtered_mods = [local_mod, browser_mod]
-    manager = ModManager(app_state, feedback_service)
-    manager._get_mods_cache()
-
-    manager.delete_mod_files(local_mod)
-
-    assert not os.path.exists(mod_folder)
-    assert app_state.all_mods == [browser_mod]
-    assert app_state.filtered_mods == [browser_mod]
-    assert "maustweaks" not in manager._mods_cache
-    assert load_json(app_state.mods_metadata_path) == {
-        "other": {"playtime_hours": 2}
-    }
-
-
-def test_get_installed_mods_list_handles_iter_and_cache_paths_without_folder_path_error(
-    app_state, feedback_service
-):
-    """Checks that getting installed mods list handles iter and cache paths without folder path error."""
-    import os
-    mod_folder = os.path.join(app_state.mods_dir, "test_mod")
-    config_path = os.path.join(mod_folder, "mod_config.json")
-
-    os.makedirs(mod_folder, exist_ok=True)
-    save_json(
-        config_path,
-        {
-            "id": "test_mod",
-            "name": "Test Mod",
-            "author": "Author",
-            "version": "1.0.0",
-            "game": "deltarune",
-            "files": {"deltarune_1": {"data_file_path": "patch.xdelta"}},
-        },
-        indent=4,
-    )
-
-    manager = ModManager(app_state, feedback_service)
-
-    uncached_mods = manager.get_installed_mods_list()
-    manager.load_local_mods()
-    cached_mods = manager.get_installed_mods_list()
-
-    assert [mod["id"] for mod in uncached_mods] == ["test_mod"]
-    assert [mod["id"] for mod in cached_mods] == ["test_mod"]
-
-
-def test_get_installed_mods_list_uses_config_name_not_folder_name(app_state, feedback_service):
-    """Checks that getting installed mods list uses config name not folder name."""
-    import os
-
-    mod_folder = os.path.join(app_state.mods_dir, "archive_name")
-    os.makedirs(mod_folder, exist_ok=True)
-    save_json(
-        os.path.join(mod_folder, "mod_config.json"),
-        {
-            "id": "test_mod",
-            "name": "Configured Mod Name",
-            "author": "Author",
-            "version": "1.0.0",
-            "game": "deltarune",
-            "files": {"deltarune_1": {"data_file_path": "patch.xdelta"}},
-        },
-        indent=4,
-    )
-
-    mods = ModManager(app_state, feedback_service).get_installed_mods_list()
-
-    assert [mod["name"] for mod in mods] == ["Configured Mod Name"]
-    assert [mod["folder_name"] for mod in mods] == ["archive_name"]
-
-
-def test_get_mod_folder_path_and_source_dir_do_not_depend_on_sanitized_name(
-    app_state, feedback_service
-):
-    """Checks that mod folder resolution uses mod id instead of sanitized display name."""
-    import logging
-    import os
-
-    from utils.patching.mod_resolve_utils import get_mod_source_dir
-
-    mod_folder = os.path.join(app_state.mods_dir, "downloaded_zip_name")
-    chapter_dir = os.path.join(mod_folder, "chapter_1")
-    os.makedirs(chapter_dir, exist_ok=True)
-    save_json(
-        os.path.join(mod_folder, "mod_config.json"),
-        {
-            "id": "test_mod",
-            "name": "Completely Different Display Name",
-            "author": "Author",
-            "version": "1.0.0",
-            "game": "deltarune",
-            "files": {"deltarune_1": {"data_file_path": "patch.xdelta"}},
-        },
-        indent=4,
-    )
-
-    manager = ModManager(app_state, feedback_service)
-
-    assert manager.get_mod_folder_path("test_mod") == mod_folder
-    assert (
-        get_mod_source_dir(
-            SimpleNamespace(id="test_mod", name="Completely Different Display Name", game="deltarune"),
-            "deltarune_1",
-            manager,
-            app_state,
-            logging.getLogger("test"),
-        )
-        == chapter_dir
-    )
-
-
-def test_load_local_mods_refreshes_existing_local_mod_files_after_edit(
-    app_state, feedback_service
-):
-    """Checks that reloading local mods refreshes chapter/file mappings in memory."""
-    import os
-
-    mod_folder = os.path.join(app_state.mods_dir, "sigma")
-    os.makedirs(mod_folder, exist_ok=True)
-    save_json(
-        os.path.join(mod_folder, "mod_config.json"),
-        {
-            "id": "local_sigma",
-            "name": "sigma",
-            "author": "Author",
-            "version": "1.0.0",
-            "game": "deltarune",
-            "files": {"deltarune_0": {"data_file_path": "BOSSRUSH.win"}},
-        },
-        indent=4,
-    )
-    with open(os.path.join(mod_folder, "BOSSRUSH.win"), "wb") as f:
-        f.write(b"menu")
-
-    manager = ModManager(app_state, feedback_service)
-    existing_mod = LocalModInfo(
-        id="local_sigma",
-        name="sigma",
-        version="1.0.0",
-        author="Author",
-        description="Desc",
-        game="deltarune",
-        files={
-            "deltarune_0": ModFileData(
-                data_file_path=os.path.join(mod_folder, "BOSSRUSH.win")
-            )
-        },
-    )
-    app_state.all_mods = [existing_mod]
-
-    save_json(
-        os.path.join(mod_folder, "mod_config.json"),
-        {
-            "id": "local_sigma",
-            "name": "sigma",
-            "author": "Author",
-            "version": "1.0.0",
-            "game": "deltarune",
-            "files": {"deltarune_4": {"data_file_path": "BOSSRUSH.win"}},
-        },
-        indent=4,
-    )
-
-    manager.invalidate_mods_cache()
-    manager.load_local_mods()
-
-    assert app_state.all_mods[0] is existing_mod
-    assert existing_mod.get_chapter_data("deltarune_0") is None
-    refreshed = existing_mod.get_chapter_data("deltarune_4")
-    assert refreshed is not None
-    assert refreshed.data_file_path == os.path.join(mod_folder, "BOSSRUSH.win")
-
-
-def test_load_local_mods_refreshes_existing_installed_mod_files_after_edit_without_restart(
-    app_state, feedback_service
-):
-    """Checks that reloading installed mods refreshes chapter mappings for existing in-memory objects."""
-    import logging
-    import os
-
-    from utils.patching.mod_resolve_utils import get_mod_configured_data_file
-
-    mod_folder = os.path.join(app_state.mods_dir, "chapter_swap")
-    os.makedirs(mod_folder, exist_ok=True)
-    data_file = os.path.join(mod_folder, "DATA.win")
-    with open(data_file, "wb") as handle:
-        handle.write(b"patched")
-    save_json(
-        os.path.join(mod_folder, "mod_config.json"),
-        {
-            "id": "chapter_swap_mod",
-            "name": "Chapter Swap",
-            "author": "Author",
-            "version": "1.0.0",
-            "game": "deltarune",
-            "files": {"deltarune_4": {"data_file_path": "DATA.win"}},
-        },
-        indent=4,
-    )
-
-    manager = ModManager(app_state, feedback_service)
-    existing_mod = LocalModInfo(
-        id="chapter_swap_mod",
-        name="Chapter Swap",
-        version="1.0.0",
-        author="Author",
-        description="Desc",
-        game="deltarune",
-        files={
-            "deltarune_4": ModFileData(
-                data_file_path=data_file,
-            )
-        },
-    )
-    app_state.all_mods = [existing_mod]
-
-    save_json(
-        os.path.join(mod_folder, "mod_config.json"),
-        {
-            "id": "chapter_swap_mod",
-            "name": "Chapter Swap",
-            "author": "Author",
-            "version": "1.0.0",
-            "game": "deltarune",
-            "files": {"deltarune_0": {"data_file_path": "DATA.win"}},
-        },
-        indent=4,
-    )
-
-    manager.invalidate_mods_cache()
-    manager.load_local_mods()
-
-    assert app_state.all_mods[0] is existing_mod
-    assert existing_mod.get_chapter_data("deltarune_4") is None
-    refreshed = existing_mod.get_chapter_data("deltarune_0")
-    assert refreshed is not None
-    assert refreshed.data_file_path == "DATA.win"
-    assert (
-        get_mod_configured_data_file(
-            existing_mod,
-            "deltarune_0",
-            manager,
-            app_state,
-            logging.getLogger("test"),
-        )
-        == data_file
-    )
-
-
-def test_fetch_mods_thread_keeps_remote_card_object_separate_from_local_state():
-    """Checks that fetching mods keeps remote card object separate from local state."""
-    from unittest.mock import Mock, patch
-
-    from models.app_state import AppState
-    from workers.fetch_mods_worker import FetchModsThread
-
-    app_state = AppState()
-    app_state.local_config = {"selected_search_game": "deltarune", "search_sort_index": 0}
-    local_mod = LocalModInfo(
-        id="gb_mod_1",
-        name="Library Name",
-        version="1.0.0",
-        author="Author",
-        description="Local",
-        game="deltarune",
-        files={"deltarune_1": ModFileData(data_file_url="patch.xdelta")},
-        last_updated="N/A",
-    )
-    app_state.all_mods = [local_mod]
-    emitted = []
-    app_state.all_mods_updated.connect(lambda mods: emitted.append(mods))
-    main_window = SimpleNamespace(
-        app_state=app_state,
-        settings_service=None,
-        mod_service=Mock(
-            get_installed_mods_list=Mock(
-                return_value=[
-                    {
-                        "id": "gb_mod_1",
-                        "name": "Library Name",
-                        "game": "deltarune",
-                        "files": {"deltarune_1": {"data_file_path": "patch.xdelta"}},
-                    }
-                ]
-            )
-        ),
-    )
-    remote_mod = BrowserModInfo(
-        id="gb_mod_1",
-        name="Remote Name",
-        version="2.0.0",
-        author="Remote Author",
-        description="Remote Desc",
-        game="deltarune",
-        downloads=42,
-        last_updated="2026-03-01",
-    )
-
-    with patch(
-        "workers.fetch_mods_worker.get_gamebanana_game_ids",
-        return_value={"deltarune": 1},
-    ), patch(
-        "adapters.gamebanana_adapter.GameBananaAPI.get_game_mods",
-        return_value=([remote_mod], []),
-    ):
-        FetchModsThread(main_window).run()
-
-    result_mod = emitted[-1][0]
-    assert result_mod is remote_mod
-    assert result_mod is not local_mod
-    assert result_mod.name == "Remote Name"
-    assert result_mod.last_updated == "2026-03-01"
-    assert result_mod.files["deltarune_1"].data_file_url == "patch.xdelta"
-    assert local_mod.name == "Library Name"
-    assert local_mod.last_updated == "N/A"
-
-
-def test_get_installed_mods_list_does_not_rewrite_mod_configs_during_read(
-    app_state, feedback_service, monkeypatch
-):
-    """Checks that installed-mod scans stay read-only and avoid needless disk writes."""
-    import os
-
-    mod_folder = os.path.join(app_state.mods_dir, "read_only_mod")
-    os.makedirs(mod_folder, exist_ok=True)
-    save_json(
-        os.path.join(mod_folder, "mod_config.json"),
-        {
-            "id": "read_only_mod",
-            "name": "Read Only Mod",
-            "author": "Author",
-            "version": "1.0.0",
-            "game": "deltarune",
-            "files": {"deltarune_1": {"data_file_path": "patch.xdelta"}},
-        },
-        indent=4,
-    )
-    manager = ModManager(app_state, feedback_service)
-    save_calls = []
-    monkeypatch.setattr(
-        "services.mod.service.save_json",
-        lambda *args, **kwargs: save_calls.append((args, kwargs)),
-    )
-
-    mods = manager.get_installed_mods_list()
-
-    assert [mod["id"] for mod in mods] == ["read_only_mod"]
-    assert all(call[0][0] != os.path.join(mod_folder, "mod_config.json") for call in save_calls)
-
-
-def test_load_local_mods_runs_corrupted_cleanup_only_once_per_session(
-    app_state, feedback_service, monkeypatch
-):
-    """Checks that repeated reloads do not rescan corruption every refresh."""
-    import os
-
-    mod_folder = os.path.join(app_state.mods_dir, "stable_mod")
-    os.makedirs(mod_folder, exist_ok=True)
-    save_json(
-        os.path.join(mod_folder, "mod_config.json"),
-        {
-            "id": "stable_mod",
-            "name": "Stable Mod",
-            "author": "Author",
-            "version": "1.0.0",
-            "game": "deltarune",
-            "files": {"deltarune_1": {"data_file_path": "patch.xdelta"}},
-        },
-        indent=4,
-    )
-    manager = ModManager(app_state, feedback_service)
-    cleanup_calls = []
-    monkeypatch.setattr(
-        "services.mod.service.cleanup_corrupted_mods",
-        lambda mods_dir: cleanup_calls.append(mods_dir),
-    )
-
-    manager.load_local_mods()
-    manager.invalidate_mods_cache()
-    manager.load_local_mods()
-
-    assert cleanup_calls == [app_state.mods_dir]

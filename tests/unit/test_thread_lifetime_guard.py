@@ -1,4 +1,11 @@
-from ui.utils.thread_lifetime import retire_qthread
+import threading
+
+import pytest
+from PyQt6 import sip
+from PyQt6.QtWidgets import QWidget
+
+from services.background_operations import background_operations
+from ui.utils.thread_lifetime import ManagedQThread, retire_qthread
 
 
 class _Signal:
@@ -55,3 +62,32 @@ def test_thread_finishing_during_signal_registration_is_deleted():
     retire_qthread(thread)
 
     assert thread.deleted is True
+
+
+@pytest.mark.parametrize("retire_before_delete", [False, True])
+def test_native_running_thread_survives_parent_deletion(qtbot, retire_before_delete):
+    started = threading.Event()
+    finish = threading.Event()
+
+    class Worker(ManagedQThread):
+        def run(self):
+            started.set()
+            finish.wait(5)
+
+    parent = QWidget()
+    thread = Worker(parent)
+    thread.start()
+    try:
+        assert started.wait(2)
+        if retire_before_delete:
+            retire_qthread(thread)
+        assert thread.parent() is None
+        sip.delete(parent)
+        assert not sip.isdeleted(thread)
+    finally:
+        finish.set()
+        assert thread.wait(2000)
+    qtbot.waitUntil(lambda: id(thread) not in background_operations._threads)
+    if not retire_before_delete:
+        retire_qthread(thread)
+    qtbot.waitUntil(lambda: sip.isdeleted(thread))

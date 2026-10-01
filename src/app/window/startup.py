@@ -19,8 +19,8 @@ def _safe_update_status(window, message: str, color: str) -> None:
         return
     try:
         update_status(message, color)
-    except Exception as e:
-        logger.warning("AppWindow startup status feedback failed: %s", e, exc_info=True)
+    except Exception as error:
+        logger.warning("AppWindow startup status feedback failed: %s", error, exc_info=True)
 
 
 def handle_pending_install(window) -> None:
@@ -122,12 +122,7 @@ def trigger_initial_mods_refresh(window, *, saved_chapter_mode=False) -> None:
 
 def on_mod_scan_finished(window, scan_cache: dict) -> None:
     try:
-        if hasattr(window.mod_service, "_mods_cache") and hasattr(
-            window.mod_service, "_cache_lock"
-        ):
-            with window.mod_service._cache_lock:
-                window.mod_service._mods_cache = scan_cache
-                window.mod_service._mods_cache_valid = True
+        window.mod_service._on_scan_completed(scan_cache)
         window.mod_service.load_local_mods()
         saved_chapter_mode = window.app_state.local_config.get(
             "chapter_mode_enabled", False
@@ -136,12 +131,11 @@ def on_mod_scan_finished(window, scan_cache: dict) -> None:
         window._load_used_mods_debounce.call(
             window.used_mods_service.load_used_mods_state
         )
-    except Exception as e:
-        logger.error(
-            f"AppWindow: Error in _on_mod_scan_finished: {e}", exc_info=True
-        )
+    except Exception as error:
+        logger.error("AppWindow: Error in mod scan callback: %s", error, exc_info=True)
         _safe_update_status(
             window,
-            tr("status.mod_scan_error", details=str(e)), UI_COLORS["status_error"]
+            tr("status.mod_scan_error", details=str(error)),
+            UI_COLORS["status_error"],
         )
         window.setEnabled(True)

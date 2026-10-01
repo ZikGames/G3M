@@ -6,14 +6,26 @@ import logging
 import os
 import shutil
 import tempfile
+import uuid
 import zipfile
+from pathlib import Path
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QMessageBox, QPushButton, QVBoxLayout
 
 from config.config import MOD_CONFIG_FILENAME
 from services.localization_service import tr
+from services.mod_operation_support import confirm_direct_operation_paths
 from utils.archive_utils import extract_archive, unwrap_single_directory_chain
-from utils.file_utils import find_deltamod_info_file, save_json
+from utils.file_utils import find_deltamod_info_file, flatten_single_child_directories
+from utils.mod.config import (
+    read_mod_config_bytes,
+    write_mod_config,
+)
+from utils.mod.legacy_config_migration import (
+    migrate_legacy_config_bytes,
+    migrate_legacy_config_file,
+)
 from utils.mod.utils import get_mod_id
 
 logger = logging.getLogger(__name__)
@@ -27,8 +39,8 @@ class ModImportExportController:
         self.mod_service = mod_service
         self.app_window = app_window
         self._import_queue: list = []
+        self._manual_import_batches: list[list[str]] = []
         self._importing = False
-        self._active_remote_import_source: str | None = None
 
     def _refresh_mod_list(self) -> None:
         self.mod_service.invalidate_mods_cache()
@@ -111,8 +123,6 @@ class ModImportExportController:
 
     def show_mod_details_dialog(self, mod_data):
         """Open the mod editor dialog in edit mode for the given mod."""
-        import json
-
         mod_id = get_mod_id(mod_data)
         if not mod_id:
             return
@@ -124,8 +134,7 @@ class ModImportExportController:
             config_path = os.path.join(mod_folder, MOD_CONFIG_FILENAME)
             if os.path.exists(config_path):
                 try:
-                    with open(config_path, encoding="utf-8") as f:
-                        config_data = json.load(f)
+                    config_data = migrate_legacy_config_file(config_path)
                 except Exception as e:
                     logger.error(
                         "Failed to load %s from %s: %s",
@@ -203,20 +212,44 @@ class ModImportExportController:
                     return
                 config_path_to_read = os.path.join(content_path, MOD_CONFIG_FILENAME)
                 if os.path.exists(config_path_to_read):
-                    with open(config_path_to_read, encoding="utf-8") as f:
-                        config = json.load(f)
-                    from utils.mod.config_parser import normalize_mod_config_data
-
-                    normalize_mod_config_data(config, mod_root_path=content_path)
+                    raw_bytes = read_mod_config_bytes(config_path_to_read)
+                    config = migrate_legacy_config_bytes(
+                        raw_bytes, mod_root_path=content_path
+                    )
+                    raw_config = json.loads(raw_bytes)
+                    source_id = raw_config.get("id") if isinstance(raw_config, dict) else None
+                    if not source_id and isinstance(raw_config, dict):
+                        metadata = raw_config.get("metadata")
+                        source_id = metadata.get("id") if isinstance(metadata, dict) else None
                     mod_id = config.get("id")
-                    mod_name = config.get("name", "Unknown")
+                    mod_name_value = config.get("name", "Unknown")
+                    mod_name = (
+                        mod_name_value
+                        if isinstance(mod_name_value, str) and mod_name_value
+                        else "Unknown"
+                    )
 
-                    if not mod_id:
-                        mod_id = f"local_{sanitize_filename(mod_name).lower().replace(' ', '_')}"
+                    if not source_id:
+                        mod_id = f"local_{uuid.uuid4().hex[:12]}"
                         config["id"] = mod_id
-                        save_json(config_path_to_read, config, indent=2)
                     mod_id = str(mod_id)
+                    if not confirm_direct_operation_paths(
+                        getattr(self.app_window, "feedback_service", None),
+                        getattr(self.app_state, "local_config", None),
+                        config,
+                        mod_id=mod_id,
+                    ):
+                        return
 
+                    icon_path = os.path.join(content_path, "_icon.png")
+                    if not os.path.exists(icon_path):
+                        icon_path = os.path.join(content_path, "icon.png")
+                    if os.path.exists(icon_path) and not config.get("icon"):
+                        config["icon"] = (
+                            "${mod_path}/_icon.png"
+                            if os.path.basename(icon_path) == "_icon.png"
+                            else "${mod_path}/icon.png"
+                        )
                     existing_mod_folder = self.mod_service.get_mod_folder_path(mod_id)
                     if not isinstance(existing_mod_folder, (str, os.PathLike)) or not os.path.isdir(
                         existing_mod_folder
@@ -226,7 +259,7 @@ class ModImportExportController:
                         )
                     if existing_mod_folder:
                         self._merge_into_existing_mod(
-                            mod_id, content_path, file_path, mod_name
+                            mod_id, content_path, file_path, mod_name, config
                         )
                         return
 
@@ -246,23 +279,7 @@ class ModImportExportController:
                         target_config_path = os.path.join(
                             target_mod_dir, MOD_CONFIG_FILENAME
                         )
-                        config_path = target_config_path
-                        config_updated = False
-                        icon_path = os.path.join(target_mod_dir, "_icon.png")
-                        if not os.path.exists(icon_path):
-                            icon_path = os.path.join(target_mod_dir, "icon.png")
-                        if os.path.exists(icon_path) and (not config.get("icon")):
-                            config["icon"] = (
-                                "_icon.png"
-                                if os.path.basename(icon_path) == "_icon.png"
-                                else "icon.png"
-                            )
-                            config_updated = True
-                        config_updated = normalize_mod_config_data(
-                            config, mod_root_path=target_mod_dir
-                        ) or config_updated
-                        if config_updated:
-                            save_json(config_path, config, indent=2)
+                        write_mod_config(target_config_path, config)
                         self._refresh_mod_list()
                         self._safe_show_information(
                             tr("dialogs.success"),
@@ -292,7 +309,7 @@ class ModImportExportController:
             )
 
     def _merge_into_existing_mod(
-        self, mod_id: str, content_path: str, file_path: str, mod_name: str
+        self, mod_id: str, content_path: str, file_path: str, mod_name: str, config: dict
     ):
         """Merge imported mod into mod_versions of existing mod with the same id."""
         try:
@@ -319,12 +336,16 @@ class ModImportExportController:
             archive_base = os.path.splitext(os.path.basename(file_path))[0]
             version_name = archive_base or mod_name or "imported"
             ensure_versions_dir(existing_mod_folder)
-            create_version_zip(
-                content_path,
-                existing_mod_folder,
-                version_name,
-                ignore_versions_dir=True,
-            )
+            with tempfile.TemporaryDirectory(prefix="g3m_version_import_") as temporary:
+                staged = os.path.join(temporary, "mod")
+                shutil.copytree(content_path, staged)
+                write_mod_config(os.path.join(staged, MOD_CONFIG_FILENAME), config)
+                create_version_zip(
+                    staged,
+                    existing_mod_folder,
+                    version_name,
+                    ignore_versions_dir=True,
+                )
             self._refresh_mod_list()
             self._safe_show_information(
                 tr("dialogs.success"),
@@ -360,8 +381,8 @@ class ModImportExportController:
             if not os.path.exists(config_path):
                 continue
             try:
-                with open(config_path, encoding="utf-8") as f:
-                    config = json.load(f)
+                raw_bytes = read_mod_config_bytes(config_path)
+                config = migrate_legacy_config_bytes(raw_bytes, mod_root_path=entry.path)
                 if config.get("id") == mod_id:
                     return entry.path
             except Exception as e:
@@ -388,7 +409,6 @@ class ModImportExportController:
             self.app_state.progress_bar_visible = True
             self.app_state.progress_bar_value = 0
             self.app_state.current_task = worker
-            self._active_remote_import_source = "url"
             worker.start()
         except Exception as e:
             logger.error(
@@ -409,8 +429,6 @@ class ModImportExportController:
     ):
         try:
             self.app_state.reset_install_state()
-            self._active_remote_import_source = None
-
             def _on_accept():
                 from ui.utils.ui_utils import refresh_ui_after_mod_install
 
@@ -492,7 +510,18 @@ class ModImportExportController:
 
     def _materialize_local_import(self, file_path: str, temp_dir: str) -> str:
         if os.path.isdir(file_path):
-            return unwrap_single_directory_chain(file_path)
+            destination = Path(temp_dir).resolve()
+
+            def ignore_links(directory, names):
+                return [
+                    name for name in names
+                    if (path := Path(directory) / name).is_symlink()
+                    or path.is_junction()
+                    or path.resolve().is_relative_to(destination)
+                ]
+
+            shutil.copytree(file_path, temp_dir, dirs_exist_ok=True, ignore=ignore_links)
+            return unwrap_single_directory_chain(temp_dir)
         try:
             extract_archive(file_path, temp_dir)
         except shutil.ReadError:
@@ -501,9 +530,67 @@ class ModImportExportController:
             raise ValueError(self._format_import_exception(exc, file_path=file_path)) from exc
         return unwrap_single_directory_chain(temp_dir)
 
+    def _is_automatic_mod_source(self, file_path: str) -> bool:
+        if (
+            os.path.isfile(file_path)
+            and os.path.basename(file_path).casefold() == MOD_CONFIG_FILENAME.casefold()
+        ):
+            return False
+        try:
+            with tempfile.TemporaryDirectory(prefix="g3m_import_probe_") as temp_dir:
+                content_path = self._materialize_local_import(file_path, temp_dir)
+                return os.path.isdir(content_path) and (
+                    bool(find_deltamod_info_file(content_path))
+                    or os.path.isfile(os.path.join(content_path, MOD_CONFIG_FILENAME))
+                )
+        except Exception:
+            return False
+
+    def _show_manual_import_batch(self, file_paths: list[str]) -> None:
+        temp_dir = tempfile.mkdtemp(prefix="g3m_manual_import_")
+        try:
+            for index, file_path in enumerate(file_paths, start=1):
+                destination = os.path.join(temp_dir, f"{index:04d}")
+                os.makedirs(destination)
+                content_path = self._materialize_local_import(file_path, destination)
+                if os.path.isdir(content_path) and os.path.normcase(content_path) != os.path.normcase(destination):
+                    destination_root = os.path.realpath(destination)
+                    content_root = os.path.realpath(content_path)
+                    try:
+                        inside_destination = (
+                            os.path.commonpath((destination_root, content_root))
+                            == destination_root
+                        )
+                    except ValueError:
+                        inside_destination = False
+                    if inside_destination:
+                        flatten_single_child_directories(destination)
+                    else:
+                        shutil.copytree(content_path, destination, dirs_exist_ok=True)
+                elif os.path.isfile(content_path):
+                    shutil.copy2(content_path, os.path.join(destination, os.path.basename(content_path)))
+            presenter = getattr(self.app_window, "pizza_oven_conversion_presenter", None)
+            if presenter is None:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+            presenter.prompt_with_manual_options(
+                self.app_window,
+                error_title=tr("errors.error"),
+                error_text=tr("errors.invalid_mod_format"),
+                informative_text=tr("dialogs.manual_install_available"),
+                prepared_path=temp_dir,
+                source_file_path=None,
+                temp_dir=temp_dir,
+            )
+        except Exception as error:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self._safe_show_critical(
+                tr("errors.error"),
+                tr("errors.manual_install_failed", error=self._format_import_exception(error)),
+            )
+
     def _on_mod_install_finished(self, success: bool, message: str):
         self.app_state.reset_install_state()
-        self._active_remote_import_source = None
         if success:
             self._refresh_mod_list()
             self._safe_feedback_status(message, "green")
@@ -528,8 +615,8 @@ class ModImportExportController:
             if not os.path.exists(config_path):
                 continue
             try:
-                with open(config_path, encoding="utf-8") as f:
-                    config = json.load(f)
+                raw_bytes = read_mod_config_bytes(config_path)
+                config = migrate_legacy_config_bytes(raw_bytes, mod_root_path=entry.path)
                 config_mod_id = config.get("id")
                 if config_mod_id == mod_id_attr:
                     return entry.path
@@ -540,28 +627,43 @@ class ModImportExportController:
         return None
 
     def import_files_sequentially(self, file_paths: list):
-        """Queue archive files for sequential import (drag & drop)."""
+        """Import recognized mods first, then open one manual session for the rest."""
         if not file_paths:
             return
-        self._import_queue.extend(file_paths)
+        automatic, manual = [], []
+        for file_path in file_paths:
+            if (
+                os.path.isfile(file_path)
+                and os.path.basename(file_path).casefold() == MOD_CONFIG_FILENAME.casefold()
+            ):
+                self._safe_show_critical(tr("errors.error"), tr("errors.invalid_mod_format"))
+            elif self._is_automatic_mod_source(file_path):
+                automatic.append(file_path)
+            else:
+                manual.append(file_path)
+        self._import_queue.extend(automatic)
+        if manual:
+            self._manual_import_batches.append(manual)
         if not self._importing:
             self._process_next_import()
 
     def _process_next_import(self):
-        if not self._import_queue:
-            self._importing = False
-            return
         self._importing = True
-        file_path = self._import_queue.pop(0)
-        try:
-            self._install_mod_from_file(file_path)
-        except Exception as e:
-            logger.error(
-                f"[DND IMPORT] Failed to import {file_path}: {e}", exc_info=True
-            )
-        from PyQt6.QtCore import QTimer
-
-        QTimer.singleShot(100, self._process_next_import)
+        if self._import_queue:
+            file_path = self._import_queue.pop(0)
+            try:
+                self._install_mod_from_file(file_path)
+            except Exception as error:
+                logger.error(
+                    "[DND IMPORT] Failed to import %s: %s", file_path, error, exc_info=True
+                )
+            QTimer.singleShot(100, self._process_next_import)
+            return
+        if self._manual_import_batches:
+            self._show_manual_import_batch(self._manual_import_batches.pop(0))
+            QTimer.singleShot(0, self._process_next_import)
+            return
+        self._importing = False
 
     def export_mod_to_path(self, mod_data, export_path: str) -> bool:
         """Export a mod to a specific zip path (for drag & drop export)."""
@@ -575,10 +677,15 @@ class ModImportExportController:
                     f"[DND EXPORT] Mod folder not found for: {getattr(mod_data, 'name', mod_id)}"
                 )
                 return False
+            if Path(export_path).resolve().is_relative_to(Path(mod_dir).resolve()):
+                logger.error("[DND EXPORT] Export path is inside the source mod folder")
+                return False
             with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as zipf:
                 for root, _dirs, files in os.walk(mod_dir):
                     for file in files:
                         file_path = os.path.join(root, file)
+                        if os.path.islink(file_path):
+                            continue
                         arcname = os.path.relpath(file_path, mod_dir)
                         zipf.write(file_path, arcname)
             return True

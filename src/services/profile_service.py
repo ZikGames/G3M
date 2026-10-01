@@ -24,6 +24,7 @@ from services.migration_service import (
     migrate_legacy_profile_mods,
     migrate_profile_settings,
 )
+from utils.mod.scan_utils import scan_mods_directory
 from utils.path_utils import (
     get_user_mods_dir,
     get_user_profiles_dir,
@@ -80,7 +81,6 @@ class ProfileService(QObject):
         migrate_legacy_profile_mods(
             Path(get_user_mods_dir()),
             self._profile_dir(DEFAULT_PROFILE),
-            self._unique_child_path,
             logger,
         )
 
@@ -212,12 +212,13 @@ class ProfileService(QObject):
         game = data.get("selected_game_type", get_first_visible_game_id())
         game_def = get_game(game)
         display_name = game_def.display_label if game_def else game.upper()
+        installed_counts = self._installed_mod_counts(self._profile_dir(name))
         return {
             "name": safe_profile_name(name),
             "game": game,
             "game_display_name": display_name,
-            "game_mod_count": self._count_mods_for_game(data, game),
-            "total_mod_count": self._count_all_mods(data),
+            "game_mod_count": installed_counts.get(game, 0),
+            "total_mod_count": sum(installed_counts.values()),
             "chapter_mode": data.get("chapter_mode_enabled", False),
             "direct_launch": self._resolve_chapter_name(
                 game_def, data.get("direct_launch_chapter", "")
@@ -334,6 +335,9 @@ class ProfileService(QObject):
         profile_dir = self._profile_dir(name)
         if not profile_dir.exists():
             return False
+        if Path(target_path).resolve().is_relative_to(profile_dir.resolve()):
+            logger.error("Profile export path is inside the source profile folder")
+            return False
         if name == self._active_name:
             self.save_active()
         with zipfile.ZipFile(
@@ -342,13 +346,16 @@ class ProfileService(QObject):
             for root, _dirs, files in os.walk(profile_dir):
                 for file_name in files:
                     file_path = os.path.join(root, file_name)
+                    if os.path.islink(file_path):
+                        continue
                     zf.write(file_path, os.path.relpath(file_path, profile_dir))
         return True
 
     def import_profile(self, archive_path: str) -> str:
         with tempfile.TemporaryDirectory(prefix="g3m_profile_import_") as temp_dir:
-            with zipfile.ZipFile(archive_path, "r") as zf:
-                zf.extractall(temp_dir)
+            from utils.mod.archive import materialize_archive
+
+            materialize_archive(archive_path, temp_dir)
             import_root = self._resolve_import_root(Path(temp_dir))
             profile_json = self._find_profile_json(import_root)
             imported_name = profile_json.stem if profile_json else UNNAMED_PROFILE
@@ -378,18 +385,13 @@ class ProfileService(QObject):
         return tab_id
 
     @staticmethod
-    def _count_all_mods(data: dict[str, Any], prefix: str = "used_mods_") -> int:
-        return sum(
-            len(val) if isinstance(val, list) else 1
-            for k, v in data.items()
-            if k.startswith(prefix) and isinstance(v, dict)
-            for val in v.values()
-            if val
-        )
-
-    @staticmethod
-    def _count_mods_for_game(data: dict[str, Any], game: str) -> int:
-        return ProfileService._count_all_mods(data, f"used_mods_{game}")
+    def _installed_mod_counts(profile_dir: Path) -> dict[str, int]:
+        installed, _ = scan_mods_directory(str(profile_dir))
+        counts: dict[str, int] = {}
+        for info in installed.values():
+            if isinstance(game := info.config_data.get("game"), str):
+                counts[game] = counts.get(game, 0) + 1
+        return counts
 
     def _append_to_order(self, name: str):
         order = [
@@ -453,13 +455,3 @@ class ProfileService(QObject):
         from utils.archive_utils import unwrap_single_directory_chain
 
         return Path(unwrap_single_directory_chain(str(directory)))
-
-    @staticmethod
-    def _unique_child_path(path: Path) -> str:
-        stem, suffix = path.stem, path.suffix
-        counter = 1
-        candidate = path
-        while candidate.exists():
-            candidate = path.with_name(f"{stem}_{counter}{suffix}")
-            counter += 1
-        return str(candidate)

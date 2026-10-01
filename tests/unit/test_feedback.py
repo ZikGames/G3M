@@ -44,6 +44,20 @@ def test_ask_question_keeps_html_details(monkeypatch, qapp):
     box.setTextFormat.assert_called_once_with(feedback_module.Qt.TextFormat.RichText)
 
 
+def test_closing_dependency_dialog_without_resolve_button_cancels(monkeypatch, qapp):
+    from ui.common import feedback as feedback_module
+
+    factory, box = _make_message_box_stub()
+    factory.ButtonRole = SimpleNamespace(AcceptRole=1, ActionRole=2, RejectRole=3)
+    box.addButton = Mock(side_effect=[object(), object()])
+    box.clickedButton = Mock(return_value=None)
+    monkeypatch.setattr(feedback_module, "QMessageBox", factory)
+
+    assert feedback_module.FeedbackManager().ask_dependency_resolution(
+        "Missing dependencies", can_activate=False, can_download=False,
+    ) == "cancel"
+
+
 def test_ask_question_escapes_plain_details(monkeypatch, qapp):
     from ui.common import feedback as feedback_module
     from ui.common.feedback import FeedbackManager
@@ -61,6 +75,26 @@ def test_ask_question_escapes_plain_details(monkeypatch, qapp):
 
     assert result is True
     assert html.escape("<b>New launcher version</b><br>Line 2", quote=False) in box.text
+
+
+def test_ask_text_question_uses_rich_text_message_box(monkeypatch, qapp):
+    from ui.common import feedback as feedback_module
+    from ui.common.feedback import FeedbackManager
+
+    factory, box = _make_message_box_stub()
+    monkeypatch.setattr(feedback_module, "QMessageBox", factory)
+    manager = FeedbackManager()
+
+    assert manager.ask_text_question("Confirm", "Use <mod>?", default_yes=True)
+
+    box.setIcon.assert_called_once_with(factory.Icon.Question)
+    box.setWindowTitle.assert_called_once_with("Confirm")
+    box.setTextFormat.assert_called_once_with(feedback_module.Qt.TextFormat.RichText)
+    assert box.text == "Use &lt;mod&gt;?"
+    box.setStandardButtons.assert_called_once_with(
+        factory.StandardButton.Yes | factory.StandardButton.No
+    )
+    box.setDefaultButton.assert_called_once_with(factory.StandardButton.Yes)
 
 
 def test_show_message_does_not_escape_plain_apostrophes_to_entities(monkeypatch, qapp):

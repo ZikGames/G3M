@@ -20,7 +20,7 @@ from utils.native_integration import get_open_file_name, open_path_native
 logger = logging.getLogger(__name__)
 
 
-def tr(k, **kw):
+def tr(k, **_kw):
     return k
 
 

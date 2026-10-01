@@ -128,6 +128,19 @@ def test_format_plugin_error_reports_generic_runtime_failure():
     )
 
 
+def test_format_plugin_error_reports_missing_module():
+    error = ModuleNotFoundError(
+        "No module named 'utils.mod.config_parser'",
+        name="utils.mod.config_parser",
+    )
+
+    assert format_plugin_error(error, plugin_id="sigma") == tr(
+        "plugins.error_missing_module",
+        plugin="sigma",
+        module="utils.mod.config_parser",
+    )
+
+
 def test_resolve_portproton_command_falls_back_when_configured_value_is_whitespace():
     assert (
         resolve_portproton_command(

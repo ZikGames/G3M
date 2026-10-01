@@ -2,7 +2,7 @@
 
 import logging
 
-from PyQt6.QtCore import QSize, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QImage
 
 from ui.utils.thread_lifetime import ManagedQThread
@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 class BgLoader(ManagedQThread):
     loaded = pyqtSignal(object)
 
-    def __init__(self, path: object, size: QSize) -> None:
+    def __init__(self, path: object) -> None:
         super().__init__()
-        self._path, self._size = path, size
+        self._path = path
 
     def run(self) -> None:
         try:

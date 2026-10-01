@@ -390,6 +390,15 @@ class DRSaveManagerPlugin:
             )
             self._backup_info = {}
 
+    def on_mod_apply_cancelled(self, context, *_args):
+        self.on_after_restore_after_exit(context)
+        return True
+
+    def on_after_mod_apply_committed(self, context, payload=None, *_args):
+        if isinstance(payload, dict) and payload.get("mode") == "launch_patching_only":
+            self.on_after_restore_after_exit(context)
+        return True
+
     def on_after_restore_after_exit_shortcut(self, context, shortcut_context, *_args):
         self.on_after_restore_after_exit(context)
         return True

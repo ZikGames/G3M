@@ -105,12 +105,25 @@ def _context(game_id: str, config: dict):
     )
 
 
+def _mod_config(game_id: str, file_entry: dict) -> dict:
+    return {
+        "config_version": "2.0.0",
+        "id": "selected_mod",
+        "name": "Selected Mod",
+        "version": "1.0.0",
+        "authors": ["Test"],
+        "game": game_id,
+        "files": [file_entry],
+    }
+
+
 @pytest.mark.parametrize(
     ("game_id", "content_dir", "archive"),
     [
         ("frickbears3", "addons", False),
         ("pizzatower", "towers", False),
         ("frickbears3", "addons", True),
+        ("frickbears3", "addons", "unreadable"),
     ],
 )
 def test_custom_folder_migrates_selected_data_files_and_restores(
@@ -129,21 +142,14 @@ def test_custom_folder_migrates_selected_data_files_and_restores(
         source_file.write_text("mod content", encoding="utf-8")
     (mod_root / "mod_config.json").write_text(
         json.dumps(
-            {
-                "id": "selected_mod",
-                "name": "Selected Mod",
-                "game": game_id,
-                "files": {
-                    game_id: {
-                        "extra_files": [
-                            {
-                                "file_path": entry_path,
-                                "target": "game_data_folder",
-                            }
-                        ]
-                    }
+            _mod_config(
+                game_id,
+                {
+                    "source": f"${{mod_path}}/{entry_path}" + ("/Pack/" if archive == "unreadable" else ""),
+                    "target": "${game_data_path}/",
+                    "type": "extract" if archive and archive != "unreadable" else "overwrite",
                 },
-            }
+            )
         ),
         encoding="utf-8",
     )
@@ -152,7 +158,12 @@ def test_custom_folder_migrates_selected_data_files_and_restores(
     data_file = game_dir / "data.win"
     data_file.write_text("original", encoding="utf-8")
     data_dir = tmp_path / "game_data"
-    deployed_file = data_dir / content_dir / "Pack" / "content.txt"
+    deployed_relative = (
+        Path("Pack") / "content.txt"
+        if archive
+        else Path(content_dir) / "Pack" / "content.txt"
+    )
+    deployed_file = data_dir / deployed_relative
     deployed_file.parent.mkdir(parents=True)
     deployed_file.write_text("mod content", encoding="utf-8")
     game = SimpleNamespace(
@@ -174,15 +185,29 @@ def test_custom_folder_migrates_selected_data_files_and_restores(
         lambda _game_id: (game, str(game_dir), [str(data_file)]),
     )
 
+    if archive == "unreadable":
+        def fail_materialization(*_args):
+            raise OSError("Archive unavailable")
+        monkeypatch.setattr(module, "materialize_archive", fail_materialization)
+        ok, error = plugin._apply_name_to_targets(
+            game_id, "FB3_CUSTOM", selections={game_id: [{"id": "selected_mod"}]},
+        )
+        assert not ok
+        assert "Archive unavailable" in error
+        assert data_file.read_text(encoding="utf-8") == "original"
+        assert plugin._active_session is None
+        assert not (data_dir.parent / "FB3_CUSTOM" / "Pack" / "content.txt").exists()
+        return
+
     assert plugin.on_after_mod_apply_before_launch(
         context, {game_id: [{"id": "selected_mod"}]}
     )
-    custom_file = data_dir.parent / "FB3_CUSTOM" / content_dir / "Pack" / "content.txt"
+    custom_file = data_dir.parent / "FB3_CUSTOM" / deployed_file.relative_to(data_dir)
     assert custom_file.read_text(encoding="utf-8") == "mod content"
     assert deployed_file.read_text(encoding="utf-8") == "mod content"
     assert data_file.read_text(encoding="utf-8") == "original|FB3_CUSTOM"
 
-    assert plugin.on_before_restore_after_exit(context)["refresh_host_deployed_state"]
+    assert plugin.on_before_restore_after_exit(context) is True
     assert data_file.read_text(encoding="utf-8") == "original"
     assert not custom_file.exists()
     assert custom_file.parents[2].is_dir()
@@ -192,7 +217,7 @@ def test_custom_folder_migrates_selected_data_files_and_restores(
     assert shortcut_context.payload["mod_ids"] == ["selected_mod"]
     assert plugin.on_after_mod_apply_before_launch_shortcut(context, shortcut_context)
     assert custom_file.read_text(encoding="utf-8") == "mod content"
-    assert plugin.on_before_restore_after_exit(context)["refresh_host_deployed_state"]
+    assert plugin.on_before_restore_after_exit(context) is True
     assert not custom_file.exists()
 
 
@@ -208,21 +233,14 @@ def test_custom_folder_requires_a_data_path_only_for_data_files(
     mod_root.mkdir(parents=True)
     (mod_root / "mod_config.json").write_text(
         json.dumps(
-            {
-                "id": "selected_mod",
-                "name": "Selected Mod",
-                "game": "frickbears3",
-                "files": {
-                    "frickbears3": {
-                        "extra_files": [
-                            {
-                                "file_path": "addons/" if file_type == "data" else "docs/",
-                                "type": file_type,
-                            }
-                        ]
-                    }
+            _mod_config(
+                "frickbears3",
+                {
+                    "source": "${mod_path}/addons/" if file_type == "data" else "${mod_path}/docs/",
+                    "target": "${game_data_path}/" if file_type == "data" else "${game_path}/docs/",
+                    "type": "overwrite",
                 },
-            }
+            )
         ),
         encoding="utf-8",
     )
@@ -276,34 +294,21 @@ def test_custom_folder_rejects_destination_through_existing_symlink(
     game = SimpleNamespace(get_data_path=lambda _config: str(data_dir))
     plugin = module.CustomSavesFoldersPlugin()
     plugin._context = _context("frickbears3", {})
-    config = {
-        "files": {
-            "frickbears3": {
-                "extra_files": [
-                    {"file_path": "addons/", "target": "game_data_folder"}
-                ]
-            }
-        }
-    }
-    monkeypatch.setattr(
-        plugin, "_selected_mod_configs", lambda *_args: [(str(tmp_path / "mod"), config)]
+    mod_root = tmp_path / "mod"
+    (mod_root / "addons" / "Guard").mkdir(parents=True)
+    (mod_root / "addons" / "Guard" / "content.txt").write_text(
+        "mod content", encoding="utf-8"
+    )
+    config = _mod_config(
+        "frickbears3",
+        {
+            "source": "${mod_path}/addons/",
+            "target": "${game_data_path}/",
+            "type": "overwrite",
+        },
     )
     monkeypatch.setattr(
-        module,
-        "iter_configured_override_entries",
-        lambda *_args: [
-            {
-                "target": "game_data_folder",
-                "source": str(tmp_path / "mod" / "addons"),
-                "target_root": str(data_dir),
-                "target_relative": "addons/",
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        plugin,
-        "_iter_deployed_data_files",
-        lambda *_args: [str(deployed_file)],
+        plugin, "_selected_mod_configs", lambda *_args: [(str(mod_root), config)]
     )
 
     ok, error = plugin._migrate_selected_data_files(
@@ -312,9 +317,133 @@ def test_custom_folder_rejects_destination_through_existing_symlink(
         "FB3_CUSTOM",
         {},
         SimpleNamespace(backup_file=lambda *_args: (_ for _ in ()).throw(AssertionError)),
-        str(tmp_path / "work"),
     )
 
     assert ok is False
     assert error == "errors.custom_data_folder_unsafe"
     assert not (outside_dir / "Guard" / "content.txt").exists()
+
+
+def test_custom_folder_copies_only_files_deployed_by_directory_operation(
+    tmp_path, monkeypatch
+):
+    module = _module()
+    data_dir = tmp_path / "game_data"
+    data_dir.mkdir()
+    mod_root = tmp_path / "mod"
+    source_file = mod_root / "Pack" / "content.txt"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("mod content", encoding="utf-8")
+    deployed_file = data_dir / "addons" / "Pack" / "content.txt"
+    deployed_file.parent.mkdir(parents=True)
+    deployed_file.write_text("mod content", encoding="utf-8")
+    unrelated_file = deployed_file.parent / "untouched.txt"
+    unrelated_file.write_text("game content", encoding="utf-8")
+    game = SimpleNamespace(get_data_path=lambda _config: str(data_dir))
+    plugin = module.CustomSavesFoldersPlugin()
+    plugin._context = _context("frickbears3", {})
+    config = _mod_config(
+        "frickbears3",
+        {
+            "source": "${mod_path}/Pack/",
+            "target": "${addons_path}/",
+            "type": "soft-overwrite",
+        },
+    )
+    config["placeholders"] = {"addons_path": "${game_data_path}/addons"}
+    monkeypatch.setattr(
+        plugin, "_selected_mod_configs", lambda *_args: [(str(mod_root), config)]
+    )
+
+    ok, error = plugin._migrate_selected_data_files(
+        game,
+        "frickbears3",
+        "FB3_CUSTOM",
+        {},
+        SimpleNamespace(backup_file=lambda *_args: True),
+    )
+
+    assert ok is True
+    assert error == ""
+    custom_data_dir = data_dir.parent / "FB3_CUSTOM" / "addons" / "Pack"
+    assert (custom_data_dir / "content.txt").read_text(encoding="utf-8") == "mod content"
+    assert not (custom_data_dir / "untouched.txt").exists()
+
+
+def test_custom_folder_copies_permitted_absolute_data_target(tmp_path, monkeypatch):
+    module = _module()
+    data_dir = tmp_path / "game_data"
+    data_dir.mkdir()
+    mod_root = tmp_path / "mod"
+    source_file = mod_root / "content.txt"
+    source_file.parent.mkdir()
+    source_file.write_text("mod content", encoding="utf-8")
+    deployed_file = data_dir / "addons" / "content.txt"
+    deployed_file.parent.mkdir()
+    deployed_file.write_text("mod content", encoding="utf-8")
+    game = SimpleNamespace(get_data_path=lambda _config: str(data_dir))
+    plugin = module.CustomSavesFoldersPlugin()
+    plugin._context = _context("frickbears3", {})
+    config = _mod_config(
+        "frickbears3",
+        {
+            "source": "${mod_path}/content.txt",
+            "target": deployed_file.as_posix(),
+            "type": "overwrite",
+        },
+    )
+    monkeypatch.setattr(
+        plugin, "_selected_mod_configs", lambda *_args: [(str(mod_root), config)]
+    )
+
+    ok, error = plugin._migrate_selected_data_files(
+        game,
+        "frickbears3",
+        "FB3_CUSTOM",
+        {},
+        SimpleNamespace(backup_file=lambda *_args: True),
+    )
+
+    assert ok is True
+    assert error == ""
+    assert (
+        data_dir.parent / "FB3_CUSTOM" / "addons" / "content.txt"
+    ).read_text(encoding="utf-8") == "mod content"
+
+
+def test_custom_folder_skips_an_untouched_soft_overwrite(tmp_path, monkeypatch):
+    module = _module()
+    data_dir = tmp_path / "game_data"
+    data_dir.mkdir()
+    mod_root = tmp_path / "mod"
+    source_file = mod_root / "content.txt"
+    source_file.parent.mkdir()
+    source_file.write_text("mod content", encoding="utf-8")
+    deployed_file = data_dir / "content.txt"
+    deployed_file.write_text("game content", encoding="utf-8")
+    game = SimpleNamespace(get_data_path=lambda _config: str(data_dir))
+    plugin = module.CustomSavesFoldersPlugin()
+    plugin._context = _context("frickbears3", {})
+    config = _mod_config(
+        "frickbears3",
+        {
+            "source": "${mod_path}/content.txt",
+            "target": "${game_data_path}/content.txt",
+            "type": "soft-overwrite",
+        },
+    )
+    monkeypatch.setattr(
+        plugin, "_selected_mod_configs", lambda *_args: [(str(mod_root), config)]
+    )
+
+    ok, error = plugin._migrate_selected_data_files(
+        game,
+        "frickbears3",
+        "FB3_CUSTOM",
+        {},
+        SimpleNamespace(backup_file=lambda *_args: True),
+    )
+
+    assert ok is True
+    assert error == ""
+    assert not (data_dir.parent / "FB3_CUSTOM" / "content.txt").exists()

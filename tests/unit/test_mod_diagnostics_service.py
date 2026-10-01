@@ -1,303 +1,145 @@
-"""Unit tests for read-only mod diagnostics planning."""
+"""Unit tests for current operation diagnostics."""
 
 from __future__ import annotations
 
-import json
-import zipfile
 from types import SimpleNamespace
 
-from models.mod_models import LocalModInfo
 from services.mod_diagnostics_service import ModDiagnosticsService
+from utils.mod.operation_plan import ModPathContext
 
 
-class _ModService:
-    def __init__(self, folders: dict[str, str]) -> None:
-        self._folders = folders
-
-    def get_mod_folder_path(self, mod_id: str) -> str | None:
-        return self._folders.get(mod_id)
-
-
-def _write_config(root, config: dict) -> None:
-    (root / "mod_config.json").write_text(
-        json.dumps(config),
-        encoding="utf-8",
-    )
-
-
-def _make_mod(root, mod_id: str, name: str, files: dict) -> LocalModInfo:
-    config = {
+def _config(mod_id: str, files: list[dict[str, str]]) -> dict[str, object]:
+    return {
+        "config_version": "2.0.0",
         "id": mod_id,
-        "name": name,
-        "version": "1.0",
-        "author": "Tester",
-        "description": "",
+        "name": mod_id.title(),
+        "version": "1.0.0",
+        "authors": ["Author"],
         "game": "deltarune",
         "files": files,
     }
-    _write_config(root, config)
-    return LocalModInfo.from_dict(config)
 
 
-def test_diagnostics_detects_new_modified_and_conflicting_extra_files(tmp_path):
-    """Plans file impacts without writing to the target game directory."""
-    game_dir = tmp_path / "game" / "chapter1_"
-    game_dir.mkdir(parents=True)
-    (game_dir / "data.win").write_bytes(b"data")
-    (game_dir / "lang_en.json").write_text("old", encoding="utf-8")
-
-    mod_a_root = tmp_path / "mods" / "a"
-    mod_b_root = tmp_path / "mods" / "b"
-    (mod_a_root / "chapter_1").mkdir(parents=True)
-    (mod_b_root / "chapter_1").mkdir(parents=True)
-    (mod_a_root / "chapter_1" / "lang_en.json").write_text("a", encoding="utf-8")
-    (mod_a_root / "chapter_1" / "new_asset.txt").write_text("new", encoding="utf-8")
-    (mod_b_root / "chapter_1" / "lang_en.json").write_text("b", encoding="utf-8")
-
-    mod_a = _make_mod(
-        mod_a_root,
-        "mod-a",
-        "Mod A",
-        {
-            "deltarune_1": {
-                "extra_files": ["chapter_1/lang_en.json", "chapter_1/new_asset.txt"]
-            }
-        },
-    )
-    mod_b = _make_mod(
-        mod_b_root,
-        "mod-b",
-        "Mod B",
-        {"deltarune_1": {"extra_files": ["chapter_1/lang_en.json"]}},
-    )
-    app_state = SimpleNamespace(
-        game_mode=SimpleNamespace(game_id="deltarune"),
-        local_config={},
-    )
-    service = ModDiagnosticsService(
-        app_state,
-        _ModService({"mod-a": str(mod_a_root), "mod-b": str(mod_b_root)}),
-        target_dir_resolver=lambda _chapter_id, *_args, **_kwargs: str(game_dir),
+def _context(root, game, user, runtime: str | None = None) -> ModPathContext:
+    return ModPathContext.create(
+        mod_path=root,
+        game_path=game,
+        game_data_path=None,
+        user_path=user,
+        runtime=runtime,
     )
 
-    report = service.build_report({"deltarune_1": [mod_a, mod_b]})
 
-    by_name = {
-        impact.target_relative_path.replace("\\", "/"): impact
-        for impact in report.file_impacts
+def test_operation_diagnostics_reuses_shared_plan_and_relation_results(tmp_path):
+    mod_root = tmp_path / "main"
+    game_root = tmp_path / "game"
+    mod_root.mkdir()
+    game_root.mkdir()
+    (mod_root / "copy.txt").write_text("copy", encoding="utf-8")
+    config = _config(
+        "main",
+        [{"source": "${mod_path}/copy.txt", "target": "${game_path}/new/copy.txt", "type": "overwrite"}],
+    )
+    config["dependencies"] = ["missing:before"]
+
+    report = ModDiagnosticsService(SimpleNamespace(), SimpleNamespace()).build_operation_report(
+        {"main": config}, [["main"]], {"main": _context(mod_root, game_root, tmp_path / "user")}
+    )
+
+    assert report.summary.selected_mods == 1
+    assert report.summary.new_files == 1
+    assert {(issue.severity, issue.code) for issue in report.issues} == {
+        ("warning", "target_missing"),
+        ("warning", "dependency_missing"),
     }
-    assert by_name["new_asset.txt"].operation == "add"
-    assert by_name["lang_en.json"].operation == "conflict"
-    assert by_name["lang_en.json"].existing is True
-    assert report.summary.new_files == 1
-    assert report.summary.conflicts == 1
-    assert any(issue.severity == "error" for issue in report.issues)
-    assert (game_dir / "new_asset.txt").exists() is False
 
 
-def test_diagnostics_marks_g3mpatch_data_entries_as_deep_analyzable(tmp_path):
-    """Reports deep diagnostics availability per data file entry."""
-    game_dir = tmp_path / "game" / "chapter1_"
-    game_dir.mkdir(parents=True)
-    (game_dir / "data.win").write_bytes(b"data")
-    mod_root = tmp_path / "mods" / "patchy"
-    (mod_root / "chapter_1").mkdir(parents=True)
-    patch_path = mod_root / "chapter_1" / "patch.g3mpatch"
-    with zipfile.ZipFile(patch_path, "w") as archive:
-        archive.writestr(
-            "g3mpatch.json",
-            json.dumps(
-                {
-                    "statistics": {"totalChanged": 2, "totalNew": 1, "totalDeleted": 0},
-                    "resources": {"Sprites": {"changed": ["spr_a"], "new": ["spr_b"]}},
-                }
-            ),
-        )
-    mod_data = _make_mod(
-        mod_root,
-        "patchy",
-        "Patchy",
-        {"deltarune_1": {"data_file_path": "chapter_1/patch.g3mpatch"}},
-    )
-    app_state = SimpleNamespace(
-        game_mode=SimpleNamespace(game_id="deltarune"),
-        local_config={},
-    )
-    service = ModDiagnosticsService(
-        app_state,
-        _ModService({"patchy": str(mod_root)}),
-        target_dir_resolver=lambda _chapter_id, *_args, **_kwargs: str(game_dir),
+def test_operation_diagnostics_keeps_invalid_field_and_correction(tmp_path):
+    mod_root = tmp_path / "main"
+    game_root = tmp_path / "game"
+    mod_root.mkdir()
+    game_root.mkdir()
+    config = _config("main", [])
+    del config["name"]
+
+    report = ModDiagnosticsService(SimpleNamespace(), SimpleNamespace()).build_operation_report(
+        {"main": config}, [["main"]], {"main": _context(mod_root, game_root, tmp_path / "user")}
     )
 
-    report = service.build_report({"deltarune_1": [mod_data]})
-
-    assert len(report.data_impacts) == 1
-    impact = report.data_impacts[0]
-    assert impact.patch_type == "g3mpatch"
-    assert impact.deep_analysis_available is True
-    assert impact.resource_summary["Sprites"]["new"] == 1
-    assert {
-        (entry["type"], entry["operation"], entry["name"])
-        for entry in impact.resource_entries
-    } == {("Sprites", "new", "spr_b"), ("Sprites", "changed", "spr_a")}
-    assert report.summary.new_files == 1
-    assert report.summary.modified_files == 1
-    assert report.summary.deep_analyzable_data_files == 1
+    issue = next(issue for issue in report.issues if issue.code == "missing_field")
+    assert issue.field_path == "name"
+    assert issue.severity == "error"
+    assert issue.recommendation
 
 
-def test_diagnostics_warns_when_opaque_data_patches_share_a_target(tmp_path):
-    game_dir = tmp_path / "game" / "chapter4_windows"
-    game_dir.mkdir(parents=True)
-    (game_dir / "data.win").write_bytes(b"data")
-    folders = {}
-    mods = []
-    for mod_id in ("boss-rush", "60-fps"):
-        mod_root = tmp_path / "mods" / mod_id
-        chapter = mod_root / "chapter_4"
-        chapter.mkdir(parents=True)
-        (chapter / f"{mod_id}.xdelta").write_bytes(b"patch")
-        mods.append(
-            _make_mod(
-                mod_root,
-                mod_id,
-                mod_id,
-                {"deltarune_4": {"data_file_path": f"chapter_4/{mod_id}.xdelta"}},
-            )
-        )
-        folders[mod_id] = str(mod_root)
-    service = ModDiagnosticsService(
-        SimpleNamespace(
-            game_mode=SimpleNamespace(game_id="deltarune"), local_config={}
-        ),
-        _ModService(folders),
-        target_dir_resolver=lambda *_args, **_kwargs: str(game_dir),
-    )
+def test_operation_diagnostics_exposes_one_safe_dependency_arrangement(tmp_path):
+    game_root = tmp_path / "game"
+    main_root = tmp_path / "main"
+    base_root = tmp_path / "base"
+    game_root.mkdir()
+    main_root.mkdir()
+    base_root.mkdir()
+    main = _config("main", [])
+    main["dependencies"] = ["base:before"]
+    base = _config("base", [])
 
-    report = service.build_report({"deltarune_4": mods})
-
-    issue = next(
-        issue
-        for issue in report.issues
-        if issue.title == "DATA merge requires verification"
-    )
-    assert issue.severity == "warning"
-    assert issue.affected_mods == ("boss-rush", "60-fps")
-    assert report.summary.conflicts == 1
-
-
-def test_diagnostics_uses_g3mpatch_manifest_archive_paths(tmp_path):
-    game_dir = tmp_path / "game" / "chapter1_"
-    game_dir.mkdir(parents=True)
-    (game_dir / "data.win").write_bytes(b"data")
-    mod_root = tmp_path / "mods" / "patchy"
-    (mod_root / "chapter_1").mkdir(parents=True)
-    patch_path = mod_root / "chapter_1" / "patch.g3mpatch"
-    with zipfile.ZipFile(patch_path, "w") as archive:
-        archive.writestr(
-            "g3mpatch.json",
-            json.dumps(
-                {
-                    "resources": {
-                        "CodeEntries": {
-                            "changed": [
-                                {
-                                    "name": "gml_Object_obj_test_Create_0",
-                                    "files": {
-                                        "code.gml": "CodeEntries/gml_Object_obj_test_Create_0/code.gml"
-                                    },
-                                }
-                            ]
-                        }
-                    }
-                }
-            ),
-        )
-    mod_data = _make_mod(
-        mod_root,
-        "patchy",
-        "Patchy",
-        {"deltarune_1": {"data_file_path": "chapter_1/patch.g3mpatch"}},
-    )
-    app_state = SimpleNamespace(
-        game_mode=SimpleNamespace(game_id="deltarune"),
-        local_config={},
-    )
-    service = ModDiagnosticsService(
-        app_state,
-        _ModService({"patchy": str(mod_root)}),
-        target_dir_resolver=lambda _chapter_id, *_args, **_kwargs: str(game_dir),
-    )
-
-    report = service.build_report({"deltarune_1": [mod_data]})
-
-    assert report.data_impacts[0].resource_entries[0]["files"] == (
-        "CodeEntries/gml_Object_obj_test_Create_0/code.gml",
-    )
-
-
-def test_diagnostics_keeps_extra_file_targets_inside_game_root(tmp_path):
-    game_dir = tmp_path / "common" / "DELTARUNE"
-    game_dir.mkdir(parents=True)
-    mod_root = tmp_path / "mods" / "menu"
-    (mod_root / "chapter_0" / "mus").mkdir(parents=True)
-    (mod_root / "chapter_0" / "mus" / "joker.ogg").write_bytes(b"ogg")
-    mod_data = _make_mod(
-        mod_root,
-        "menu-mod",
-        "Menu Mod",
-        {"deltarune_0": {"extra_files": ["chapter_0/mus/joker.ogg"]}},
-    )
-    app_state = SimpleNamespace(
-        game_mode=SimpleNamespace(game_id="deltarune"),
-        local_config={},
-    )
-    service = ModDiagnosticsService(
-        app_state,
-        _ModService({"menu-mod": str(mod_root)}),
-        target_dir_resolver=lambda _chapter_id, *_args, **_kwargs: str(game_dir),
-    )
-
-    report = service.build_report({"deltarune_0": [mod_data]})
-
-    assert len(report.file_impacts) == 1
-    impact = report.file_impacts[0]
-    assert impact.target_root == str(game_dir)
-    assert impact.target_relative_path.replace("\\", "/") == "mus/joker.ogg"
-
-
-def test_diagnostics_uses_game_data_folder_for_data_target(tmp_path):
-    game_dir = tmp_path / "game"
-    data_dir = tmp_path / "data"
-    game_dir.mkdir()
-    data_dir.mkdir()
-    mod_root = tmp_path / "mods" / "data_mod"
-    (mod_root / "saves").mkdir(parents=True)
-    (mod_root / "saves" / "settings.json").write_text("{}", encoding="utf-8")
-    mod_data = _make_mod(
-        mod_root,
-        "data-mod",
-        "Data Mod",
+    report = ModDiagnosticsService(SimpleNamespace(), SimpleNamespace()).build_operation_report(
+        {"main": main, "base": base},
+        [["main", "base"]],
         {
-            "deltarune_1": {
-                "extra_files": [
-                    {
-                        "file_path": "saves/settings.json",
-                        "target": "game_data_folder",
-                    }
-                ]
-            }
+            "main": _context(main_root, game_root, tmp_path / "user"),
+            "base": _context(base_root, game_root, tmp_path / "user"),
         },
     )
-    app_state = SimpleNamespace(
-        game_mode=SimpleNamespace(game_id="deltarune"),
-        local_config={"game_data_path": str(data_dir)},
-    )
-    service = ModDiagnosticsService(
-        app_state,
-        _ModService({"data-mod": str(mod_root)}),
-        target_dir_resolver=lambda _chapter_id, *_args, **_kwargs: str(game_dir),
+
+    assert report.recommended_steps == (("base", "main"),)
+    assert any(issue.code == "dependency_arrangement_recommended" for issue in report.issues)
+
+
+def test_operation_diagnostics_marks_conflicting_targets(tmp_path):
+    game_root = tmp_path / "game"
+    game_root.mkdir()
+    (game_root / "shared.txt").write_text("base", encoding="utf-8")
+    roots = {mod_id: tmp_path / mod_id for mod_id in ("first", "second")}
+    for mod_id, root in roots.items():
+        root.mkdir()
+        (root / "payload.txt").write_text(mod_id, encoding="utf-8")
+    configs = {
+        mod_id: _config(mod_id, [{"source": "${mod_path}/payload.txt", "target": "${game_path}/shared.txt", "type": "overwrite"}])
+        for mod_id in roots
+    }
+
+    report = ModDiagnosticsService(SimpleNamespace(), SimpleNamespace()).build_operation_report(
+        configs,
+        [["first", "second"]],
+        {mod_id: _context(root, game_root, tmp_path / "user") for mod_id, root in roots.items()},
     )
 
-    report = service.build_report({"deltarune_1": [mod_data]})
+    assert [impact.operation for impact in report.file_impacts] == ["conflict", "conflict"]
+    assert report.summary.conflicts == 1
+    assert report.issues[-1].code == "file_conflict"
 
-    assert report.file_impacts[0].target_root == str(data_dir)
+
+def test_operation_diagnostics_describes_data_patch(tmp_path):
+    game_root = tmp_path / "game"
+    mod_root = tmp_path / "patch"
+    game_root.mkdir()
+    mod_root.mkdir()
+    (game_root / "data.win").write_bytes(b"base")
+    (mod_root / "payload.xdelta").write_bytes(b"patch")
+    config = _config("patch", [{"source": "${mod_path}/payload.xdelta", "target": "${game_path}/data.win", "type": "patch"}])
+
+    report = ModDiagnosticsService(SimpleNamespace(), SimpleNamespace()).build_operation_report(
+        {"patch": config}, [["patch"]], {"patch": _context(mod_root, game_root, tmp_path / "user", runtime="windows")}
+    )
+
+    assert report.summary.data_files == 1
+    assert report.data_impacts[0].patch_type == "patch"
+    assert report.data_impacts[0].target_data_path.endswith("data.win")
+
+
+def test_unavailable_report_is_explicit():
+    report = ModDiagnosticsService(SimpleNamespace(), SimpleNamespace()).unavailable_report("migration failed")
+
+    assert report.summary.issues == 1
+    assert report.issues[0].explanation == "migration failed"

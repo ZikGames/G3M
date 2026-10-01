@@ -1,10 +1,14 @@
 """Unit tests for test app context."""
 
 import os
+from contextlib import nullcontext
 from unittest.mock import Mock, patch
 
+import pytest
 
-def test_build_application_context_creates_services_and_session(qapp, temp_dir):
+
+@pytest.mark.parametrize("plugin_failure", [False, True])
+def test_build_application_context_creates_services_and_session(qapp, temp_dir, plugin_failure):
     """Checks that building application context creates services and session."""
     from app_context.application_context import build_application_context
 
@@ -16,10 +20,11 @@ def test_build_application_context_creates_services_and_session(qapp, temp_dir):
     mock_presence_response.status_code = 200
     mock_presence_response.json.return_value = {"online": 0}
     with (
+        patch("app_context.application_context.PluginStateService", side_effect=RuntimeError("Unavailable plugin directory")) if plugin_failure else nullcontext(),
         patch("app_context.application_context.get_user_data_root", return_value=user_root),
         patch("app_context.application_context.get_launcher_dir", return_value=temp_dir),
         patch(
-            "services.g3mtool_patching_service.get_user_data_root",
+            "services.game_runner.get_user_data_root",
             return_value=user_root,
         ),
         patch("services.profile_service.get_user_profiles_dir", return_value=profiles_dir),
@@ -36,8 +41,12 @@ def test_build_application_context_creates_services_and_session(qapp, temp_dir):
     assert context.services.game_launcher is not None
     assert context.services.downloads_manager.mods_dir == context.app_state.mods_dir
     assert context.services.discord_rich_presence_service is not None
-    assert context.services.plugin_state_service is not None
-    assert context.services.plugin_catalog_service is not None
-    assert context.services.plugin_runtime_service is not None
-    assert context.services.plugin_install_service is not None
+    assert context.services.downloads_manager._themes_dir == os.path.join(user_root, "themes")
+    if plugin_failure:
+        assert context.services.plugin_state_service is None
+    else:
+        assert context.services.plugin_state_service is not None
+        assert context.services.plugin_catalog_service is not None
+        assert context.services.plugin_runtime_service is not None
+        assert context.services.plugin_install_service is not None
     assert context.session_manager.session_id

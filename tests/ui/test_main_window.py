@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from PyQt6.QtCore import QPoint, QRect, Qt
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QSizePolicy
 
 from services.localization_service import tr
 
@@ -39,9 +40,7 @@ def _mod_stub(mod_id: str, name: str, chapter_ids: tuple[str, ...] = ()):
     mod.get_id.return_value = mod_id
     mod.get_name.return_value = name
     mod.name = name
-    mod.get_chapter_data.side_effect = lambda chapter_id: (
-        {"files": []} if chapter_id in chapter_ids else None
-    )
+    mod.supports_section.side_effect = lambda chapter_id: chapter_id in chapter_ids
     return mod
 
 
@@ -76,7 +75,7 @@ def _window_test_patches(temp_dir):
                 return_value=temp_dir,
             ),
             patch(
-                "services.g3mtool_patching_service.get_user_data_root",
+                "services.game_runner.get_user_data_root",
                 return_value=user_root,
             ),
             patch(
@@ -128,6 +127,19 @@ class TestAppWindow:
                 assert hasattr(window, "plugins_widget")
                 assert hasattr(window, "plugins_container")
                 assert window.windowTitle() == "G3M"
+                assert window.action_button.menu() is window.launch_mode_menu
+                assert window.action_button.minimumWidth() == 230
+                assert window.action_frame.stretch(0) == 1
+                assert window.action_frame.stretch(1) == 1
+                assert window.action_frame.stretch(2) == 1
+                assert (
+                    window.shortcut_button.sizePolicy().horizontalPolicy()
+                    == QSizePolicy.Policy.Ignored
+                )
+                assert (
+                    window.action_button.sizePolicy().horizontalPolicy()
+                    == QSizePolicy.Policy.MinimumExpanding
+                )
             finally:
                 _close_app_window(qapp, window)
 
@@ -196,7 +208,7 @@ class TestAppWindow:
                         id="gb_mod_3",
                         name="P",
                         version="1",
-                        author="x",
+                        authors=["x"],
                         description="x",
                         game="pizzatower",
                         tags=["CYOP/AFOM"],
@@ -250,7 +262,7 @@ class TestAppWindow:
                         id=f"gb_mod_{idx}",
                         name=f"Mod {idx}",
                         version="1",
-                        author="x",
+                        authors=["x"],
                         description="x",
                         game="deltarune",
                     )
@@ -994,9 +1006,13 @@ class TestTabBuilders:
         actions_layout = actions_widget.layout()
         modding_btn = builder.widgets["library_modding_tools_button"]
         downloads_btn = builder.widgets["library_downloads_button"]
+        updates_btn = builder.widgets["update_mods_button"]
         search_btn = builder.widgets["library_search_button"]
 
         assert builder._library_filters_layout.indexOf(actions_widget) >= 0
+        assert actions_layout.indexOf(updates_btn) < actions_layout.indexOf(
+            modding_btn
+        )
         assert actions_layout.indexOf(modding_btn) < actions_layout.indexOf(
             downloads_btn
         )
@@ -1052,7 +1068,7 @@ class TestTabBuilders:
             lambda mod_info, _all_mods=None: by_id[mod_info["id"]]
         )
         mod_service.mod_has_files_for_chapter.side_effect = (
-            lambda mod_data, chapter_id: bool(mod_data.get_chapter_data(chapter_id))
+            lambda mod_data, chapter_id: mod_data.supports_section(chapter_id)
         )
 
         with patch.object(ModDiagnosticsDialog, "_run_analysis", lambda self: None):
@@ -1274,6 +1290,7 @@ class TestTabBuilders:
         from ui.builders.settings_view_builder import SettingsViewBuilder
         from ui.widgets.shared.custom_controls import SectionToggle
 
+        app_state.local_config["show_reset_buttons"] = True
         builder = SettingsViewBuilder(app_state, None)
         assert builder is not None
         widget = builder.build()
@@ -1298,8 +1315,19 @@ class TestTabBuilders:
             )
             title_toggle, _key = builder.get_widgets()["_section_headers"][0]
             header = title_toggle.parentWidget()
-            assert title_toggle.geometry().center().x() == header.rect().center().x()
             assert header.reset_button.parentWidget() is header
+            assert header.reset_button.x() > title_toggle.x()
+            assert header.reset_button.x() - title_toggle.geometry().right() <= 8
+            assert {
+                key for _header, key in builder.get_widgets()["_section_headers"]
+            } >= {
+                "ui.settings_section_app",
+                "ui.settings_section_themes",
+                "ui.settings_section_paths",
+                "ui.settings_section_general",
+                "ui.settings_section_filters",
+            }
+            assert len(builder.get_widgets()["_section_headers"]) >= 15
         finally:
             widget.close()
             widget.deleteLater()

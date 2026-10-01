@@ -1,16 +1,24 @@
-"""Dialog for creating and editing local mods."""
+"""Dialog for creating and editing current-format local mods."""
+
+from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
+import unicodedata
 import uuid
-from pathlib import PureWindowsPath
+import zipfile
+from copy import deepcopy
+from html import escape
+from pathlib import Path
 from typing import override
+from urllib.parse import urlparse
 
-from PyQt6 import sip
-from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QPixmap
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QDrag, QDropEvent, QIcon, QPixmap
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -18,2352 +26,1952 @@ from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QScrollArea,
-    QSizePolicy,
+    QSplitter,
     QTabWidget,
+    QTextBrowser,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from config.config import CYOP_AFOM_TAG
 from models.game_modes import get_game, get_visible_game_entries
 from services.localization_service import tr
-from services.migration_service import (
-    EXTRA_FILE_TARGET_CUSTOM,
-    EXTRA_FILE_TARGET_GAME_DATA_FOLDER,
-    EXTRA_FILE_TARGET_GAME_FOLDER,
-    EXTRA_FILE_TARGET_NONE,
-)
 from ui.common.styling import (
     clamp_border_radius,
     get_border_radius,
     get_theme_color,
-    get_ui_scale_factor,
     round_pixmap,
 )
-from ui.dialogs.mod_editor.files import (
-    collect_files,
-    extract_frame_data,
-    has_any_mod_files,
-    validate_local_files,
-)
-from ui.dialogs.mod_editor.info_actions import (
-    delete_selected_info_file_entry,
-    move_selected_info_file,
-    reset_selected_info_file,
-    toggle_selected_info_file,
-)
-from ui.dialogs.mod_editor.info_files import (
-    collect_info_files,
-    merge_info_file_entry,
-    normalize_info_file_name,
-    normalize_info_file_state,
-)
-from ui.dialogs.mod_editor.prepare import prepare_mod_save_payload
-from ui.dialogs.mod_editor.storage import (
-    copy_files_to_mod_dir,
-    find_unconfigured_root_entries,
-    remove_stale_managed_files,
-)
-from ui.widgets.shared.custom_controls import SectionToggle
+from ui.utils.thread_lifetime import ManagedQThread, retire_qthread
 from utils.file_utils import get_file_filter, get_unique_mod_dir
-from utils.frickbears3_addons_utils import is_top_level_addons_archive
-from utils.mod.config_parser import (
-    MOD_ALLOWED_TAGS,
-    MOD_FIELD_LIMITS,
-    build_mod_config_data,
-    normalize_mod_config_data,
-    parse_extra_file_entries_raw,
-    resolve_mod_file_path,
+from utils.mod.config import (
+    MOD_CONFIG_MAX_AUTHORS,
+    MOD_CONFIG_MAX_DESCRIPTION_CHARS,
+    MOD_CONFIG_MAX_DISPLAY_CHARS,
+    MOD_CONFIG_MAX_GROUP_DEPTH,
+    MOD_CONFIG_MAX_PATH_CHARS,
+    MOD_CONFIG_MAX_PLACEHOLDERS,
+    MOD_CONFIG_MAX_URL_CHARS,
+    MOD_CONFIG_VERSION,
+    ConfigValidationIssue,
+    iter_mod_config_leaves,
+    mod_local_relative_path,
+    portable_user_path,
+    validate_mod_config,
+    write_mod_config,
 )
-from utils.mod.readme_utils import find_mod_info_candidates
+from utils.mod.legacy_config_migration import migrate_legacy_config
+from utils.mod.operation_plan import (
+    ModPathContext,
+    build_mod_operation_plan,
+    resolved_sha256,
+)
 from utils.native_integration import (
     get_existing_directory,
     get_open_file_name,
-    get_open_file_names,
     get_save_file_name,
     open_path_native,
 )
-from utils.path_utils import colored_icon, resource_path
-from utils.pizzatower_afom_utils import is_top_level_towers_archive
+from utils.path_utils import (
+    colored_icon,
+    resolve_execution_runtime,
+    resolve_game_executable,
+    resource_path,
+)
 from utils.process_utils import format_filesystem_error
 
 logger = logging.getLogger(__name__)
 
+_OPERATION_TYPE_LABEL_KEYS = {
+    "patch": "ui.mod_editor_type_patch",
+    "overwrite": "ui.mod_editor_type_overwrite",
+    "soft-overwrite": "ui.mod_editor_type_soft_overwrite",
+    "hard-overwrite": "ui.mod_editor_type_hard_overwrite",
+    "extract": "ui.mod_editor_type_extract",
+    "soft-extract": "ui.mod_editor_type_soft_extract",
+    "hard-extract": "ui.mod_editor_type_hard_extract",
+    "info": "ui.mod_editor_type_info",
+}
+_OPERATION_TYPE_ICON_NAMES = {
+    "patch": "operation_patch",
+    "overwrite": "operation_overwrite",
+    "soft-overwrite": "operation_overwrite",
+    "hard-overwrite": "operation_overwrite",
+    "extract": "operation_extract",
+    "soft-extract": "operation_extract",
+    "hard-extract": "operation_extract",
+    "info": "operation_info",
+}
+_OPERATION_TYPE_ORDER = (
+    "info",
+    "patch",
+    "overwrite",
+    "extract",
+    "soft-overwrite",
+    "soft-extract",
+    "hard-overwrite",
+    "hard-extract",
+)
+_BUILTIN_PLACEHOLDERS = frozenset(
+    {"mod_path", "game_path", "game_data_path", "user_path"}
+)
+_CUSTOM_PLACEHOLDER_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}\Z")
+_HELP_SECTIONS = (
+    "metadata",
+    "placeholders",
+    "custom_placeholders",
+    "operations",
+    "order",
+    "compatibility",
+)
+
+
+def _parse_authors(value: object) -> list[str]:
+    return [name.strip() for name in str(value or "").split(",") if name.strip()]
+
+
+class _OperationTreeWidget(QTreeWidget):
+    """Keep the tree and nested config order in sync when entries are dragged."""
+
+    def __init__(self, owner, parent=None) -> None:
+        super().__init__(parent)
+        self._owner = owner
+        self._drag_path: tuple[int, ...] | None = None
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setDropIndicatorShown(True)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+    @override
+    def startDrag(self, supported_actions: Qt.DropActions) -> None:
+        self._drag_path = self._owner._item_path(self.currentItem())
+        if self._drag_path is None:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(self.mimeData(self.selectedItems()))
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            self._drag_path = None
+
+    @override
+    def dropEvent(self, event: QDropEvent | None) -> None:
+        try:
+            if event is None or event.source() is not self:
+                if event is not None:
+                    event.ignore()
+                return
+            target = self.itemAt(event.position().toPoint())
+            source_path = self._drag_path or self._owner._item_path(self.currentItem())
+            target_path = self._owner._item_path(target)
+            if source_path is None or not self._owner._move_entry(
+                source_path, target_path, self.dropIndicatorPosition()
+            ):
+                event.ignore()
+                return
+            event.acceptProposedAction()
+        finally:
+            self._drag_path = None
+
+
+class _OperationHashThread(ManagedQThread):
+    result_ready = pyqtSignal(object, str, int, str, str)
+
+    def __init__(self, path, field, generation, target, parent=None) -> None:
+        super().__init__(parent)
+        self.path, self.field, self.generation, self.target = path, field, generation, target
+
+    def run(self) -> None:
+        try:
+            value, error = resolved_sha256(self.target), ""
+        except Exception as exc:
+            value, error = "", str(exc)
+        self.result_ready.emit(self.path, self.field, self.generation, value, error)
+
 
 class ModEditorDialog(QDialog):
-    """Native dialog for creating/editing local mods."""
+    """Edit one current configuration; historic input is converted at the boundary."""
 
-    def __init__(self, parent, is_creating=True, mod_data=None) -> None:
+    def __init__(self, parent, is_creating: bool = True, mod_data=None) -> None:
         super().__init__(parent)
-        self.parent_app = parent
-        self._app_state = self._resolve_app_state(parent)
-        self.is_creating = is_creating
-        payload = (
-            mod_data.get("mod_data")
-            if isinstance(mod_data, dict) and isinstance(mod_data.get("mod_data"), dict)
-            else mod_data
+        self.parent_app, self.is_creating = parent, is_creating
+        self._app_state = self._find_app_state(parent)
+        payload = mod_data.get("mod_data") if isinstance(mod_data, dict) and isinstance(mod_data.get("mod_data"), dict) else mod_data
+        self.mod_data: dict = dict(payload) if isinstance(payload, dict) else {}
+        location = {key: self.mod_data[key] for key in ("folder_path", "folder_name") if key in self.mod_data}
+        if self.mod_data and self.mod_data.get("config_version") != MOD_CONFIG_VERSION:
+            self.mod_data = migrate_legacy_config(self.mod_data, mod_root_path=location.get("folder_path"))
+            self.mod_data.update(location)
+        self.mod_id = self.mod_data.get("id") if isinstance(self.mod_data.get("id"), str) else None
+        self._operation_files = deepcopy(self.mod_data.get("files", []))
+        custom_placeholders = self.mod_data.get("placeholders")
+        self._custom_placeholders = (
+            deepcopy(custom_placeholders)
+            if isinstance(custom_placeholders, dict)
+            else {}
         )
-        self.mod_data = dict(payload) if isinstance(payload, dict) else {}
-        if self.mod_data:
-            normalize_mod_config_data(
-                self.mod_data,
-                mod_root_path=self.mod_data.get("folder_path"),
-            )
-        self.mod_id = (
-            self.mod_data.get("id") if isinstance(self.mod_data, dict) else None
-        )
+        self._custom_placeholder_loading = False
+        self._loading = False
+        self._hash_pending: dict[tuple[tuple[int, ...], str], int] = {}
+        self._hash_enabled: set[tuple[tuple[int, ...], str]] = set()
+        self._hash_generations: dict[tuple[tuple[int, ...], str], int] = {}
+        self._hash_errors: dict[tuple[tuple[int, ...], str], str] = {}
+        self._hash_threads: set[_OperationHashThread] = set()
         self._last_browse_dir = os.path.expanduser("~")
-        self._cfg = getattr(self._app_state, "local_config", None)
-        self.setWindowTitle(tr("ui.create_mod") if is_creating else tr("ui.edit_mod"))
+        self._cfg = getattr(self._app_state, "local_config", {}) or {}
+        self._operation_icons: dict[str, QIcon] = {}
+        self._refresh_operation_icons()
+        self.resize(1240, 720)
+        self.setMinimumSize(700, 500)
         self.setModal(True)
-        scale = self._cfg.get("ui_scale", 1.0) if self._cfg else 1.0
-        self.resize(round(1165 * scale), round(700 * scale))
-        self.setMinimumSize(round(700 * scale), round(500 * scale))
-        self._section_widgets = {}
-        self._localized_labels: list[tuple[QLabel, str]] = []
-        self._icon_request_id = 0
-        self._icon_fetch_signals: set[object] = set()
-        self._init_ui()
-        if not is_creating and mod_data:
-            self._populate_fields()
-        else:
-            self._populate_info_files(
-                self.mod_data if isinstance(self.mod_data, dict) else {}
-            )
+        self._build_ui()
+        self._populate()
         self.relocalize_ui()
         self.apply_theme()
 
-    def _br(self, w=None, h=None):
-        r = get_border_radius(self._get_config())
-        if w or h:
-            return clamp_border_radius(r, width=w or 0, height=h or 0)
-        return r
-
-    def _get_config(self):
-        app_state = self._app_state or getattr(self.parent_app, "app_state", None)
-        config = getattr(app_state, "local_config", None) if app_state else None
-        if config is not None:
-            self._cfg = config
-            return config
-        return getattr(self, "_cfg", None)
-
     @staticmethod
-    def _resolve_app_state(start_obj) -> object | None:
-        current = start_obj
-        visited = set()
+    def _find_app_state(parent) -> object | None:
+        current, visited = parent, set()
         while current is not None and id(current) not in visited:
             visited.add(id(current))
-            app_state = getattr(current, "app_state", None)
-            if (
-                app_state is not None
-                and getattr(app_state, "local_config", None) is not None
-            ):
-                return app_state
-            parent_getter = getattr(current, "parent", None)
-            if callable(parent_getter):
-                current = parent_getter()
-            else:
-                current = None
+            state = getattr(current, "app_state", None)
+            if state is not None:
+                return state
+            getter = getattr(current, "parent", None)
+            current = getter() if callable(getter) else None
         return None
 
-    def _apply_initial_game_selection(self) -> None:
-        if not self.is_creating or self.mod_data:
-            return
-        game_mode = getattr(self._app_state, "game_mode", None)
-        preferred_game = getattr(game_mode, "game_id", None)
-        if not preferred_game:
-            return
-        for i in range(self.game_combo.count()):
-            if self.game_combo.itemData(i) == preferred_game:
-                self.game_combo.setCurrentIndex(i)
-                break
+    def _color(self, key: str, fallback: str) -> str:
+        return get_theme_color(self._cfg, key, fallback)
 
-    def _color(self, key, fallback):
-        return get_theme_color(self._get_config(), key, fallback)
+    def _radius(self, width: int = 0, height: int = 0) -> int:
+        value = get_border_radius(self._cfg)
+        return clamp_border_radius(value, width=width, height=height) if width or height else value
 
-    def _ui_scale(self) -> float:
-        return get_ui_scale_factor(self._get_config(), default=1.0)
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        self._tabs = QTabWidget(self)
+        self._tabs.setDocumentMode(True)
 
-    def _icon_size(self, base: int) -> QSize:
-        size = max(14, round(base * self._ui_scale()))
-        return QSize(size, size)
+        metadata = QFrame(self._tabs)
+        metadata.setObjectName("modEditorFrame")
+        metadata_layout = QVBoxLayout(metadata)
+        metadata_layout.setContentsMargins(16, 16, 16, 16)
+        self._build_metadata(metadata_layout)
+        self._tabs.addTab(metadata, tr("ui.mod_editor_tab_metadata"))
 
-    def _mix_color(self, color_value, factor=0.18):
-        color = QColor(color_value)
-        if not color.isValid():
-            return color_value
-        base = QColor(0, 0, 0)
-        mixed = QColor(
-            round(color.red() * (1 - factor) + base.red() * factor),
-            round(color.green() * (1 - factor) + base.green() * factor),
-            round(color.blue() * (1 - factor) + base.blue() * factor),
-            235,
-        )
-        return mixed.name(QColor.NameFormat.HexArgb)
+        compatibility = QFrame(self._tabs)
+        compatibility.setObjectName("modEditorFrame")
+        compatibility_layout = QVBoxLayout(compatibility)
+        compatibility_layout.setContentsMargins(16, 16, 16, 16)
+        self._build_compatibility(compatibility_layout)
+        self._tabs.addTab(compatibility, tr("ui.mod_editor_tab_compatibility"))
 
-    def _icon(self, icon_name):
-        icon_key = {
-            "folder_icon.svg": "folder",
-            "delete_icon.svg": "delete",
-            "cross_icon.svg": "cross",
-            "add_icon.svg": "add",
-            "arrow_up.svg": "arrow_up",
-            "arrow_down.svg": "arrow_down",
-        }.get(icon_name)
-        if icon_key:
-            return colored_icon(icon_key, self._color("main_text", "#e8e9eb"))
-        return colored_icon("folder", self._color("main_text", "#e8e9eb"))
+        operations = QFrame(self._tabs)
+        operations.setObjectName("modEditorFrame")
+        operation_layout = QVBoxLayout(operations)
+        operation_layout.setContentsMargins(16, 16, 16, 16)
+        self._files_hint = QLabel(operations)
+        self._files_hint.setObjectName("modEditorHint")
+        self._files_hint.setWordWrap(True)
+        self._files_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        operation_layout.addWidget(self._files_hint)
+        operation_layout.addWidget(self._build_operations())
+        self._tabs.addTab(operations, tr("ui.mod_editor_tab_files"))
 
-    @override
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        self._center_on_screen()
+        placeholders = QFrame(self._tabs)
+        placeholders.setObjectName("modEditorFrame")
+        placeholders_layout = QVBoxLayout(placeholders)
+        placeholders_layout.setContentsMargins(16, 16, 16, 16)
+        self._build_custom_placeholders(placeholders_layout)
+        self._tabs.addTab(placeholders, tr("ui.mod_editor_tab_placeholders"))
 
-    def _center_on_screen(self):
-        screen = self.screen()
-        if screen is None:
-            window_handle = self.windowHandle()
-            if window_handle is not None:
-                screen = window_handle.screen()
-        if screen is None and self.parentWidget():
-            screen = self.parentWidget().screen()
-        if screen is None:
-            return
-        rect = screen.availableGeometry()
-        frame = self.frameGeometry()
-        frame.moveCenter(rect.center())
-        self.move(frame.topLeft())
+        help_page = QFrame(self._tabs)
+        help_page.setObjectName("modEditorFrame")
+        help_layout = QVBoxLayout(help_page)
+        help_layout.setContentsMargins(16, 16, 16, 16)
+        self._build_help(help_layout)
+        self._tabs.addTab(help_page, tr("ui.mod_editor_tab_help"))
+        root.addWidget(self._tabs, 1)
+        self._build_actions(root)
 
-    def _init_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(18, 18, 18, 18)
-        main_layout.setSpacing(14)
-        scroll = QScrollArea()
-        self._main_scroll = scroll
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll_widget = QWidget()
-        self._scroll_widget = scroll_widget
-        layout = QVBoxLayout(scroll_widget)
-        self._scroll_layout = layout
-        layout.setSpacing(14)
-
-        settings_frame = QFrame()
-        settings_frame.setFrameStyle(QFrame.Shape.Box)
-        settings_frame.setObjectName("modEditorSettingsFrame")
-        s_layout = QVBoxLayout(settings_frame)
-        s_layout.setContentsMargins(16, 16, 16, 16)
-        s_layout.setSpacing(12)
-
+    def _build_metadata(self, parent: QVBoxLayout) -> None:
         game_row = QHBoxLayout()
         game_row.addStretch()
-        game_row.addWidget(self._tr_label("ui.mod_type_label"))
-        self.game_combo = QComboBox()
-        self.game_combo.setToolTip(tr("tooltips.mod_editor_game"))
-        self._visible_game_ids = set()
-        for entry in get_visible_game_entries():
-            self.game_combo.addItem(entry.display_name, entry.id)
-            self._visible_game_ids.add(entry.id)
-        self._apply_initial_game_selection()
-        self.game_combo.currentIndexChanged.connect(self._update_file_tabs)
+        game_row.addWidget(QLabel(tr("ui.mod_type_label"), self))
+        self.game_combo = QComboBox(self)
+        for game in get_visible_game_entries():
+            self.game_combo.addItem(game.display_name, game.id)
         game_row.addWidget(self.game_combo)
         game_row.addStretch()
-        s_layout.addLayout(game_row)
+        parent.addLayout(game_row)
+        parent.addSpacing(12)
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        parent.addLayout(form)
 
-        self._build_form(s_layout)
-        self._metadata_frame = settings_frame
+        def field(key: str, edit: QLineEdit) -> None:
+            form.addRow(QLabel(tr(key), self), edit)
 
-        metadata_section = self._build_collapsible_section(
-            "metadata",
-            "ui.mod_editor_section_metadata",
-            settings_frame,
-        )
-        layout.addWidget(metadata_section)
-
-        info_frame = self._build_info_files_section()
-        info_section = self._build_collapsible_section(
-            "info_files",
-            "ui.mod_editor_section_info_files",
-            info_frame,
-        )
-        layout.addWidget(info_section)
-
-        files_frame = self._build_file_section()
-        files_section = self._build_collapsible_section(
-            "files",
-            "ui.mod_editor_section_files",
-            files_frame,
-        )
-        layout.addWidget(files_section)
-        layout.addStretch()
-        self._load_default_icon()
-
-        scroll.setWidget(scroll_widget)
-        main_layout.addWidget(scroll)
-        self._build_action_buttons(main_layout)
-
-        self._apply_theme_styles()
-
-    def _tr_label(self, key: str) -> QLabel:
-        label = QLabel(tr(key))
-        self._localized_labels.append((label, key))
-        return label
-
-    def _apply_theme_styles(self) -> None:
-        border = self._color("border", "#039d5b")
-        background = self._color("background", "#282828")
-        elements = self._color("elements", "#222222")
-        secondary = self._color("secondary_text", "#96b2a0")
-        main_text = self._color("main_text", "#e8e9eb")
-        self.setStyleSheet(
-            f"""
-            QFrame#modEditorSettingsFrame, QFrame#modEditorFilesFrame {{
-                border: 2px solid {border};
-                border-radius: {self._br()}px;
-                background-color: {background};
-            }}
-            QFrame[fileActionsRow="true"] {{
-                border: 2px solid {border};
-                border-radius: {self._br()}px;
-                background-color: {elements};
-            }}
-            QLabel[hintText="true"] {{
-                color: {secondary};
-                qproperty-alignment: AlignCenter;
-            }}
-            QLabel[specialHintText="true"] {{
-                color: {secondary};
-            }}
-            QLineEdit, QComboBox {{
-                background-color: {elements};
-            }}
-            QLineEdit {{
-                qproperty-alignment: AlignLeft;
-            }}
-            QListWidget {{
-                background-color: {elements};
-                color: {main_text};
-                border: 2px solid {border};
-                border-radius: {self._br()}px;
-            }}
-            QTabWidget::pane, QScrollArea {{
-                background-color: {background};
-            }}
-            QFrame[fileCard="true"] {{
-                border: 2px solid {border};
-                border-radius: {self._br()}px;
-                background-color: {elements};
-            }}
-            QFrame[fileCard="true"][specialRuntimeTarget="true"] {{
-                border: 2px dashed {border};
-            }}
-            """
-        )
-
-    def _build_collapsible_section(
-        self, section_key: str, title_key: str, content: QWidget
-    ):
-        container = QWidget(self)
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 6, 0, 6)
-        layout.setSpacing(6)
-
-        header = SectionToggle(parent=container, centered=True)
-        header.toggled.connect(content.setVisible)
-        layout.addWidget(header, alignment=Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(content)
-        self._section_widgets[section_key] = {
-            "title_key": title_key,
-            "title": header,
-            "header": header,
-            "content": content,
-        }
-        return container
-
-    def _build_form(self, parent):
-        hint = QLabel(tr("ui.mod_editor_fields_hint"))
-        hint.setWordWrap(True)
-        hint.setProperty("hintText", True)
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._metadata_hint = hint
-        parent.addWidget(hint)
-        fields = QFormLayout()
-        fields.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        fields.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        fields.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        fields.setHorizontalSpacing(16)
-        fields.setVerticalSpacing(10)
-        parent.addLayout(fields)
-
-        def add_field(key, field):
-            label = self._tr_label(key)
-            if isinstance(field, QWidget):
-                label.setBuddy(field)
-            fields.addRow(label, field)
-
-        self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText(tr("ui.enter_mod_name"))
-        self.name_edit.setToolTip(tr("tooltips.mod_editor_name"))
-        add_field("ui.mod_name_label", self.name_edit)
-
-        self.author_edit = QLineEdit()
-        self.author_edit.setPlaceholderText(tr("ui.enter_author_name"))
-        self.author_edit.setToolTip(tr("tooltips.mod_editor_author"))
-        add_field("ui.mod_author", self.author_edit)
-
-        self.description_edit = QLineEdit()
-        self.description_edit.setMaxLength(200)
-        self.description_edit.setPlaceholderText(tr("ui.short_description_placeholder"))
-        self.description_edit.setToolTip(tr("tooltips.mod_editor_description"))
-        add_field("ui.short_description", self.description_edit)
-
-        self.homepage_edit = QLineEdit()
-        self.homepage_edit.setPlaceholderText("https://example.com/mod-page")
-        self.homepage_edit.setToolTip(tr("tooltips.mod_editor_homepage"))
-        add_field("ui.homepage", self.homepage_edit)
-
+        self.name_edit = QLineEdit(self)
+        self.name_edit.setMaxLength(MOD_CONFIG_MAX_DISPLAY_CHARS)
+        field("ui.mod_name_label", self.name_edit)
+        self.authors_edit = QLineEdit(self)
+        self.authors_edit.setMaxLength(MOD_CONFIG_MAX_AUTHORS * (MOD_CONFIG_MAX_DISPLAY_CHARS + 2))
+        field("ui.mod_editor_authors", self.authors_edit)
+        self.description_edit = QLineEdit(self)
+        self.description_edit.setMaxLength(MOD_CONFIG_MAX_DESCRIPTION_CHARS)
+        field("ui.short_description", self.description_edit)
+        self.homepage_edit = QLineEdit(self)
+        self.homepage_edit.setMaxLength(MOD_CONFIG_MAX_URL_CHARS)
+        field("ui.homepage", self.homepage_edit)
+        self.icon_edit = QLineEdit(self)
+        self.icon_edit.setMaxLength(MOD_CONFIG_MAX_PATH_CHARS)
+        self.icon_edit.textChanged.connect(self._load_icon_preview)
         icon_row = QHBoxLayout()
-        icon_row.setSpacing(8)
-        self.icon_browse_btn = self._make_icon_text_button(
-            "folder_icon.svg",
-            "",
-            tr("ui.mod_editor_pick_icon_tooltip"),
-        )
-        self.icon_browse_btn.setObjectName("downloadsBtn")
-        self.icon_browse_btn.setMinimumWidth(0)
-        self.icon_browse_btn.setIconSize(self._icon_size(22))
-        self.icon_browse_btn.clicked.connect(self._browse_icon)
-        self.icon_edit = QLineEdit()
-        self.icon_edit.setPlaceholderText(tr("ui.icon_file_path_placeholder"))
-        self.icon_edit.setToolTip(tr("tooltips.mod_editor_icon"))
-        self.icon_edit.textChanged.connect(self._on_icon_text_changed)
         icon_row.addWidget(self.icon_edit, 1)
-        icon_row.addWidget(self.icon_browse_btn)
-        self.icon_preview = QLabel()
-        self.icon_preview.setFixedSize(72, 72)
-        bc = self._color("border", "#039d5b")
-        pr = self._br(72, 72)
-        self.icon_preview.setStyleSheet(
-            f"border: 2px solid {bc}; border-radius: {pr}px;"
-        )
+        self.icon_browse_button = QPushButton(self)
+        self.icon_browse_button.clicked.connect(self._browse_icon)
+        icon_row.addWidget(self.icon_browse_button)
+        self.icon_preview = QLabel(self)
+        self.icon_preview.setFixedSize(64, 64)
         self.icon_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_preview.setText(tr("ui.icon_preview"))
         icon_row.addWidget(self.icon_preview)
-        add_field("files.icon_label", icon_row)
+        form.addRow(QLabel(tr("files.icon_label"), self), icon_row)
+        tags = QGridLayout()
+        self.tag_textedit = QCheckBox(tr("tags.textedit_text"), self)
+        self.tag_customization = QCheckBox(tr("tags.customization"), self)
+        self.tag_gameplay = QCheckBox(tr("tags.gameplay"), self)
+        self.tag_other = QCheckBox(tr("tags.other"), self)
+        for index, checkbox in enumerate((self.tag_textedit, self.tag_customization, self.tag_gameplay, self.tag_other)):
+            tags.addWidget(checkbox, index // 2, index % 2)
+        form.addRow(QLabel(tr("ui.mod_tags_label"), self), tags)
+        self.version_edit = QLineEdit(self)
+        self.version_edit.setMaxLength(MOD_CONFIG_MAX_DISPLAY_CHARS)
+        field("ui.overall_mod_version", self.version_edit)
+        self.game_version_edit = QLineEdit(self)
+        self.game_version_edit.setMaxLength(MOD_CONFIG_MAX_DISPLAY_CHARS)
+        field("ui.game_version_label", self.game_version_edit)
 
-        tags_row = QGridLayout()
-        tags_row.setHorizontalSpacing(12)
-        self.tag_textedit = QCheckBox(tr("tags.textedit_text"))
-        self.tag_customization = QCheckBox(tr("tags.customization"))
-        self.tag_gameplay = QCheckBox(tr("tags.gameplay"))
-        self.tag_other = QCheckBox(tr("tags.other"))
-        for index, checkbox in enumerate(
-            (
-                self.tag_textedit,
-                self.tag_customization,
-                self.tag_gameplay,
-                self.tag_other,
-            )
-        ):
-            checkbox.setToolTip(tr("tooltips.mod_editor_tags"))
-            tags_row.addWidget(checkbox, index // 2, index % 2)
-        add_field("ui.mod_tags_label", tags_row)
-        if self.is_creating:
-            self.tag_other.setChecked(True)
-
-        self.version_edit = QLineEdit()
-        self.version_edit.setPlaceholderText("1.0.0")
-        self.version_edit.setToolTip(tr("tooltips.mod_editor_version"))
-        add_field("ui.overall_mod_version", self.version_edit)
-
-        self.game_version_edit = QLineEdit()
-        self.game_version_edit.setPlaceholderText("1.04")
-        self.game_version_edit.setToolTip(tr("tooltips.mod_editor_game_version"))
-        add_field("ui.game_version_label", self.game_version_edit)
-
-    def _build_info_files_section(self):
-        frame = QFrame()
-        frame.setObjectName("modEditorFilesFrame")
-        frame.setFrameStyle(QFrame.Shape.Box)
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-        hint = QLabel(tr("ui.mod_editor_info_files_hint"))
+    def _build_compatibility(self, parent: QVBoxLayout) -> None:
+        hint = QLabel(tr("ui.mod_editor_compatibility_hint"), self)
+        hint.setObjectName("modEditorHint")
         hint.setWordWrap(True)
-        hint.setProperty("hintText", True)
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._info_files_hint = hint
-        layout.addWidget(hint)
-
-        self._info_files_list = QListWidget(frame)
-        self._info_files_list.setSelectionMode(
-            QListWidget.SelectionMode.SingleSelection
-        )
-        layout.addWidget(self._info_files_list)
-
-        buttons = QGridLayout()
-        buttons.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._info_add_button = self._make_icon_text_button(
-            "add_icon.svg", tr("ui.add_info_file")
-        )
-        self._info_add_button.clicked.connect(self._browse_info_files)
-        self._info_toggle_button = self._make_icon_text_button(
-            None, tr("ui.info_file_toggle_visibility")
-        )
-        self._info_toggle_button.clicked.connect(self._toggle_selected_info_file)
-        self._info_up_button = self._make_icon_text_button(
-            "arrow_up.svg", tr("ui.move_up")
-        )
-        self._info_up_button.clicked.connect(lambda: self._move_selected_info_file(-1))
-        self._info_down_button = self._make_icon_text_button(
-            "arrow_down.svg", tr("ui.move_down")
-        )
-        self._info_down_button.clicked.connect(lambda: self._move_selected_info_file(1))
-        self._info_reset_button = self._make_icon_text_button(
-            "cross_icon.svg", tr("ui.info_file_remove_custom")
-        )
-        self._info_reset_button.clicked.connect(self._reset_selected_info_file)
-        self._info_delete_button = self._make_icon_text_button(
-            "delete_icon.svg", tr("ui.delete_info_file_entry")
-        )
-        self._info_delete_button.clicked.connect(self._delete_selected_info_file)
-        for index, button in enumerate(
-            (
-                self._info_add_button,
-                self._info_toggle_button,
-                self._info_reset_button,
-                self._info_up_button,
-                self._info_down_button,
-                self._info_delete_button,
+        parent.addWidget(hint)
+        self._compatibility_hint = hint
+        self._relation_trees: dict[str, QTreeWidget] = {}
+        self._relation_id_edits: dict[str, QLineEdit] = {}
+        self._relation_mode_combos: dict[str, QComboBox] = {}
+        self._relation_titles: dict[str, QLabel] = {}
+        self._relation_loading = False
+        splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
+        for field in ("dependencies", "conflicts"):
+            pane = QFrame(splitter)
+            pane.setObjectName("modEditorOperationPane")
+            layout = QVBoxLayout(pane)
+            layout.setContentsMargins(20, 0, 20, 16)
+            layout.setSpacing(8)
+            title = QLabel(tr(f"ui.mod_editor_{field}"), pane)
+            title.setObjectName("modEditorPaneTitle")
+            layout.addWidget(title)
+            tree = QTreeWidget(pane)
+            tree.setHeaderLabels(
+                [tr("ui.mod_editor_relation_mod_id"), tr("ui.mod_editor_relation_order")]
             )
-        ):
-            buttons.addWidget(button, index // 3, index % 3)
+            tree.setRootIsDecorated(False)
+            tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            tree.currentItemChanged.connect(
+                lambda _current, _previous, name=field: self._load_relation(name)
+            )
+            tree.setMinimumWidth(360)
+            tree.setMaximumWidth(480)
+            tree_row = QHBoxLayout()
+            tree_row.addStretch()
+            tree_row.addWidget(tree, 1)
+            tree_row.addStretch()
+            layout.addLayout(tree_row, 1)
+            buttons = QHBoxLayout()
+            buttons.addStretch()
+            add = QPushButton(tr("ui.add"), pane)
+            add.clicked.connect(lambda _checked=False, name=field: self._add_relation(name))
+            buttons.addWidget(add)
+            remove = QPushButton(tr("ui.remove"), pane)
+            remove.clicked.connect(
+                lambda _checked=False, name=field: self._remove_relation(name)
+            )
+            buttons.addWidget(remove)
+            buttons.addStretch()
+            layout.addLayout(buttons)
+            form_widget = QWidget(pane)
+            form_widget.setMinimumWidth(480)
+            form_widget.setMaximumWidth(560)
+            form = QFormLayout()
+            form.setContentsMargins(0, 0, 0, 0)
+            form.setLabelAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            relation_id = QLineEdit(pane)
+            relation_id.setMaxLength(64)
+            relation_id.setPlaceholderText(tr("ui.mod_editor_relation_mod_id_placeholder"))
+            relation_id.editingFinished.connect(
+                lambda name=field: self._save_relation(name)
+            )
+            form.addRow(tr("ui.mod_editor_relation_mod_id"), relation_id)
+            mode = QComboBox(pane)
+            self._populate_relation_modes(mode)
+            mode.currentIndexChanged.connect(
+                lambda _index, name=field: self._save_relation(name)
+            )
+            form.addRow(tr("ui.mod_editor_relation_order"), mode)
+            form_widget.setLayout(form)
+            form_row = QHBoxLayout()
+            form_row.addStretch()
+            form_row.addWidget(form_widget)
+            form_row.addStretch()
+            layout.addLayout(form_row)
+            self._relation_trees[field] = tree
+            self._relation_id_edits[field] = relation_id
+            self._relation_mode_combos[field] = mode
+            self._relation_titles[field] = title
+            splitter.addWidget(pane)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        parent.addWidget(splitter, 1)
+
+    def _build_custom_placeholders(self, parent: QVBoxLayout) -> None:
+        self._custom_placeholders_hint = QLabel(
+            tr("ui.mod_editor_custom_placeholders_hint"), self
+        )
+        self._custom_placeholders_hint.setObjectName("modEditorHint")
+        self._custom_placeholders_hint.setWordWrap(True)
+        self._custom_placeholders_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        parent.addWidget(self._custom_placeholders_hint)
+
+        pane = QFrame(self)
+        pane.setObjectName("modEditorOperationPane")
+        layout = QVBoxLayout(pane)
+        layout.setContentsMargins(20, 0, 20, 16)
+        layout.setSpacing(8)
+        self._custom_placeholders_tree = QTreeWidget(pane)
+        self._custom_placeholders_tree.setHeaderLabels(
+            [
+                tr("ui.mod_editor_placeholder_name"),
+                tr("ui.mod_editor_placeholder_path"),
+            ]
+        )
+        self._custom_placeholders_tree.setRootIsDecorated(False)
+        self._custom_placeholders_tree.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self._custom_placeholders_tree.currentItemChanged.connect(
+            lambda *_: self._load_custom_placeholder()
+        )
+        self._custom_placeholders_tree.setMinimumWidth(520)
+        self._custom_placeholders_tree.setMaximumWidth(760)
+        tree_row = QHBoxLayout()
+        tree_row.addStretch()
+        tree_row.addWidget(self._custom_placeholders_tree, 1)
+        tree_row.addStretch()
+        layout.addLayout(tree_row, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        add = QPushButton(tr("ui.add"), pane)
+        add.clicked.connect(self._add_custom_placeholder)
+        buttons.addWidget(add)
+        remove = QPushButton(tr("ui.remove"), pane)
+        remove.clicked.connect(self._remove_custom_placeholder)
+        buttons.addWidget(remove)
+        buttons.addStretch()
         layout.addLayout(buttons)
-        return frame
 
-    def _build_file_section(self):
-        frame = QFrame()
-        frame.setObjectName("modEditorFilesFrame")
-        frame.setFrameStyle(QFrame.Shape.Box)
-        fl = QVBoxLayout(frame)
-        fl.setContentsMargins(16, 16, 16, 16)
-        fl.setSpacing(12)
-        hint = QLabel(tr("ui.mod_editor_files_hint"))
-        hint.setWordWrap(True)
-        hint.setProperty("hintText", True)
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._files_hint = hint
-        fl.addWidget(hint)
-        self.file_tabs = QTabWidget()
-        self.file_tabs.setStyleSheet(
-            "QTabWidget::tab-bar { alignment: center; } QTabBar::tab { padding: 4px 8px; }"
+        form_widget = QWidget(pane)
+        form_widget.setMinimumWidth(520)
+        form_widget.setMaximumWidth(680)
+        form = QFormLayout(form_widget)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        fl.addWidget(self.file_tabs)
-        self._update_file_tabs()
-        return frame
+        self._custom_placeholder_name = QLineEdit(form_widget)
+        self._custom_placeholder_name.setMaxLength(64)
+        self._custom_placeholder_name.setPlaceholderText(
+            tr("ui.mod_editor_placeholder_name_placeholder")
+        )
+        self._custom_placeholder_name.editingFinished.connect(
+            self._save_custom_placeholder
+        )
+        form.addRow(
+            tr("ui.mod_editor_placeholder_name"), self._custom_placeholder_name
+        )
+        self._custom_placeholder_path = QLineEdit(form_widget)
+        self._custom_placeholder_path.setMaxLength(MOD_CONFIG_MAX_PATH_CHARS)
+        self._custom_placeholder_path.setPlaceholderText(
+            tr("ui.mod_editor_placeholder_path_placeholder")
+        )
+        self._custom_placeholder_path.editingFinished.connect(
+            self._save_custom_placeholder
+        )
+        form.addRow(
+            tr("ui.mod_editor_placeholder_path"), self._custom_placeholder_path
+        )
+        form_row = QHBoxLayout()
+        form_row.addStretch()
+        form_row.addWidget(form_widget)
+        form_row.addStretch()
+        layout.addLayout(form_row)
+        parent.addWidget(pane, 1)
+
+    def _build_help(self, parent: QVBoxLayout) -> None:
+        self._help_tabs = QTabWidget(self)
+        self._help_tabs.setDocumentMode(True)
+        self._help_sections: dict[str, QTextBrowser] = {}
+        for section in _HELP_SECTIONS:
+            text = QTextBrowser(self._help_tabs)
+            text.setObjectName("modEditorHelpText")
+            text.setOpenExternalLinks(False)
+            self._help_sections[section] = text
+            title = tr(f"ui.mod_editor_help_{section}_title")
+            self._help_tabs.addTab(text, title.replace("&", "&&"))
+        parent.addWidget(self._help_tabs, 1)
+
+    def _placeholder_examples_html(self) -> str:
+        context = self._context()
+        roots = (
+            ("${mod_path}", context.mod_path if context else None),
+            ("${game_path}", context.game_path if context else None),
+            ("${game_data_path}", context.game_data_path if context else None),
+            ("${user_path}", context.user_path if context else Path.home()),
+        )
+        rows = "".join(
+            tr(
+                "ui.mod_editor_help_placeholder_example",
+                placeholder=escape(placeholder),
+                path=escape(
+                    str(path) if path is not None else tr("ui.mod_editor_help_path_unavailable")
+                ),
+            )
+            for placeholder, path in roots
+        )
+        return tr("ui.mod_editor_help_placeholder_examples", rows=rows)
+
+    def _build_operations(self) -> QWidget:
+        widget = QWidget(self)
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        buttons = QHBoxLayout()
+        for attribute, key, callback in (
+            ("_add_file_button", "ui.add", self._add_file),
+            ("_add_group_button", "ui.mod_editor_add_group", self._add_group),
+            ("_remove_button", "ui.remove", self._remove),
+        ):
+            button = QPushButton(tr(key), widget)
+            button.clicked.connect(callback)
+            buttons.addWidget(button)
+            setattr(self, attribute, button)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal, widget)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(7)
+        self._operation_splitter = splitter
+
+        tree_pane = QFrame()
+        tree_pane.setObjectName("modEditorOperationPane")
+        tree_layout = QVBoxLayout(tree_pane)
+        tree_layout.setContentsMargins(2, 2, 2, 2)
+        tree_layout.setSpacing(0)
+        self._operation_tree_title = QLabel(tree_pane)
+        self._operation_tree_title.setObjectName("modEditorPaneTitle")
+        tree_layout.addWidget(self._operation_tree_title)
+        self._tree = _OperationTreeWidget(self, tree_pane)
+        self._tree.setObjectName("modEditorOperationTree")
+        self._tree.setColumnCount(3)
+        self._tree.setHeaderHidden(True)
+        self._tree.setRootIsDecorated(True)
+        self._tree.setIndentation(18)
+        self._tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self._tree.setUniformRowHeights(True)
+        self._tree.setColumnWidth(0, 34)
+        self._tree.setColumnWidth(1, 30)
+        self._tree.currentItemChanged.connect(self._load_entry)
+        tree_layout.addWidget(self._tree, 1)
+
+        inspector = QFrame()
+        inspector.setObjectName("modEditorOperationPane")
+        inspector_layout = QVBoxLayout(inspector)
+        inspector_layout.setContentsMargins(2, 2, 2, 2)
+        inspector_layout.setSpacing(0)
+        self._operation_inspector_title = QLabel(inspector)
+        self._operation_inspector_title.setObjectName("modEditorPaneTitle")
+        inspector_layout.addWidget(self._operation_inspector_title)
+        inspector_body = QWidget(inspector)
+        inspector_body_layout = QVBoxLayout(inspector_body)
+        inspector_body_layout.setContentsMargins(12, 12, 12, 12)
+        inspector_body_layout.setSpacing(8)
+        self._form = QFormLayout()
+        self._form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self._form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._form_labels: dict[str, QLabel] = {}
+
+        def form_row(key: str, widget: QWidget) -> None:
+            label = QLabel(tr(key), inspector_body)
+            label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self._form_labels[key] = label
+            self._form.addRow(label, widget)
+
+        self._group_name = QLineEdit(inspector_body)
+        self._group_name.setMaxLength(MOD_CONFIG_MAX_DISPLAY_CHARS)
+        self._group_name.editingFinished.connect(self._rename_group)
+        form_row("ui.mod_editor_group", self._group_name)
+        self._type = QComboBox(inspector_body)
+        self._type.setIconSize(QSize(18, 18))
+        self._populate_operation_types()
+        self._type.currentIndexChanged.connect(self._save_entry)
+        form_row("ui.mod_editor_type", self._type)
+        self._source_hash_box = QCheckBox(
+            tr("ui.mod_editor_include_source_hash"), inspector_body
+        )
+        self._source_hash_box.toggled.connect(lambda enabled: self._toggle_hash("source_hash", enabled))
+        self._form.addRow(self._source_hash_box)
+        self._source = QLineEdit(inspector_body)
+        self._source.editingFinished.connect(self._save_entry)
+        self._source_row = self._path_row(self._source, self._browse_source)
+        form_row("ui.mod_editor_source", self._source_row)
+        self._source_hash = QLineEdit(inspector_body)
+        self._source_hash.setReadOnly(True)
+        form_row("ui.mod_editor_source_hash", self._source_hash)
+        self._target_hash_box = QCheckBox(
+            tr("ui.mod_editor_include_target_hash"), inspector_body
+        )
+        self._target_hash_box.toggled.connect(lambda enabled: self._toggle_hash("target_hash", enabled))
+        self._form.addRow(self._target_hash_box)
+        self._target = QLineEdit(inspector_body)
+        self._target.editingFinished.connect(self._save_entry)
+        self._target_row = self._path_row(self._target, self._browse_target)
+        form_row("ui.mod_editor_target", self._target_row)
+        self._target_hash = QLineEdit(inspector_body)
+        self._target_hash.setReadOnly(True)
+        form_row("ui.mod_editor_target_hash", self._target_hash)
+        inspector_body_layout.addLayout(self._form)
+        self._validation = QLabel(inspector_body)
+        self._validation.setObjectName("modEditorValidation")
+        self._validation.setWordWrap(True)
+        inspector_body_layout.addWidget(self._validation)
+        inspector_body_layout.addStretch()
+        inspector_layout.addWidget(inspector_body, 1)
+
+        tree_pane.setMinimumWidth(250)
+        inspector.setMinimumWidth(320)
+        splitter.addWidget(tree_pane)
+        splitter.addWidget(inspector)
+        splitter.setStretchFactor(0, 4)
+        splitter.setStretchFactor(1, 6)
+        splitter.setSizes((420, 580))
+        layout.addWidget(splitter, 1)
+        return widget
+
+    def _path_row(self, edit: QLineEdit, callback) -> QWidget:
+        row = QWidget(edit.parentWidget())
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(edit, 1)
+        button = QPushButton(row)
+        button.setFixedWidth(30)
+        button.clicked.connect(callback)
+        layout.addWidget(button)
+        if edit is self._source:
+            self._source_browse = button
+        else:
+            self._target_browse = button
+        return row
 
     @staticmethod
-    def _normalize_info_file_state(value) -> str:
-        return normalize_info_file_state(value)
+    def _split_relation(value: object) -> tuple[str, str]:
+        relation_id, separator, mode = str(value or "").partition(":")
+        return relation_id, mode if separator else ""
 
     @staticmethod
-    def _normalize_info_file_name(path: str) -> str:
-        return normalize_info_file_name(path)
+    def _relation_value(relation_id: str, mode: str) -> str:
+        return f"{relation_id}:{mode}" if mode else relation_id
 
-    def _refresh_info_files_list(self) -> None:
-        for index in range(self._info_files_list.count()):
-            item = self._info_files_list.item(index)
-            entry = item.data(Qt.ItemDataRole.UserRole) if item else None
-            if not item or not isinstance(entry, dict):
-                continue
-            item.setText(self._format_info_file_item(entry))
+    @staticmethod
+    def _normalize_relation_id(value: str) -> str:
+        candidate = value.strip()
+        try:
+            parsed = urlparse(candidate)
+        except ValueError:
+            return candidate
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.casefold() not in {
+            "gamebanana.com",
+            "www.gamebanana.com",
+        }:
+            return candidate
+        parts = [part for part in parsed.path.split("/") if part]
+        item_type = parts[0].casefold() if parts else ""
+        if len(parts) == 2 and item_type in {"mods", "wips"} and parts[1].isdigit():
+            return f"gb_{item_type[:-1]}_{parts[1]}"
+        return candidate
 
-    def _format_info_file_item(self, entry: dict) -> str:
-        text = tr(
-            "ui.mod_editor_info_file_item",
-            file_name=entry["path"],
-            visibility=tr("ui.visible" if entry["state"] == "show" else "ui.hidden"),
+    @staticmethod
+    def _relation_mode_key(mode: str) -> str:
+        return "ui.mod_editor_relation_order_none" if not mode else (
+            f"ui.mod_editor_relation_order_{mode.replace('-', '_')}"
         )
-        if entry.get("missing"):
-            text = f"{text} [{tr('ui.missing')}]"
-        return text
 
-    def _iter_info_file_entries(self) -> list[dict]:
-        entries = []
-        for index in range(self._info_files_list.count()):
-            item = self._info_files_list.item(index)
-            entry = item.data(Qt.ItemDataRole.UserRole) if item else None
-            if isinstance(entry, dict):
-                entries.append(dict(entry))
+    def _populate_relation_modes(self, combo: QComboBox) -> None:
+        selected = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        for mode in ("", "before", "after", "before-step", "after-step", "before-priority", "after-priority"):
+            combo.addItem(tr(self._relation_mode_key(mode)), mode)
+        combo.setCurrentIndex(max(0, combo.findData(selected)))
+        combo.blockSignals(False)
+
+    def _load_relation(self, field: str) -> None:
+        if self._relation_loading:
+            return
+        tree = self._relation_trees[field]
+        item = tree.currentItem()
+        relation_id, mode = self._split_relation(
+            item.data(0, Qt.ItemDataRole.UserRole) if item else ""
+        )
+        self._relation_loading = True
+        try:
+            self._relation_id_edits[field].setText(relation_id)
+            combo = self._relation_mode_combos[field]
+            combo.setCurrentIndex(max(0, combo.findData(mode)))
+            enabled = item is not None
+            self._relation_id_edits[field].setEnabled(enabled)
+            combo.setEnabled(enabled)
+        finally:
+            self._relation_loading = False
+        self._validate()
+
+    def _save_relation(self, field: str) -> None:
+        if self._relation_loading:
+            return
+        tree = self._relation_trees[field]
+        item = tree.currentItem()
+        if item is None:
+            return
+        relation_id = self._normalize_relation_id(self._relation_id_edits[field].text())
+        self._relation_id_edits[field].setText(relation_id)
+        mode = str(self._relation_mode_combos[field].currentData() or "")
+        value = self._relation_value(relation_id, mode)
+        item.setData(0, Qt.ItemDataRole.UserRole, value)
+        item.setText(0, relation_id)
+        item.setText(1, self._relation_mode_combos[field].currentText())
+        self._validate()
+
+    def _add_relation(self, field: str) -> None:
+        tree = self._relation_trees[field]
+        item = QTreeWidgetItem(["", tr("ui.mod_editor_relation_order_none")])
+        item.setData(0, Qt.ItemDataRole.UserRole, "")
+        tree.addTopLevelItem(item)
+        tree.setCurrentItem(item)
+        self._relation_id_edits[field].setFocus()
+
+    def _remove_relation(self, field: str) -> None:
+        tree = self._relation_trees[field]
+        if (item := tree.currentItem()) is not None:
+            tree.takeTopLevelItem(tree.indexOfTopLevelItem(item))
+        self._load_relation(field)
+
+    def _relation_values(self, field: str) -> list[str]:
+        tree = self._relation_trees[field]
+        return [
+            str(tree.topLevelItem(index).data(0, Qt.ItemDataRole.UserRole) or "")
+            for index in range(tree.topLevelItemCount())
+        ]
+
+    def _refresh_custom_placeholders(self, selected: str | None = None) -> None:
+        self._custom_placeholders_tree.blockSignals(True)
+        self._custom_placeholders_tree.clear()
+        selected_item = None
+        for name, value in (
+            self._custom_placeholders.items()
+            if isinstance(self._custom_placeholders, dict)
+            else ()
+        ):
+            item = QTreeWidgetItem([str(name), str(value)])
+            item.setData(0, Qt.ItemDataRole.UserRole, name)
+            self._custom_placeholders_tree.addTopLevelItem(item)
+            if name == selected:
+                selected_item = item
+        if selected_item is None and self._custom_placeholders_tree.topLevelItemCount():
+            selected_item = self._custom_placeholders_tree.topLevelItem(0)
+        self._custom_placeholders_tree.setCurrentItem(selected_item)
+        self._custom_placeholders_tree.blockSignals(False)
+        self._load_custom_placeholder()
+
+    def _load_custom_placeholder(self) -> None:
+        item = self._custom_placeholders_tree.currentItem()
+        name = item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        self._custom_placeholder_loading = True
+        try:
+            self._custom_placeholder_name.setText(str(name) if name is not None else "")
+            self._custom_placeholder_path.setText(
+                str(self._custom_placeholders.get(name, ""))
+                if isinstance(self._custom_placeholders, dict) and name is not None
+                else ""
+            )
+            self._custom_placeholder_name.setEnabled(name is not None)
+            self._custom_placeholder_path.setEnabled(name is not None)
+        finally:
+            self._custom_placeholder_loading = False
+        self._validate()
+
+    def _add_custom_placeholder(self) -> None:
+        if (
+            not isinstance(self._custom_placeholders, dict)
+            or len(self._custom_placeholders) >= MOD_CONFIG_MAX_PLACEHOLDERS
+        ):
+            return
+        index, name = 1, "placeholder"
+        while name in self._custom_placeholders:
+            index += 1
+            name = f"placeholder_{index}"
+        self._custom_placeholders[name] = "${mod_path}/folder"
+        self._refresh_custom_placeholders(name)
+        self._custom_placeholder_name.setFocus()
+        self._custom_placeholder_name.selectAll()
+
+    def _remove_custom_placeholder(self) -> None:
+        item = self._custom_placeholders_tree.currentItem()
+        name = item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        if isinstance(self._custom_placeholders, dict) and name in self._custom_placeholders:
+            del self._custom_placeholders[name]
+        self._refresh_custom_placeholders()
+
+    def _save_custom_placeholder(self) -> None:
+        if self._custom_placeholder_loading or not isinstance(
+            self._custom_placeholders, dict
+        ):
+            return
+        item = self._custom_placeholders_tree.currentItem()
+        old_name = item.data(0, Qt.ItemDataRole.UserRole) if item else None
+        if old_name not in self._custom_placeholders:
+            return
+        name = self._custom_placeholder_name.text().strip()
+        if not _CUSTOM_PLACEHOLDER_NAME_RE.fullmatch(name):
+            message = tr("ui.mod_editor_placeholder_name_invalid")
+        elif name.casefold() in _BUILTIN_PLACEHOLDERS:
+            message = tr("ui.mod_editor_placeholder_name_reserved")
+        elif any(
+            name.casefold() == existing.casefold()
+            for existing in self._custom_placeholders
+            if existing != old_name
+        ):
+            message = tr("ui.mod_editor_placeholder_name_taken")
+        else:
+            message = ""
+        if message:
+            self._safe_warning(
+                self,
+                tr("ui.mod_editor_tab_placeholders"),
+                message,
+            )
+            self._custom_placeholder_name.setText(str(old_name))
+            return
+        value = self._custom_placeholder_path.text().strip()
+        del self._custom_placeholders[old_name]
+        self._custom_placeholders[name] = value
+        self._refresh_custom_placeholders(name)
+        self._load_icon_preview(self.icon_edit.text())
+
+    def _populate_relations(self, field: str, values: object) -> None:
+        tree = self._relation_trees[field]
+        tree.blockSignals(True)
+        tree.clear()
+        for value in values if isinstance(values, list) else ():
+            relation_id, mode = self._split_relation(value)
+            item = QTreeWidgetItem(
+                [relation_id, tr(self._relation_mode_key(mode))]
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, str(value))
+            tree.addTopLevelItem(item)
+        tree.blockSignals(False)
+        self._load_relation(field)
+
+    def _entries(self, parent_path: tuple[int, ...]) -> list[object]:
+        entries = self._operation_files
+        for index in parent_path:
+            entry = entries[index]
+            if not isinstance(entry, dict) or len(entry) != 1:
+                raise ValueError("invalid group")
+            entries = next(iter(entry.values()))
+            if not isinstance(entries, list):
+                raise ValueError("invalid group")
         return entries
 
-    def _set_info_file_entries(self, entries: list[dict]) -> None:
-        self._info_files_list.clear()
-        for entry in entries:
-            item = QListWidgetItem(self._format_info_file_item(entry))
-            item.setData(Qt.ItemDataRole.UserRole, entry)
-            self._info_files_list.addItem(item)
-
-    def _add_info_file_entry(
-        self,
-        file_path: str,
-        visible: bool = True,
-        custom: bool = True,
-        source_path: str | None = None,
-    ) -> None:
-        entries = merge_info_file_entry(
-            self._iter_info_file_entries(),
-            file_path=file_path,
-            visible=visible,
-            custom=custom,
-            source_path=source_path,
-        )
-        self._set_info_file_entries(entries)
-
-    def _browse_info_files(self) -> None:
-        paths, _ = get_open_file_names(
-            self,
-            tr("ui.select_file"),
-            self._last_browse_dir,
-            "Documentation Files (*.txt *.md *.markdown *.html *.htm *.pdf);;All Files (*)",
-        )
-        if not paths:
-            return
-        self._last_browse_dir = os.path.dirname(paths[0]) or self._last_browse_dir
-        for path in paths:
-            self._add_info_file_entry(path, visible=True, custom=True, source_path=path)
-
-    def _selected_info_file_index(self) -> int | None:
-        index = self._info_files_list.currentRow()
-        return index if index >= 0 else None
-
-    def _toggle_selected_info_file(self) -> None:
-        index = self._selected_info_file_index()
-        if index is None:
-            return
-        entries, index = toggle_selected_info_file(
-            self._iter_info_file_entries(), index
-        )
-        self._set_info_file_entries(entries)
-        self._info_files_list.setCurrentRow(index)
-
-    def _move_selected_info_file(self, step: int) -> None:
-        index = self._selected_info_file_index()
-        if index is None:
-            return
-        entries, new_index = move_selected_info_file(
-            self._iter_info_file_entries(),
-            index,
-            step,
-        )
-        self._set_info_file_entries(entries)
-        self._info_files_list.setCurrentRow(new_index)
-
-    def _reset_selected_info_file(self) -> None:
-        index = self._selected_info_file_index()
-        if index is None:
-            return
-        entries, index = reset_selected_info_file(
-            self._iter_info_file_entries(),
-            index,
-        )
-        self._set_info_file_entries(entries)
-        self._info_files_list.setCurrentRow(index)
-
-    def _delete_selected_info_file(self) -> None:
-        index = self._selected_info_file_index()
-        if index is None:
-            return
-        entries = self._iter_info_file_entries()
-        entry = entries[index]
-        source_path = str(entry.get("source_path") or "").strip()
-        can_delete_file = bool(source_path and os.path.isfile(source_path))
-        action = self._ask_delete_info_file_action(entry, can_delete_file)
-        if action is None:
-            return
-        if action == "entry_and_file":
-            if not self._is_info_file_inside_mod_folder(source_path):
-                self._safe_critical(
-                    tr("errors.error"),
-                    tr(
-                        "errors.delete_info_file_failed",
-                        error="path_outside_mod_folder",
-                    ),
-                )
-                return
-            try:
-                os.remove(source_path)
-            except OSError as exc:
-                self._safe_critical(
-                    tr("errors.error"),
-                    tr("errors.delete_info_file_failed", error=str(exc)),
-                )
-                return
-        entries, next_index = delete_selected_info_file_entry(
-            entries,
-            index,
-            can_delete_file=can_delete_file,
-            action=action,
-            removed_info_files=getattr(self, "_removed_info_files", None),
-        )
-        self._set_info_file_entries(entries)
-        if next_index is not None:
-            self._info_files_list.setCurrentRow(next_index)
-
-    def _is_info_file_inside_mod_folder(self, source_path: str) -> bool:
-        mod_folder = self._find_mod_folder()
-        if not mod_folder or not source_path:
-            return False
-        try:
-            mod_root = os.path.abspath(mod_folder)
-            source = os.path.abspath(source_path)
-            return os.path.commonpath([mod_root, source]) == mod_root
-        except ValueError:
-            return False
-
-    def _ask_delete_info_file_action(
-        self, entry: dict, can_delete_file: bool
-    ) -> str | None:
-        if not can_delete_file:
-            return (
-                "entry"
-                if self._safe_question(
-                    self,
-                    tr("dialogs.delete_info_file_entry_title"),
-                    tr(
-                        "dialogs.delete_missing_info_entry_message",
-                        file_name=entry.get("path", ""),
-                    ),
-                )
-                == QMessageBox.StandardButton.Yes
-                else None
-            )
-        message = tr(
-            "dialogs.delete_info_file_entry_message",
-            file_name=entry.get("path", ""),
-        )
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle(tr("dialogs.delete_info_file_entry_title"))
-        box.setText(message)
-        entry_only_button = box.addButton(
-            tr("dialogs.delete_info_entry_only"),
-            QMessageBox.ButtonRole.AcceptRole,
-        )
-        entry_and_file_button = box.addButton(
-            tr("dialogs.delete_info_entry_and_file"),
-            QMessageBox.ButtonRole.DestructiveRole,
-        )
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked == entry_and_file_button:
-            return "entry_and_file"
-        if clicked == entry_only_button:
-            return "entry"
-        return None
-
-    def _collect_info_files(self) -> dict[str, str]:
-        return collect_info_files(
-            self._iter_info_file_entries(),
-            getattr(self, "_removed_info_files", set()),
-        )
-
-    def _update_file_tabs(self):
-        while self.file_tabs.count():
-            self.file_tabs.removeTab(0)
-        game = self.game_combo.currentData()
-        game_def = get_game(game)
-        if game_def:
-            for tab in game_def.tabs:
-                self._add_file_tab(tr(tab.name_key))
-        else:
-            self._add_file_tab(game or "Unknown")
-
-    def _add_file_tab(self, name):
-        tab = QWidget()
-        root_layout = QVBoxLayout(tab)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
-        scroll = QScrollArea(tab)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setMinimumHeight(round(300 * self._ui_scale()))
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-        data_btn = self._make_icon_text_button("add_icon.svg", tr("ui.add_data_file"))
-        data_btn.setToolTip(tr("tooltips.mod_editor_add_data"))
-        data_btn.setProperty("is_data_button", True)
-        data_btn.clicked.connect(lambda: self._on_add_data(tab, layout))
-
-        extra_btn = self._make_icon_text_button(
-            "add_icon.svg", tr("ui.add_extra_files")
-        )
-        extra_btn.setToolTip(tr("tooltips.mod_editor_add_extra"))
-        extra_btn.clicked.connect(lambda: self._on_add_extra(layout))
-        row_frame = QFrame()
-        row_frame.setProperty("fileActionsRow", True)
-        row = QHBoxLayout(row_frame)
-        row.setContentsMargins(12, 10, 12, 10)
-        row.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        row.addWidget(data_btn)
-        row.addWidget(extra_btn)
-        layout.addWidget(row_frame)
-        layout.addStretch()
-        tab._file_layout = layout
-        tab._data_button = data_btn
-        tab._has_data_frame = False
-        tab._file_scroll = scroll
-        scroll.setWidget(content)
-        root_layout.addWidget(scroll)
-        self.file_tabs.addTab(tab, name)
-
-    def _get_tab_file_layout(self, tab):
-        layout = getattr(tab, "_file_layout", None) if tab else None
-        if layout:
-            return layout
-        if not tab:
-            return None
-        for child in tab.findChildren(QScrollArea):
-            widget = child.widget()
-            if widget and widget.layout():
-                return widget.layout()
-        return tab.layout()
-
-    def _on_add_data(self, tab, layout):
-        if getattr(tab, "_has_data_frame", False):
-            return
-        path_edit = self._create_file_frame(layout, "data")
-        QTimer.singleShot(0, lambda: self._focus_file_input(path_edit))
-
-    def _on_add_extra(self, layout):
-        path_edit = self._create_file_frame(layout, "extra")
-        QTimer.singleShot(0, lambda: self._focus_file_input(path_edit))
+    def _path(self) -> tuple[int, ...] | None:
+        return self._item_path(self._tree.currentItem())
 
     @staticmethod
-    def _focus_file_input(path_edit: QLineEdit) -> None:
-        if sip.isdeleted(path_edit):
+    def _item_path(item: QTreeWidgetItem | None) -> tuple[int, ...] | None:
+        raw = item.data(0, Qt.ItemDataRole.UserRole) if item else ""
+        try:
+            return tuple(int(part) for part in raw.split("/")) if raw else None
+        except ValueError:
+            return None
+
+    def _entry(self, path: tuple[int, ...]) -> dict:
+        value = self._entries(path[:-1])[path[-1]]
+        if not isinstance(value, dict):
+            raise ValueError("invalid entry")
+        return value
+
+    @staticmethod
+    def _group(entry: dict) -> bool:
+        return "source" not in entry and "type" not in entry and len(entry) == 1
+
+    @staticmethod
+    def _entry_display_name(source: str, target: str) -> str:
+        return target or source or "-"
+
+    @staticmethod
+    def _operation_type_label(operation_type: str) -> str:
+        key = _OPERATION_TYPE_LABEL_KEYS.get(operation_type)
+        return tr(key) if key else operation_type
+
+    def _operation_icon_color(self, operation_type: str) -> str:
+        main_text = self._color("main_text", "#e8e9eb")
+        if not operation_type.startswith(("soft-", "hard-")):
+            return main_text
+        base = QColor(main_text)
+        if not base.isValid():
+            return main_text
+        hue = base.hsvHueF()
+        if hue < 0 or base.hsvSaturationF() < 0.12:
+            hue = 0.0
+        offset = 0.36 if operation_type.startswith("soft-") else 0.62
+        color = QColor.fromHsvF(
+            (hue + offset) % 1.0,
+            max(0.55, base.hsvSaturationF()),
+            max(0.72, base.valueF()),
+            base.alphaF(),
+        )
+        return color.name()
+
+    def _refresh_operation_icons(self) -> None:
+        self._operation_icons = {
+            operation_type: colored_icon(
+                icon_name, self._operation_icon_color(operation_type)
+            )
+            for operation_type, icon_name in _OPERATION_TYPE_ICON_NAMES.items()
+        }
+
+    def _operation_icon(self, operation_type: str) -> QIcon:
+        return self._operation_icons.get(operation_type, QIcon())
+
+    def _populate_operation_types(self) -> None:
+        selected = self._type.currentData()
+        self._type.blockSignals(True)
+        self._type.clear()
+        for operation_type in _OPERATION_TYPE_ORDER:
+            self._type.addItem(
+                self._operation_icon(operation_type),
+                self._operation_type_label(operation_type),
+                operation_type,
+            )
+        self._type.setCurrentIndex(
+            max(0, self._type.findData(selected))
+        )
+        self._type.blockSignals(False)
+
+    def _refresh_tree(self, selected: tuple[int, ...] | None = None) -> None:
+        self._tree.blockSignals(True)
+        self._tree.clear()
+        first_leaf: QTreeWidgetItem | None = None
+        operation_number = 0
+
+        def add(entries: list[object], parent: QTreeWidgetItem | None, base: tuple[int, ...]) -> None:
+            nonlocal first_leaf, operation_number
+            for index, entry in enumerate(entries):
+                if not isinstance(entry, dict):
+                    continue
+                path = (*base, index)
+                if self._group(entry):
+                    name, children = next(iter(entry.items()))
+                    item = QTreeWidgetItem([str(name)])
+                    item.setFirstColumnSpanned(True)
+                    font = item.font(0)
+                    font.setBold(True)
+                    item.setFont(0, font)
+                    item.setForeground(0, QBrush(QColor(self._color("secondary_text", "#6de985"))))
+                    if isinstance(children, list):
+                        add(children, item, path)
+                else:
+                    source, target = str(entry.get("source", "")), str(entry.get("target", ""))
+                    operation_type = str(entry.get("type", ""))
+                    operation_number += 1
+                    item = QTreeWidgetItem(
+                        [
+                            str(operation_number),
+                            "",
+                            self._entry_display_name(source, target),
+                        ]
+                    )
+                    item.setTextAlignment(0, Qt.AlignmentFlag.AlignCenter)
+                    item.setIcon(1, self._operation_icon(operation_type))
+                    item.setToolTip(
+                        2,
+                        f"[{operation_type}] {source}"
+                        + (f" → {target}" if target else ""),
+                    )
+                    if first_leaf is None:
+                        first_leaf = item
+                item.setData(0, Qt.ItemDataRole.UserRole, "/".join(map(str, path)))
+                (self._tree.addTopLevelItem if parent is None else parent.addChild)(item)
+                if path == selected:
+                    self._tree.setCurrentItem(item)
+
+        add(self._operation_files, None, ())
+        if selected is None and first_leaf is not None:
+            self._tree.setCurrentItem(first_leaf)
+        self._tree.expandAll()
+        self._tree.blockSignals(False)
+        self._load_entry()
+
+    def _load_entry(self) -> None:
+        self._loading = True
+        try:
+            path = self._path()
+            entry = self._entry(path) if path is not None else {}
+            group = self._group(entry) if path is not None else False
+            leaf, info = path is not None and not group, bool(path is not None and not group and entry.get("type") == "info")
+            self._operation_inspector_title.setText(
+                tr("ui.mod_editor_group") if group else tr("ui.mod_editor_operation")
+            )
+            self._group_name.setEnabled(group)
+            for widget in (self._type, self._source, self._source_browse, self._target, self._target_browse):
+                widget.setEnabled(leaf)
+            self._group_name.setText(str(next(iter(entry))) if group else "")
+            self._source.setText(str(entry.get("source", "")) if leaf else "")
+            self._target.setText(str(entry.get("target", "")) if leaf else "")
+            operation_type = str(entry.get("type", "overwrite")) if leaf else "overwrite"
+            self._type.setCurrentIndex(
+                max(0, self._type.findData(operation_type))
+            )
+            source_hash = bool(path is not None and leaf and ("source_hash" in entry or (path, "source_hash") in self._hash_enabled))
+            target_hash = bool(path is not None and leaf and not info and ("target_hash" in entry or (path, "target_hash") in self._hash_enabled))
+            self._source_hash_box.setChecked(source_hash)
+            self._target_hash_box.setChecked(target_hash)
+            self._source_hash.setText(str(entry.get("source_hash", "")) if leaf else "")
+            self._target_hash.setText(str(entry.get("target_hash", "")) if leaf else "")
+            for widget, visible in ((self._group_name, group), (self._type, leaf), (self._source_hash_box, leaf), (self._source_row, leaf), (self._source_hash, source_hash), (self._target_hash_box, leaf and not info), (self._target_row, leaf and not info), (self._target_hash, target_hash)):
+                self._form.setRowVisible(widget, visible)
+            for field, widget in (("source_hash", self._source_hash), ("target_hash", self._target_hash)):
+                error = self._hash_errors.get((path, field), "") if path is not None else ""
+                widget.setToolTip(error)
+                widget.setPlaceholderText(error or tr("ui.mod_editor_hash_pending"))
+        finally:
+            self._loading = False
+        self._update_operation_actions()
+        self._validate()
+
+    def _update_operation_actions(self) -> None:
+        self._remove_button.setEnabled(self._path() is not None)
+
+    def _invalidate_hashes(self) -> None:
+        self._hash_enabled.clear()
+        self._hash_errors.clear()
+        self._hash_pending.clear()
+        self._hash_generations = {
+            key: generation + 1
+            for key, generation in self._hash_generations.items()
+        }
+
+    def _add_file(self) -> None:
+        path = self._path()
+        parent = path if path is not None and self._group(self._entry(path)) else path[:-1] if path else ()
+        entries = self._entries(parent)
+        index = len(entries) if path is None or parent == path else path[-1] + 1
+        self._invalidate_hashes()
+        entries.insert(index, {"source": "${mod_path}/", "target": "${game_path}/", "type": "overwrite"})
+        self._refresh_tree((*parent, index))
+
+    def _add_group(self) -> None:
+        path = self._path()
+        parent = path if path is not None and self._group(self._entry(path)) else path[:-1] if path else ()
+        if not self._can_create_group_at(parent) or (name := self._prompt_group_name()) is None:
             return
-        path_edit.setFocus()
-        parent = path_edit.parentWidget()
-        while parent is not None:
-            if isinstance(parent, QScrollArea):
-                parent.ensureWidgetVisible(path_edit)
-            parent = parent.parentWidget()
+        entries = self._entries(parent)
+        index = len(entries) if path is None or parent == path else path[-1] + 1
+        self._invalidate_hashes()
+        entries.insert(index, {name: []})
+        self._refresh_tree((*parent, index))
 
-    def _create_file_frame(self, tab_layout, file_type):
-        tab = self._get_tab_for_layout(tab_layout)
-        if file_type == "data":
-            self._set_tab_has_data(tab, True)
-        frame = QFrame()
-        frame.setProperty("fileCard", True)
-        frame.setFrameStyle(QFrame.Shape.Box)
-        fl = QVBoxLayout(frame)
-        fl.setContentsMargins(12, 12, 12, 12)
-        fl.setSpacing(8)
-        if file_type == "data":
-            title_text, file_filter = (
-                tr("files.data_file"),
-                get_file_filter("data_files"),
+    def _remove(self) -> None:
+        if (path := self._path()) is not None:
+            self._invalidate_hashes()
+            del self._entries(path[:-1])[path[-1]]
+            self._refresh_tree()
+
+    def _find_entry_path(self, entry: dict) -> tuple[int, ...] | None:
+        def visit(entries: list[object], base: tuple[int, ...]) -> tuple[int, ...] | None:
+            for index, candidate in enumerate(entries):
+                path = (*base, index)
+                if candidate is entry:
+                    return path
+                if isinstance(candidate, dict) and self._group(candidate):
+                    children = next(iter(candidate.values()))
+                    if isinstance(children, list) and (found := visit(children, path)):
+                        return found
+            return None
+
+        return visit(self._operation_files, ())
+
+    def _group_name_available(self, name: str, ignored: dict | None = None) -> bool:
+        normalized = unicodedata.normalize("NFC", name)
+
+        def visit(entries: list[object]) -> bool:
+            for entry in entries:
+                if not isinstance(entry, dict) or not self._group(entry):
+                    continue
+                group_name, children = next(iter(entry.items()))
+                if entry is not ignored and unicodedata.normalize("NFC", str(group_name)) == normalized:
+                    return False
+                if isinstance(children, list) and not visit(children):
+                    return False
+            return True
+
+        return visit(self._operation_files)
+
+    def _prompt_group_name(self) -> str | None:
+        while True:
+            name, accepted = QInputDialog.getText(
+                self, tr("ui.mod_editor_add_group"), tr("ui.mod_editor_group_name")
             )
-            browse_title = tr("ui.select_data_file", file_type="data")
+            if not accepted:
+                return None
+            name = name.strip()
+            if not name or len(name) > MOD_CONFIG_MAX_DISPLAY_CHARS:
+                self._safe_warning(
+                    self,
+                    tr("ui.mod_editor_add_group"),
+                    tr("ui.mod_editor_validation_invalid"),
+                )
+            elif self._group_name_available(name):
+                return name
+            else:
+                self._safe_warning(
+                    self,
+                    tr("ui.mod_editor_add_group"),
+                    tr("ui.mod_editor_group_name_taken"),
+                )
+
+    def _can_create_group_at(self, parent_path: tuple[int, ...]) -> bool:
+        if len(parent_path) + 1 < MOD_CONFIG_MAX_GROUP_DEPTH:
+            return True
+        self._safe_warning(
+            self,
+            tr("ui.mod_editor_add_group"),
+            tr("ui.mod_editor_group_depth_limit", limit=MOD_CONFIG_MAX_GROUP_DEPTH - 1),
+        )
+        return False
+
+    def _group_depth(self, entry: dict) -> int:
+        if not self._group(entry):
+            return 0
+        children = next(iter(entry.values()))
+        if not isinstance(children, list):
+            return 1
+        return 1 + max(
+            (self._group_depth(child) for child in children if isinstance(child, dict)),
+            default=0,
+        )
+
+    def _move_entry(
+        self,
+        source_path: tuple[int, ...],
+        target_path: tuple[int, ...] | None,
+        position: QAbstractItemView.DropIndicatorPosition,
+    ) -> bool:
+        if target_path is not None and target_path[: len(source_path)] == source_path:
+            return False
+        source_entries = self._entries(source_path[:-1])
+        source_index = source_path[-1]
+        if not 0 <= source_index < len(source_entries):
+            return False
+        moving = self._entry(source_path)
+        if target_path is None or position == QAbstractItemView.DropIndicatorPosition.OnViewport:
+            destination_entries, destination_index = self._operation_files, len(self._operation_files)
         else:
-            title_text = tr("files.extra_files_title", number=1)
-            file_filter = "All Files (*)"
-            browse_title = tr("ui.select_file")
-        title_lbl = QLabel(title_text)
-        title_lbl.setStyleSheet("font-weight: bold;")
-        title_lbl.setProperty("file_type", file_type)
-        fl.addWidget(title_lbl)
-        special_hint_lbl = None
-        if file_type == "extra":
-            special_hint_lbl = QLabel("")
-            special_hint_lbl.setObjectName("special_runtime_hint")
-            special_hint_lbl.setProperty("specialHintText", True)
-            special_hint_lbl.setAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-            )
-            special_hint_lbl.setWordWrap(True)
-            special_hint_lbl.hide()
-            fl.addWidget(special_hint_lbl)
-        path_edit = QLineEdit()
-        path_edit.setPlaceholderText(tr("ui.select_file"))
-        path_edit.setToolTip(tr("tooltips.mod_editor_selected_file"))
-        path_edit.setProperty(
-            "is_local_path" if file_type == "data" else "is_local_extra_path", True
-        )
-        path_edit.textChanged.connect(
-            lambda _text, edit=path_edit: self._clear_field_validation_error(edit)
-        )
-        if file_type == "extra":
-            path_edit.textChanged.connect(
-                lambda _text, layout=tab_layout, edit=path_edit, card=frame, hint=special_hint_lbl: (
-                    self._update_extra_file_special_state(layout, edit, card, hint)
-                )
-            )
-        fl.addWidget(path_edit)
-        if file_type == "extra":
-            target_row = QWidget(frame)
-            target_layout = QHBoxLayout(target_row)
-            target_layout.setContentsMargins(0, 0, 0, 0)
-            target_layout.setSpacing(10)
-            none_check = QCheckBox(tr("files.dependency_only"))
-            none_check.setToolTip(tr("tooltips.mod_editor_dependency_only"))
-            none_check.setProperty("is_none_target_file", True)
-            target_layout.addWidget(none_check)
-            data_folder_check = QCheckBox(tr("files.data_folder_target"))
-            data_folder_check.setToolTip(tr("tooltips.mod_editor_data_folder_target"))
-            data_folder_check.setProperty("is_data_folder_file", True)
-            target_layout.addWidget(data_folder_check)
-            custom_target_check = QCheckBox(tr("files.custom_target"))
-            custom_target_check.setToolTip(tr("tooltips.mod_editor_custom_target"))
-            custom_target_check.setProperty("is_custom_target_file", True)
-            target_layout.addWidget(custom_target_check)
-            target_layout.addStretch()
-            fl.addWidget(target_row)
-            custom_target_row = QWidget(frame)
-            custom_target_layout = QHBoxLayout(custom_target_row)
-            custom_target_layout.setContentsMargins(0, 0, 0, 0)
-            custom_target_layout.setSpacing(8)
-            custom_target_label = QLabel(tr("files.custom_target_folder"))
-            custom_target_label.setProperty("is_custom_target_label", True)
-            custom_target_layout.addWidget(custom_target_label)
-            custom_target_path = QLineEdit()
-            custom_target_path.setProperty("is_custom_target_path", True)
-            custom_target_path.setPlaceholderText(tr("dialogs.custom_target_folder_path"))
-            custom_target_path.setToolTip(tr("tooltips.mod_editor_custom_target"))
-            custom_target_path.textChanged.connect(
-                lambda _text, edit=custom_target_path: self._clear_field_validation_error(
-                    edit
-                )
-            )
-            custom_target_layout.addWidget(custom_target_path, 1)
-            custom_target_browse = self._make_icon_text_button(
-                "folder_icon.svg", tr("ui.browse_button"), tr("ui.browse_button")
-            )
-            custom_target_browse.clicked.connect(
-                lambda: self._browse_custom_target_folder(custom_target_path)
-            )
-            custom_target_layout.addWidget(custom_target_browse)
-            custom_target_row.setProperty("custom_target_row", True)
-            custom_target_row.hide()
-            fl.addWidget(custom_target_row)
-            none_check.toggled.connect(
-                lambda checked, card=frame: self._set_extra_target_controls(
-                    card,
-                    EXTRA_FILE_TARGET_NONE if checked else EXTRA_FILE_TARGET_GAME_FOLDER,
-                )
-            )
-            data_folder_check.toggled.connect(
-                lambda checked, card=frame: self._set_extra_target_controls(
-                    card,
-                    EXTRA_FILE_TARGET_GAME_DATA_FOLDER
-                    if checked
-                    else EXTRA_FILE_TARGET_GAME_FOLDER,
-                )
-            )
-            custom_target_check.toggled.connect(
-                lambda checked, card=frame: self._on_custom_target_toggled(
-                    card, checked
-                )
-            )
-        browse_btn = self._make_icon_text_button(
-            "folder_icon.svg",
-            tr("ui.browse_button"),
-            tr("ui.browse_button"),
-        )
-        browse_btn.clicked.connect(
-            lambda: self._browse_file(path_edit, browse_title, file_filter, file_type)
-        )
-        del_btn = self._make_icon_text_button(
-            "delete_icon.svg", tr("buttons.delete"), tr("buttons.delete")
-        )
-        del_btn.clicked.connect(
-            lambda: self._remove_file_frame(tab_layout, frame, file_type)
-        )
-        actions_row = QHBoxLayout()
-        actions_row.setContentsMargins(0, 4, 0, 0)
-        actions_row.setSpacing(8)
-        actions_row.addStretch()
-        actions_row.addWidget(browse_btn)
-        actions_row.addWidget(del_btn)
-        actions_row.addStretch()
-        fl.addLayout(actions_row)
-        tab_layout.insertWidget(tab_layout.count() - 1, frame)
-        if file_type == "extra":
-            self._refresh_extra_file_titles(tab_layout)
-            self._update_extra_file_special_state(
-                tab_layout, path_edit, frame, special_hint_lbl
-            )
-        return path_edit
+            target = self._entry(target_path)
+            if (
+                position == QAbstractItemView.DropIndicatorPosition.OnItem
+                and self._group(target)
+            ):
+                if len(target_path) + self._group_depth(moving) >= MOD_CONFIG_MAX_GROUP_DEPTH:
+                    self._safe_warning(
+                        self,
+                        tr("ui.mod_editor_add_group"),
+                        tr("ui.mod_editor_group_depth_limit", limit=MOD_CONFIG_MAX_GROUP_DEPTH - 1),
+                    )
+                    return False
+                destination_entries = next(iter(target.values()))
+                if not isinstance(destination_entries, list):
+                    return False
+                destination_index = len(destination_entries)
+            elif position == QAbstractItemView.DropIndicatorPosition.OnItem:
+                if self._group(moving) or not self._can_create_group_at(target_path[:-1]):
+                    return False
+                if (name := self._prompt_group_name()) is None:
+                    return False
+                target_entries = self._entries(target_path[:-1])
+                target_index = target_path[-1]
+                moving = source_entries.pop(source_index)
+                if source_entries is target_entries and source_index < target_index:
+                    target_index -= 1
+                target_entry = target_entries.pop(target_index)
+                group = {name: [target_entry, moving]}
+                target_entries.insert(target_index, group)
+                self._invalidate_hashes()
+                self._refresh_tree(self._find_entry_path(group))
+                return True
+            else:
+                destination_entries = self._entries(target_path[:-1])
+                destination_index = target_path[-1]
+                if position != QAbstractItemView.DropIndicatorPosition.AboveItem:
+                    destination_index += 1
+        moving = source_entries.pop(source_index)
+        if source_entries is destination_entries and source_index < destination_index:
+            destination_index -= 1
+        destination_entries.insert(destination_index, moving)
+        self._invalidate_hashes()
+        self._refresh_tree(self._find_entry_path(moving) if isinstance(moving, dict) else None)
+        return True
 
-    def _set_extra_target_controls(self, frame: QWidget, target: str) -> None:
-        checkboxes = (
-            ("is_none_target_file", EXTRA_FILE_TARGET_NONE),
-            ("is_data_folder_file", EXTRA_FILE_TARGET_GAME_DATA_FOLDER),
-            ("is_custom_target_file", EXTRA_FILE_TARGET_CUSTOM),
+    def _rename_group(self) -> None:
+        if self._loading or (path := self._path()) is None:
+            return
+        entry = self._entry(path)
+        name = self._group_name.text().strip()
+        if self._group(entry) and name:
+            old, children = next(iter(entry.items()))
+            if name != old:
+                if not self._group_name_available(name, entry):
+                    self._safe_warning(
+                        self,
+                        tr("ui.mod_editor_group"),
+                        tr("ui.mod_editor_group_name_taken"),
+                    )
+                    self._group_name.setText(old)
+                    return
+                entry.clear()
+                entry[name] = children
+                self._refresh_tree(path)
+
+    def _save_entry(self) -> None:
+        if self._loading or (path := self._path()) is None:
+            return
+        entry = self._entry(path)
+        if self._group(entry):
+            return
+        source_changed = entry.get("source") != self._source.text().strip()
+        target_changed = entry.get("target") != self._target.text().strip()
+        entry["source"] = self._source.text().strip()
+        entry["type"] = str(self._type.currentData() or "overwrite")
+        target_key = (path, "target_hash")
+        if entry["type"] == "info":
+            entry.pop("target", None)
+            entry.pop("target_hash", None)
+            self._hash_enabled.discard(target_key)
+            self._cancel_hash(target_key)
+        else:
+            entry["target"] = self._target.text().strip()
+        self._refresh_tree(path)
+        if source_changed and self._source_hash_box.isChecked():
+            entry.pop("source_hash", None)
+            self._start_hash(path, "source_hash")
+        if target_changed and entry["type"] != "info" and self._target_hash_box.isChecked():
+            entry.pop("target_hash", None)
+            self._start_hash(path, "target_hash")
+
+    def _context(self) -> ModPathContext | None:
+        root = self._find_mod_folder()
+        game = get_game(str(self.game_combo.currentData() or ""))
+        if not root or game is None:
+            return None
+        config = self._cfg if isinstance(self._cfg, dict) else {}
+        game_path = game.get_game_path(config)
+        key = game.get_custom_exec_config_key()
+        custom = config.get(key, "") if key else ""
+        executable = custom if isinstance(custom, str) and os.path.isfile(custom) else resolve_game_executable(game_path, game.executable_type)
+        return ModPathContext.create(mod_path=root, game_path=game_path, game_data_path=game.get_data_path(config), user_path=Path.home(), runtime=resolve_execution_runtime(executable))
+
+    @staticmethod
+    def _within(path: str, root: Path | None) -> str | None:
+        if root is None:
+            return None
+        try:
+            return Path(path).resolve().relative_to(root.resolve()).as_posix()
+        except (OSError, ValueError):
+            return None
+
+    def _browse_source(self) -> None:
+        root = self._find_mod_folder() or self._last_browse_dir
+        selected, _ = get_open_file_name(self, tr("ui.select_file"), root, "All Files (*)")
+        if not selected:
+            return
+        self._last_browse_dir = os.path.dirname(selected)
+        relative = self._within(selected, Path(root))
+        self._source.setText(f"${{mod_path}}/{relative}" if relative is not None else portable_user_path(selected))
+        self._save_entry()
+
+    def _browse_target(self) -> None:
+        context = self._context()
+        selected = get_existing_directory(self, tr("dialogs.select_custom_target_folder"), str(context.game_path) if context and context.game_path else self._last_browse_dir)
+        if not selected:
+            return
+        self._last_browse_dir = selected
+        roots = (
+            ("${game_path}", context.game_path if context else None),
+            ("${game_data_path}", context.game_data_path if context else None),
+            ("${user_path}", context.user_path if context else None),
         )
-        for property_name, value in checkboxes:
-            checkbox = next(
-                (
-                    child
-                    for child in frame.findChildren(QCheckBox)
-                    if child.property(property_name)
-                ),
-                None,
+        for placeholder, root in roots:
+            if (relative := self._within(selected, root)) is not None:
+                self._target.setText(
+                    f"{placeholder}/{relative}/" if relative else f"{placeholder}/"
+                )
+                self._save_entry()
+                return
+        self._target.setText(f"{portable_user_path(selected).rstrip('/')}/")
+        self._save_entry()
+        self._safe_warning(
+            self,
+            tr("dialogs.custom_target_warning_title"),
+            tr("dialogs.custom_target_warning"),
+        )
+
+    def _hash_target(self, path: tuple[int, ...], field: str):
+        context = self._context()
+        if context is None:
+            return None, tr("ui.mod_editor_hash_context_unavailable")
+        entry = self._entry(path)
+        index = next((number for number, (_groups, leaf) in enumerate(iter_mod_config_leaves(self._operation_files), 1) if leaf is entry), None)
+        try:
+            plan = build_mod_operation_plan(self._config("editor_hash"), context)
+        except ValueError as error:
+            return None, str(error)
+        operation = next((item for item in plan.operations if item.index == index), None)
+        if operation is None:
+            return None, tr("ui.mod_editor_hash_context_unavailable")
+        return operation.source if field == "source_hash" else operation.target, None
+
+    def _cancel_hash(self, key) -> None:
+        self._hash_pending.pop(key, None)
+        self._hash_errors.pop(key, None)
+        self._hash_generations[key] = self._hash_generations.get(key, 0) + 1
+
+    def _toggle_hash(self, field: str, enabled: bool) -> None:
+        if self._loading or (path := self._path()) is None:
+            return
+        entry = self._entry(path)
+        if self._group(entry) or (field == "target_hash" and entry.get("type") == "info"):
+            return
+        key = (path, field)
+        self._hash_errors.pop(key, None)
+        if not enabled:
+            self._hash_enabled.discard(key)
+            self._cancel_hash(key)
+            entry.pop(field, None)
+            self._refresh_tree(path)
+            return
+        self._hash_enabled.add(key)
+        entry.pop(field, None)
+        self._start_hash(path, field)
+
+    def _start_hash(self, path: tuple[int, ...], field: str) -> None:
+        key = (path, field)
+        self._hash_enabled.add(key)
+        target, error = self._hash_target(path, field)
+        generation = self._hash_generations.get(key, 0) + 1
+        self._hash_generations[key] = generation
+        if target is None:
+            self._hash_pending.pop(key, None)
+            self._hash_errors[key] = error or tr("ui.mod_editor_hash_context_unavailable")
+            self._refresh_tree(path)
+            return
+        self._hash_pending[key] = generation
+        self._refresh_tree(path)
+        thread = _OperationHashThread(path, field, generation, target, self)
+        self._hash_threads.add(thread)
+        thread.result_ready.connect(self._hash_ready)
+        thread.finished.connect(self._retire_hash)
+        thread.start()
+
+    def _retire_hash(self) -> None:
+        thread = self.sender()
+        self._hash_threads.discard(thread)
+        retire_qthread(thread)
+
+    def _hash_ready(self, path, field, generation, value, error) -> None:
+        key = (path, field)
+        if self._hash_pending.get(key) != generation:
+            return
+        self._hash_pending.pop(key, None)
+        try:
+            entry = self._entry(path)
+        except (IndexError, ValueError):
+            return
+        if error:
+            self._hash_errors[key] = error
+            entry.pop(field, None)
+        else:
+            self._hash_errors.pop(key, None)
+            entry[field] = value
+        if self._path() == path:
+            self._refresh_tree(path)
+        else:
+            self._validate()
+
+    def _config(self, mod_id: str | None = None) -> dict[str, object]:
+        tags = [
+            name
+            for name, box in (
+                ("textedit", self.tag_textedit),
+                ("customization", self.tag_customization),
+                ("gameplay", self.tag_gameplay),
+                ("other", self.tag_other),
             )
-            if checkbox is not None:
-                checkbox.blockSignals(True)
-                checkbox.setChecked(target == value)
-                checkbox.blockSignals(False)
-        custom_row = next(
+            if box.isChecked()
+        ]
+        existing_tags = self.mod_data.get("tags")
+        if isinstance(existing_tags, list) and CYOP_AFOM_TAG in existing_tags:
+            tags.append(CYOP_AFOM_TAG)
+        config: dict[str, object] = {
+            "config_version": MOD_CONFIG_VERSION,
+            "id": mod_id or self.mod_id or "editor_hash",
+            "name": self.name_edit.text().strip() or "Editor hash",
+            "version": self.version_edit.text().strip() or "0",
+            "authors": _parse_authors(self.authors_edit.text()),
+            "game": str(self.game_combo.currentData() or "deltarune"),
+            "files": self._operation_files,
+        }
+        if self._custom_placeholders:
+            config["placeholders"] = deepcopy(self._custom_placeholders)
+        for field, value in (("description", self.description_edit.text().strip()), ("homepage", self.homepage_edit.text().strip()), ("game_version", self.game_version_edit.text().strip()), ("tags", tags)):
+            if value:
+                config[field] = value
+            else:
+                config.pop(field, None)
+        icon = self.icon_edit.text().strip()
+        if icon:
+            config["icon"] = (
+                icon
+                if icon.startswith(("${", "http://", "https://"))
+                else f"${{mod_path}}/{os.path.basename(icon)}"
+            )
+        else:
+            config.pop("icon", None)
+        for field in ("dependencies", "conflicts"):
+            if values := self._relation_values(field):
+                config[field] = values
+            else:
+                config.pop(field, None)
+        return config
+
+    @staticmethod
+    def _issue_for(
+        issues: tuple[ConfigValidationIssue, ...], path: str
+    ) -> ConfigValidationIssue | None:
+        return next(
             (
-                child
-                for child in frame.findChildren(QWidget)
-                if child.property("custom_target_row")
+                issue
+                for issue in issues
+                if issue.path == path
+                or issue.path.startswith(f"{path}.")
+                or issue.path.startswith(f"{path}[")
             ),
             None,
         )
-        if custom_row is not None:
-            custom_row.setVisible(target == EXTRA_FILE_TARGET_CUSTOM)
 
-    def _on_custom_target_toggled(self, frame: QWidget, checked: bool) -> None:
-        self._set_extra_target_controls(
-            frame,
-            EXTRA_FILE_TARGET_CUSTOM if checked else EXTRA_FILE_TARGET_GAME_FOLDER,
+    def _field_label(self, path: str) -> str:
+        for suffix, key in (
+            (".source_hash", "ui.mod_editor_source_hash"),
+            (".target_hash", "ui.mod_editor_target_hash"),
+            (".source", "ui.mod_editor_source"),
+            (".target", "ui.mod_editor_target"),
+            (".type", "ui.mod_editor_type"),
+        ):
+            if path.endswith(suffix):
+                return tr(key)
+        if path.startswith("authors"):
+            return tr("ui.mod_editor_authors")
+        if path.startswith("dependencies"):
+            return tr("ui.mod_editor_dependencies")
+        if path.startswith("conflicts"):
+            return tr("ui.mod_editor_conflicts")
+        if path.startswith("files"):
+            return tr("ui.mod_editor_operation")
+        return tr("ui.mod_editor_validation_configuration")
+
+    def _issue_message(self, issue: ConfigValidationIssue) -> str:
+        operation_type = ""
+        if (path := self._path()) is not None:
+            try:
+                entry = self._entry(path)
+            except (IndexError, ValueError):
+                entry = {}
+            if not self._group(entry):
+                operation_type = str(entry.get("type", ""))
+        if issue.code == "target_kind":
+            if "directory" in issue.message:
+                return tr(
+                    "ui.mod_editor_validation_target_directory",
+                    operation=(
+                        self._operation_type_label(operation_type)
+                        if operation_type
+                        else tr("ui.mod_editor_operation")
+                    ),
+                )
+            return tr("ui.mod_editor_validation_target_unsupported")
+        if issue.code == "source_kind":
+            return tr("ui.mod_editor_validation_source_file")
+        if issue.code == "missing_field":
+            if "target" in issue.message:
+                return tr("ui.mod_editor_validation_target_required")
+            if "source" in issue.message:
+                return tr("ui.mod_editor_validation_source_required")
+        if issue.code == "forbidden_field":
+            return tr("ui.mod_editor_validation_not_used")
+        return tr("ui.mod_editor_validation_invalid")
+
+    def _format_issue(self, issue: ConfigValidationIssue) -> str:
+        return tr(
+            "ui.mod_editor_validation_format",
+            field=self._field_label(issue.path),
+            message=self._issue_message(issue),
         )
-        if checked:
-            self._safe_warning(
-                tr("dialogs.custom_target_warning_title"),
-                tr("dialogs.custom_target_warning"),
-            )
 
-    def _browse_custom_target_folder(self, path_edit: QLineEdit) -> None:
-        path = get_existing_directory(
-            self,
-            tr("dialogs.select_custom_target_folder"),
-            self._last_browse_dir,
-        )
-        if path:
-            self._last_browse_dir = path
-            path_edit.setText(path)
-
-    def _make_icon_text_button(self, icon, text, tooltip=None):
-        button = QPushButton(text)
-        if icon:
-            button.setIcon(self._icon(icon))
-            button.setIconSize(self._icon_size(18))
-        button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        button.setMinimumWidth(round(112 * self._ui_scale()))
-        if tooltip:
-            button.setToolTip(tooltip)
-        return button
+    def _set_field_issue(
+        self, widget: QWidget, issue: ConfigValidationIssue | None
+    ) -> None:
+        message = self._format_issue(issue) if issue else ""
+        widget.setStyleSheet("border: 1px solid #d9534f;" if message else "")
+        widget.setToolTip(message)
 
     @staticmethod
-    def _normalize_config_path(path: str) -> str:
-        if not path:
-            return path
-        normalized = path.replace("\\", "/")
-        if normalized.endswith("/"):
-            normalized = normalized.rstrip("/")
-        return normalized
+    def _entry_config_path(path: tuple[int, ...]) -> str:
+        return "files" + "".join(f"[{index}]" for index in path)
 
-    @classmethod
-    def _format_config_path(cls, path: str, *, is_directory: bool | None = None) -> str:
-        if not path:
-            return path
-        normalized = path.replace("\\", "/")
-        had_trailing_slash = normalized.endswith("/")
-        if is_directory is None:
-            is_directory = had_trailing_slash or os.path.isdir(path)
-        if is_directory:
-            return normalized.rstrip("/") + "/"
-        return normalized.rstrip("/")
-
-    def _get_tab_for_layout(self, layout):
-        for i in range(self.file_tabs.count()):
-            tab = self.file_tabs.widget(i)
-            if getattr(tab, "_file_layout", None) is layout:
-                return tab
-        return None
-
-    def _set_tab_has_data(self, tab, has_data):
-        if tab is None:
-            return
-        tab._has_data_frame = has_data
-        data_button = getattr(tab, "_data_button", None)
-        if isinstance(data_button, QPushButton):
-            data_button.setVisible(not has_data)
-
-    def _remove_file_frame(self, layout, frame, file_type):
-        frame.hide()
-        layout.removeWidget(frame)
-        frame.deleteLater()
-        if file_type == "data":
-            self._set_tab_has_data(self._get_tab_for_layout(layout), False)
-        elif file_type == "extra":
-            self._refresh_extra_file_titles(layout)
-
-    def _iter_file_title_labels(self, layout, *, file_type: str):
-        for i in range(layout.count()):
-            widget = layout.itemAt(i).widget() if layout.itemAt(i) else None
-            if (
-                not widget
-                or not hasattr(widget, "layout")
-                or not (frame_layout := widget.layout())
-            ):
-                continue
-            title = (
-                frame_layout.itemAt(0).widget() if frame_layout.count() > 0 else None
-            )
-            if isinstance(title, QLabel) and title.property("file_type") == file_type:
-                yield title
-
-    def _refresh_extra_file_titles(self, layout) -> None:
-        for index, title in enumerate(
-            self._iter_file_title_labels(layout, file_type="extra"),
-            start=1,
-        ):
-            title.setText(tr("files.extra_files_title", number=index))
-
-    def _is_special_runtime_extra_path(self, layout, raw_path: str) -> bool:
-        normalized = self._normalize_config_path(str(raw_path or "").strip())
-        if not normalized:
-            return False
-        game_id = self.game_combo.currentData() or self.mod_data.get(
-            "game", "deltarune"
+    def _apply_validation(self, issues: tuple[ConfigValidationIssue, ...]) -> None:
+        fields = (
+            (self.name_edit, "name"),
+            (self.authors_edit, "authors"),
+            (self.description_edit, "description"),
+            (self.homepage_edit, "homepage"),
+            (self.icon_edit, "icon"),
+            (self.version_edit, "version"),
+            (self.game_version_edit, "game_version"),
         )
-        if game_id == "pizzatower":
-            lowered = normalized.lower().rstrip("/")
-            if lowered == "towers" or lowered.startswith("towers/"):
-                return True
-            base_name = os.path.basename(lowered)
-            if base_name == "towers":
-                return True
-            if is_top_level_towers_archive(base_name):
-                return True
-        if game_id == "frickbears3":
-            lowered = normalized.lower().rstrip("/")
-            if lowered == "addons" or lowered.startswith("addons/"):
-                return True
-            base_name = os.path.basename(lowered)
-            if base_name == "addons":
-                return True
-            if is_top_level_addons_archive(base_name):
-                return True
-        return False
-
-    def _special_runtime_extra_hint(self, layout, raw_path: str) -> str:
-        normalized = self._normalize_config_path(str(raw_path or "").strip())
-        if not normalized:
-            return ""
-        game_id = self.game_combo.currentData() or self.mod_data.get(
-            "game", "deltarune"
-        )
-        lowered = normalized.lower().rstrip("/")
-        base_name = os.path.basename(lowered)
-        if game_id == "pizzatower" and (
-            lowered == "towers"
-            or lowered.startswith("towers/")
-            or base_name == "towers"
-            or is_top_level_towers_archive(base_name)
-        ):
-            return tr("tooltips.mod_editor_data_folder_target")
-        if game_id == "frickbears3" and (
-            lowered == "addons"
-            or lowered.startswith("addons/")
-            or base_name == "addons"
-            or is_top_level_addons_archive(base_name)
-        ):
-            return tr("tooltips.mod_editor_data_folder_target")
-        return ""
-
-    def _update_extra_file_special_state(
-        self,
-        layout,
-        path_edit: QLineEdit,
-        frame: QWidget,
-        hint_label: QLabel | None = None,
-    ) -> None:
-        is_special = self._is_special_runtime_extra_path(layout, path_edit.text())
-        frame.setProperty("specialRuntimeTarget", is_special)
-        if hint_label is not None:
-            hint_text = self._special_runtime_extra_hint(layout, path_edit.text())
-            hint_label.setText(hint_text)
-            hint_label.setVisible(bool(is_special and hint_text))
-        self.style().unpolish(frame)
-        self.style().polish(frame)
-        frame.update()
-        if hint_label is not None:
-            self.style().unpolish(hint_label)
-            self.style().polish(hint_label)
-            hint_label.update()
-
-    def _refresh_all_extra_file_special_states(self) -> None:
-        for index in range(self.file_tabs.count()):
-            tab = self.file_tabs.widget(index)
-            layout = self._get_tab_file_layout(tab)
-            if not layout:
-                continue
-            for i in range(layout.count()):
-                widget = layout.itemAt(i).widget() if layout.itemAt(i) else None
-                if (
-                    not widget
-                    or not hasattr(widget, "layout")
-                    or not (frame_layout := widget.layout())
-                ):
-                    continue
-                path_edit = next(
-                    (
-                        frame_layout.itemAt(j).widget()
-                        for j in range(frame_layout.count())
-                        if isinstance(frame_layout.itemAt(j).widget(), QLineEdit)
-                        and frame_layout.itemAt(j)
-                        .widget()
-                        .property("is_local_extra_path")
-                    ),
-                    None,
-                )
-                hint_label = widget.findChild(QLabel, "special_runtime_hint")
-                if isinstance(path_edit, QLineEdit):
-                    self._update_extra_file_special_state(
-                        layout, path_edit, widget, hint_label
-                    )
-
-    def _set_field_validation_error(self, line_edit: QLineEdit) -> None:
-        line_edit.setProperty("validation_error", True)
-        line_edit.setStyleSheet("border: 2px solid #d9534f;")
-
-    def _clear_field_validation_error(self, line_edit: QLineEdit) -> None:
-        if line_edit.property("validation_error"):
-            line_edit.setProperty("validation_error", False)
-            line_edit.setStyleSheet("")
-
-    def _browse_file(self, line_edit, title, file_filter, file_type):
-        if file_type == "data":
-            path, _ = get_open_file_name(
-                self, title, self._last_browse_dir, file_filter
+        for widget, path in fields:
+            self._set_field_issue(widget, self._issue_for(issues, path))
+        for field, tree in self._relation_trees.items():
+            issue = self._issue_for(issues, field)
+            self._set_field_issue(tree, issue)
+            item = tree.currentItem()
+            item_index = tree.indexOfTopLevelItem(item) if item else -1
+            item_issue = (
+                self._issue_for(issues, f"{field}[{item_index}]")
+                if item_index >= 0
+                else None
             )
-            if path:
-                self._last_browse_dir = os.path.dirname(path)
-                line_edit.setText(self._format_config_path(path))
-        else:
-            msg = QMessageBox(self)
-            msg.setWindowTitle(tr("ui.select"))
-            msg.setText(tr("ui.select_file_or_folder"))
-            file_btn = msg.addButton(tr("ui.file"), QMessageBox.ButtonRole.AcceptRole)
-            folder_btn = msg.addButton(
-                tr("ui.folder"), QMessageBox.ButtonRole.ActionRole
-            )
-            msg.addButton(QMessageBox.StandardButton.Cancel)
-            msg.exec()
-            clicked = msg.clickedButton()
-            if clicked == file_btn:
-                path, _ = get_open_file_name(
-                    self, title, self._last_browse_dir, file_filter
-                )
-                if path:
-                    self._last_browse_dir = os.path.dirname(path)
-                    line_edit.setText(self._format_config_path(path))
-            elif clicked == folder_btn:
-                path = get_existing_directory(self, title, self._last_browse_dir)
-                if path:
-                    self._last_browse_dir = path
-                    line_edit.setText(self._format_config_path(path, is_directory=True))
+            self._set_field_issue(self._relation_id_edits[field], item_issue)
+            self._set_field_issue(self._relation_mode_combos[field], item_issue)
+        selected = self._path()
+        base = self._entry_config_path(selected) if selected is not None else "files"
+        entry = self._entry(selected) if selected is not None else {}
+        group = selected is not None and self._group(entry)
+        self._set_field_issue(self._group_name, self._issue_for(issues, base) if group else None)
+        for widget, field in (
+            (self._type, "type"),
+            (self._source, "source"),
+            (self._source_hash, "source_hash"),
+            (self._target, "target"),
+            (self._target_hash, "target_hash"),
+        ):
+            self._set_field_issue(widget, self._issue_for(issues, f"{base}.{field}") if not group else None)
 
-    def _browse_icon(self):
-        path, _ = get_open_file_name(
-            self,
-            tr("ui.select_icon_file"),
-            self._last_browse_dir,
-            get_file_filter("image_files"),
+        def paint(item) -> None:
+            raw = item.data(0, Qt.ItemDataRole.UserRole)
+            path = tuple(int(part) for part in raw.split("/")) if raw else ()
+            issue = self._issue_for(issues, self._entry_config_path(path))
+            item.setForeground(0, QBrush(QColor("#d9534f")) if issue else QBrush())
+            item.setToolTip(0, self._format_issue(issue) if issue else "")
+            for index in range(item.childCount()):
+                paint(item.child(index))
+
+        for index in range(self._tree.topLevelItemCount()):
+            paint(self._tree.topLevelItem(index))
+
+    def _validate(self) -> bool:
+        issues = validate_mod_config(self._config())
+        selected = self._path()
+        selected_issue = self._issue_for(
+            issues, self._entry_config_path(selected) if selected is not None else "files"
         )
+        issue = selected_issue or (issues[0] if issues else None)
+        hash_message = next(iter(self._hash_errors.values()), "")
+        if self._hash_pending and not hash_message:
+            hash_message = tr("ui.mod_editor_hash_pending")
+        self._validation.setText(self._format_issue(issue) if issue else hash_message)
+        self._validation.setVisible(bool(issues) or bool(hash_message))
+        self._apply_validation(issues)
+        valid = not any(issue.severity == "error" for issue in issues) and not self._hash_pending and not self._hash_errors
+        if hasattr(self, "_save_button"):
+            self._save_button.setEnabled(valid)
+        return valid
+
+    def _build_actions(self, parent) -> None:
+        row = QHBoxLayout()
+        if not self.is_creating:
+            for key, callback in (("ui.delete_mod", self._delete), ("ui.export_mod", self._export), ("ui.open_mod_folder", self._open_folder)):
+                button = QPushButton(tr(key), self)
+                button.clicked.connect(callback)
+                row.addWidget(button)
+            versions = QPushButton(tr("mod_versions.switch_version_button"), self)
+            versions.clicked.connect(self._open_versions)
+            row.addWidget(versions)
+        row.addStretch()
+        cancel = QPushButton(tr("ui.cancel_button"), self)
+        cancel.clicked.connect(self._cancel)
+        row.addWidget(cancel)
+        self._save_button = QPushButton(tr("ui.finish_creation") if self.is_creating else tr("ui.save_changes"), self)
+        self._save_button.clicked.connect(self._save)
+        row.addWidget(self._save_button)
+        parent.addLayout(row)
+
+    def _populate(self) -> None:
+        data = self.mod_data
+        self.name_edit.setText(str(data.get("name", "")))
+        authors = data.get("authors")
+        self.authors_edit.setText(", ".join(map(str, authors)) if isinstance(authors, list) else "")
+        for field, widget in (("description", self.description_edit), ("homepage", self.homepage_edit), ("version", self.version_edit), ("game_version", self.game_version_edit)):
+            widget.setText(str(data.get(field, "")))
+        self.icon_edit.setText(str(data.get("icon", "")).removeprefix("${mod_path}/"))
+        raw_tags = data.get("tags")
+        tags: list[object] = raw_tags if isinstance(raw_tags, list) else []
+        for name, box in (("textedit", self.tag_textedit), ("customization", self.tag_customization), ("gameplay", self.tag_gameplay), ("other", self.tag_other)):
+            box.setChecked(name in tags)
+        if self.is_creating and not tags:
+            self.tag_other.setChecked(True)
+        wanted = data.get("game") or getattr(getattr(self._app_state, "game_mode", None), "game_id", "")
+        for index in range(self.game_combo.count()):
+            if self.game_combo.itemData(index) == wanted:
+                self.game_combo.setCurrentIndex(index)
+                break
+        for field in ("dependencies", "conflicts"):
+            self._populate_relations(field, data.get(field))
+        self._refresh_custom_placeholders()
+        self._refresh_tree()
+
+    def _browse_icon(self) -> None:
+        path, _ = get_open_file_name(self, tr("ui.select_icon_file"), self._last_browse_dir, get_file_filter("image_files"))
         if path:
             self._last_browse_dir = os.path.dirname(path)
             self.icon_edit.setText(path)
 
-    def _on_icon_text_changed(self, text):
-        self._icon_request_id += 1
-        text = text.strip()
-        if not text:
-            self._load_default_icon()
-        elif text.startswith(("http://", "https://")):
-            self._load_icon_from_url(text)
-        else:
-            self._load_icon_preview(text)
-
-    def _load_default_icon(self):
-        try:
-            logo = resource_path("assets/icons/icon.ico")
-            if os.path.exists(logo):
-                px = QPixmap(logo)
-                if not px.isNull():
-                    self._set_icon_pixmap(px)
-                    return
-        except Exception as e:
-            logger.warning(f"Load default icon failed: {e}")
-        self.icon_preview.setText(tr("ui.icon_preview"))
-
-    def _load_icon_from_url(self, url):
-        from PyQt6.QtGui import QImage
-
-        from services.background_operations import background_operations
-        from ui.utils.image_loader import ImageLoaderRunnable, get_image_loader_pool
-        from workers import WorkerSignals
-
-        self.icon_preview.setText(tr("ui.loading_placeholder"))
-
-        request_id = self._icon_request_id
-        signals = WorkerSignals()
-        self._icon_fetch_signals.add(signals)
-        signals.result.connect(
-            lambda image, request_id=request_id, signals=signals: self._apply_url_icon(
-                image if isinstance(image, QImage) else QImage(), request_id, signals
-            )
+    def _load_icon_preview(self, path: str) -> None:
+        custom_placeholders = (
+            self._custom_placeholders
+            if isinstance(self._custom_placeholders, dict)
+            else {}
         )
-        signals.error.connect(
-            lambda _url, _message, request_id=request_id, signals=signals: (
-                self._apply_url_icon(QImage(), request_id, signals)
-            )
-        )
-
-        background_operations.start_runnable(
-            get_image_loader_pool(),
-            ImageLoaderRunnable(url, signals),
-        )
-
-    def _set_icon_pixmap(self, px):
-        """Crop to square center, scale to the icon preview size, apply border radius."""
-        if px.isNull():
-            self.icon_preview.setText(tr("status.loading_error"))
+        candidate = mod_local_relative_path(
+            path,
+            custom_placeholders,
+        ) or path
+        if not os.path.isabs(candidate):
+            candidate = os.path.join(self._find_mod_folder() or "", candidate)
+        pixmap = QPixmap(candidate)
+        if pixmap.isNull():
+            pixmap = QPixmap(resource_path("assets/icons/icon.ico"))
+        if pixmap.isNull():
+            self.icon_preview.setText(tr("ui.icon_preview"))
             return
-        size = min(px.width(), px.height())
-        cropped = px.copy(
-            (px.width() - size) // 2, (px.height() - size) // 2, size, size
-        )
-        preview_size = self.icon_preview.width()
-        pr = self._br(preview_size, preview_size)
-        scaled = cropped.scaled(
-            preview_size,
-            preview_size,
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.icon_preview.setPixmap(
-            round_pixmap(scaled, pr, 2, self._color("border", "#039d5b"))
-        )
+        side = min(pixmap.width(), pixmap.height())
+        pixmap = pixmap.copy((pixmap.width() - side) // 2, (pixmap.height() - side) // 2, side, side).scaled(64, 64, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        self.icon_preview.setPixmap(round_pixmap(pixmap, self._radius(64, 64), 2, self._color("border", "#039d5b")))
 
-    def _apply_url_icon(self, image, request_id=None, signals=None):
-        if signals is not None:
-            self._icon_fetch_signals.discard(signals)
-        if request_id is not None and request_id != self._icon_request_id:
-            return
-        if image.isNull():
-            self.icon_preview.setText(tr("status.loading_error"))
-        else:
-            self._set_icon_pixmap(QPixmap.fromImage(image))
-
-    def _load_icon_preview(self, path):
-        try:
-            resolved = path
-            if not os.path.isabs(path) or not os.path.exists(path):
-                mod_folder = self._find_mod_folder()
-                if mod_folder:
-                    candidate = os.path.normpath(os.path.join(mod_folder, path))
-                    if os.path.isfile(candidate):
-                        resolved = candidate
-            self._set_icon_pixmap(QPixmap(resolved))
-        except Exception:
-            self.icon_preview.setText(tr("status.loading_error"))
-
-    def _build_action_buttons(self, parent):
-        row = QHBoxLayout()
-        if not self.is_creating:
-            del_btn = QPushButton(tr("ui.delete_mod"))
-            self._delete_button = del_btn
-            dr = self._br(h=max(1, del_btn.sizeHint().height()))
-            tc = self._color("main_text", "#e8e9eb")
-            del_btn.setStyleSheet(
-                f"background-color: darkred; color: {tc}; border-radius: {dr}px;"
-            )
-            del_btn.setToolTip(tr("tooltips.delete_mod"))
-            del_btn.clicked.connect(self._delete_mod)
-            row.addWidget(del_btn)
-            row.addSpacing(10)
-            export_btn = QPushButton(tr("ui.export_mod"))
-            self._export_button = export_btn
-            export_btn.setToolTip(tr("tooltips.export_mod"))
-            export_btn.clicked.connect(self._export_mod)
-            row.addWidget(export_btn)
-            row.addSpacing(10)
-            open_folder_btn = QPushButton(tr("ui.open_mod_folder"))
-            self._open_folder_button = open_folder_btn
-            open_folder_btn.setToolTip(tr("tooltips.open_mod_folder"))
-            open_folder_btn.clicked.connect(self._open_mod_folder)
-            row.addWidget(open_folder_btn)
-            row.addSpacing(10)
-            switch_version_btn = QPushButton(tr("mod_versions.switch_version_button"))
-            self._switch_version_button = switch_version_btn
-            switch_version_btn.setToolTip(tr("tooltips.mod_versions"))
-            switch_version_btn.clicked.connect(self._open_mod_versions)
-            row.addWidget(switch_version_btn)
-        row.addStretch()
-        cancel_btn = QPushButton(tr("ui.cancel_button"))
-        self._cancel_button = cancel_btn
-        cancel_btn.setToolTip(tr("tooltips.cancel"))
-        cancel_btn.clicked.connect(self._on_cancel)
-        row.addWidget(cancel_btn)
-        row.addSpacing(10)
-        save_btn = QPushButton(
-            tr("ui.finish_creation") if self.is_creating else tr("ui.save_changes")
-        )
-        self._save_button = save_btn
-        save_btn.setToolTip(tr("tooltips.save_mod"))
-        save_btn.clicked.connect(self._save_mod)
-        row.addWidget(save_btn)
-        parent.addLayout(row)
-
-    def _on_cancel(self):
-        if (
-            self._safe_question(
-                self, tr("dialogs.cancel_changes"), tr("dialogs.unsaved_changes_lost")
-            )
-            == QMessageBox.StandardButton.Yes
-        ):
-            self.reject()
-
-    def _validate(self):
+    def _valid_for_save(self) -> bool:
         if not self.name_edit.text().strip():
-            self._safe_warning(tr("errors.error"), tr("dialogs.mod_name_empty"))
+            self._safe_warning(self, tr("errors.error"), tr("dialogs.mod_name_empty"))
             return False
-        url = self.homepage_edit.text().strip()
-        if url:
-            from urllib.parse import urlparse
+        homepage = self.homepage_edit.text().strip()
+        try:
+            parsed = urlparse(homepage) if homepage else None
+        except ValueError:
+            self._safe_warning(self, tr("errors.error"), tr("dialogs.invalid_homepage"))
+            return False
+        if parsed and (parsed.scheme not in {"http", "https"} or not parsed.netloc):
+            self._safe_warning(self, tr("errors.error"), tr("dialogs.invalid_homepage"))
+            return False
+        return self._validate()
 
-            try:
-                r = urlparse(url)
-                if not all([r.scheme in ["http", "https"], r.netloc]):
-                    raise ValueError
-                p = r.path.lower()
-                if any(
-                    p.endswith(ext)
-                    for ext in [
-                        ".zip",
-                        ".g3mpatch",
-                        ".rar",
-                        ".7z",
-                        ".exe",
-                        ".xdelta",
-                        ".win",
-                        ".ios",
-                        ".patch",
-                        ".tar",
-                        ".gz",
-                    ]
-                ):
-                    self._safe_warning(
-                        tr("errors.error"),
-                        tr("dialogs.invalid_homepage_direct_download"),
-                    )
-                    return False
-            except Exception:
-                self._safe_warning(tr("errors.error"), tr("dialogs.invalid_homepage"))
-                return False
-        if len(self.name_edit.text().strip()) > MOD_FIELD_LIMITS["name"]:
-            self._safe_warning(tr("errors.error"), tr("dialogs.mod_name_too_long"))
-            return False
-        if len(self.author_edit.text().strip()) > MOD_FIELD_LIMITS["author"]:
-            self._safe_warning(tr("errors.error"), tr("dialogs.mod_author_too_long"))
-            return False
-        if len(self.version_edit.text().strip()) > MOD_FIELD_LIMITS["version"]:
-            self._safe_warning(tr("errors.error"), tr("dialogs.mod_version_too_long"))
-            return False
-        if (
-            len((self.game_combo.currentData() or "").strip())
-            > MOD_FIELD_LIMITS["game"]
-        ):
-            self._safe_warning(tr("errors.error"), tr("dialogs.mod_game_too_long"))
-            return False
-        if len(self.homepage_edit.text().strip()) > MOD_FIELD_LIMITS["homepage"]:
-            self._safe_warning(tr("errors.error"), tr("dialogs.mod_homepage_too_long"))
-            return False
-        if len(self.icon_edit.text().strip()) > MOD_FIELD_LIMITS["icon"]:
-            self._safe_warning(tr("errors.error"), tr("dialogs.mod_icon_too_long"))
-            return False
-        if (
-            len(self.game_version_edit.text().strip())
-            > MOD_FIELD_LIMITS["game_version"]
-        ):
-            self._safe_warning(
-                tr("errors.error"), tr("dialogs.mod_game_version_too_long")
-            )
-            return False
-        if not any(
-            [
-                self.tag_textedit.isChecked(),
-                self.tag_customization.isChecked(),
-                self.tag_gameplay.isChecked(),
-                self.tag_other.isChecked(),
-            ]
-        ):
-            self.tag_other.setChecked(True)
-        if empty_section := self._find_empty_file_section():
-            kind = empty_section["kind"]
-            tab_name = empty_section["tab_name"]
-            field = empty_section["field"]
-            self._set_field_validation_error(field)
-            key = (
-                "dialogs.empty_data_file_section"
-                if kind == "data"
-                else "dialogs.empty_extra_file_section"
-            )
-            params = {"tab_name": tab_name}
-            if kind == "extra":
-                params["number"] = empty_section["number"]
-            self._safe_warning(tr("dialogs.validation_error"), tr(key, **params))
-            return False
-        if self.is_creating and not self._has_any_mod_files():
-            self._safe_warning(
-                tr("errors.error"), tr("dialogs.mod_needs_at_least_one_file")
-            )
-            return False
-        return self._validate_local_files() and self._validate_custom_targets()
+    def _copy_icon(self, root: str) -> str | None:
+        source = self.icon_edit.text().strip()
+        if not source:
+            return None
+        if source.startswith("${mod_path}/"):
+            return source.removeprefix("${mod_path}/")
+        if not os.path.isfile(source):
+            source = os.path.join(self._find_mod_folder() or "", source)
+        if not os.path.isfile(source):
+            return None
+        filename = os.path.basename(source)
+        target = os.path.join(root, filename)
+        if os.path.abspath(source) != os.path.abspath(target):
+            shutil.copy2(source, target)
+        return filename
 
-    def _resolve_file_path(self, path):
-        """Resolve a file path, trying the mod folder if it's relative or doesn't exist."""
-        if not path:
-            return path
-        normalized = self._normalize_config_path(path)
-        if os.path.exists(normalized):
-            return normalized
-        mod_folder = self._find_mod_folder()
-        if mod_folder:
-            candidate = resolve_mod_file_path(mod_folder, normalized)
-            if os.path.exists(candidate):
-                return candidate
-            game = self.game_combo.currentData()
-            for tab_idx in range(self.file_tabs.count()):
-                resolved = self._resolve_path(normalized, tab_idx, mod_folder, game)
-                if os.path.exists(resolved):
-                    return resolved
-        return normalized
-
-    def _has_any_mod_files(self):
-        return has_any_mod_files(
-            self.file_tabs,
-            get_tab_file_layout=self._get_tab_file_layout,
-            extract_frame_data_fn=self._extract_frame_data,
-        )
-
-    def _find_empty_file_section(self) -> dict | None:
-        for index in range(self.file_tabs.count()):
-            tab = self.file_tabs.widget(index)
-            layout = self._get_tab_file_layout(tab)
-            if not layout:
-                continue
-            tab_name = self.file_tabs.tabText(index)
-            for title in self._iter_file_title_labels(layout, file_type="data"):
-                frame_layout = title.parentWidget().layout()
-                for item_index in range(frame_layout.count()):
-                    widget = (
-                        frame_layout.itemAt(item_index).widget()
-                        if frame_layout.itemAt(item_index)
-                        else None
-                    )
-                    if (
-                        isinstance(widget, QLineEdit)
-                        and widget.property("is_local_path")
-                        and not widget.text().strip()
-                    ):
-                        return {"kind": "data", "tab_name": tab_name, "field": widget}
-            for extra_index, title in enumerate(
-                self._iter_file_title_labels(layout, file_type="extra"),
-                start=1,
-            ):
-                frame_layout = title.parentWidget().layout()
-                for item_index in range(frame_layout.count()):
-                    widget = (
-                        frame_layout.itemAt(item_index).widget()
-                        if frame_layout.itemAt(item_index)
-                        else None
-                    )
-                    if (
-                        isinstance(widget, QLineEdit)
-                        and widget.property("is_local_extra_path")
-                        and not widget.text().strip()
-                    ):
-                        return {
-                            "kind": "extra",
-                            "tab_name": tab_name,
-                            "field": widget,
-                            "number": extra_index,
-                        }
-        return None
-
-    def _validate_local_files(self):
-        missing = validate_local_files(
-            self.file_tabs,
-            get_tab_file_layout=self._get_tab_file_layout,
-            extract_frame_data_fn=self._extract_frame_data,
-            resolve_file_path=self._resolve_file_path,
-        )
-        if missing:
-            kind, tab_name, path = missing
-            key = (
-                "dialogs.tab_file_not_found"
-                if kind == "data"
-                else "dialogs.tab_extra_file_not_found"
-            )
-            self._safe_warning(
-                tr("dialogs.validation_error"),
-                tr(key, tab_name=tab_name, path=path),
-            )
-            return False
-        return True
-
-    def _validate_custom_targets(self) -> bool:
-        for file_info in self._collect_files().values():
-            for entry in parse_extra_file_entries_raw(file_info.get("extra_files", [])):
-                if entry["target"] != EXTRA_FILE_TARGET_CUSTOM:
-                    continue
-                target_path = entry.get("target_path", "")
-                if not (
-                    target_path
-                    and (
-                        os.path.isabs(target_path)
-                        or PureWindowsPath(target_path).is_absolute()
-                    )
-                    and os.path.isdir(target_path)
-                ):
-                    self._safe_warning(
-                        tr("dialogs.validation_error"),
-                        tr("dialogs.custom_target_folder_not_set"),
-                    )
-                    return False
-        return True
-
-    def _collect_mod_data(self):
-        tag_map = [
-            ("textedit", self.tag_textedit),
-            ("customization", self.tag_customization),
-            ("gameplay", self.tag_gameplay),
-            ("other", self.tag_other),
-        ]
-        tags = [
-            name for name, cb in tag_map if cb.isChecked() and name in MOD_ALLOWED_TAGS
-        ]
-        author = self.author_edit.text().strip() or tr("defaults.local_author")
-        return {
-            "name": self.name_edit.text().strip(),
-            "version": self.version_edit.text().strip() or "1.0.0",
-            "author": author,
-            "description": self.description_edit.text().strip()
-            or tr("defaults.no_description"),
-            "homepage": self.homepage_edit.text().strip(),
-            "icon": self.icon_edit.text().strip(),
-            "tags": tags,
-            "game": self.game_combo.currentData() or "deltarune",
-            "game_version": self.game_version_edit.text().strip() or "1.04",
-            "info_files": self._collect_info_files(),
-            "files": self._collect_files(),
-        }
-
-    def _collect_files(self):
-        game = self.game_combo.currentData()
-        game_def = get_game(game)
-        tab_keys = [tab.tab_id for tab in game_def.tabs] if game_def else []
-        return collect_files(
-            self.file_tabs,
-            tab_keys=tab_keys,
-            get_tab_file_layout=self._get_tab_file_layout,
-            extract_frame_data_fn=self._extract_frame_data,
-        )
-
-    def _extract_frame_data(self, fl):
-        return extract_frame_data(fl, format_config_path=self._format_config_path)
-
-    def _save_mod(self):
-        if getattr(self, "_is_saving", False):
+    def _save(self) -> None:
+        if not self._valid_for_save():
             return
-        if not self._validate():
-            return
-        self._is_saving = True
-        if hasattr(self, "_save_button"):
-            self._save_button.setEnabled(False)
         try:
             if self.is_creating:
-                self._create_local_mod()
+                mod_id = f"local_{uuid.uuid4().hex[:12]}"
+                root = os.path.join(self.parent_app.app_state.mods_dir, get_unique_mod_dir(self.parent_app.app_state.mods_dir, self.name_edit.text().strip()))
+                os.makedirs(root)
             else:
-                self._update_local_mod()
-        finally:
-            if self.result() == QDialog.DialogCode.Rejected:
-                self._is_saving = False
-                if hasattr(self, "_save_button"):
-                    self._save_button.setEnabled(True)
-
-    def _process_icon(self, target_dir):
-        icon_path = self.icon_edit.text().strip()
-        if not icon_path:
-            return None
-        if icon_path.startswith(("http://", "https://")):
-            return icon_path
-        resolved = self._resolve_file_path(icon_path)
-        if os.path.exists(resolved):
-            dest = os.path.join(target_dir, os.path.basename(resolved))
-            if os.path.abspath(resolved) != os.path.abspath(dest):
-                shutil.copy2(resolved, dest)
-            return os.path.basename(resolved)
-        return None
-
-    def _remove_stale_managed_files(self, mod_dir, old_files, new_files, game):
-        remove_stale_managed_files(mod_dir, old_files, new_files, game)
-
-    def _copy_files_to_mod_dir(self, mod_dir, files_data, game):
-        return copy_files_to_mod_dir(
-            mod_dir=mod_dir,
-            files_data=files_data,
-            game=game,
-            resolve_file_path=self._resolve_file_path,
-            format_config_path=self._format_config_path,
-        )
-
-    def _copy_info_files_to_mod_dir(self, mod_dir: str) -> None:
-        for entry in self._iter_info_file_entries():
-            source_path = str(entry.get("source_path") or "").strip()
-            file_name = self._normalize_info_file_name(entry.get("path", ""))
-            if not source_path or not file_name:
-                continue
-            resolved = self._resolve_file_path(source_path)
-            if not os.path.isfile(resolved):
-                continue
-            dest = os.path.join(mod_dir, file_name)
-            if os.path.abspath(resolved) != os.path.abspath(dest):
-                shutil.copy2(resolved, dest)
-
-    def _refresh_after_save(self):
-        self.parent_app.mod_service.invalidate_mods_cache()
-        self.parent_app.mod_service.load_local_mods()
-        self.parent_app.mod_service.mod_list_updated.emit()
-        if hasattr(self.parent_app, "library_display"):
-            self.parent_app.library_display.update_display()
-
-    def _finish_successful_save(self, title: str, message: str) -> None:
-        """Close the editor before rebuilding library widgets or showing modal UI."""
+                mod_id, root = self.mod_id, self._find_mod_folder()
+                if not mod_id or not root:
+                    raise FileNotFoundError("mod folder")
+            config = self._config(mod_id)
+            if icon := self._copy_icon(root):
+                config["icon"] = f"${{mod_path}}/{icon}"
+            write_mod_config(os.path.join(root, "mod_config.json"), config)
+        except Exception as error:
+            self._safe_critical(self, tr("errors.update_error"), tr("errors.local_mod_update_failed", error=format_filesystem_error(error)))
+            return
+        self._refresh_library()
         self.accept()
-        try:
-            self._refresh_after_save()
-        except Exception:
-            logger.exception("ModEditorDialog: failed to refresh UI after saving mod")
-        try:
-            QMessageBox.information(self.parent_app, title, message)
-        except Exception:
-            logger.exception("ModEditorDialog: failed to show save success message")
+        self._safe_information(self, tr("dialogs.success"), tr("dialogs.local_mod_created_message" if self.is_creating else "dialogs.local_mod_updated_message", mod_name=self.name_edit.text().strip()))
 
-    def _safe_critical(self, title: str, message: str) -> None:
-        try:
-            QMessageBox.critical(self, title, message)
-        except Exception:
-            logger.exception("ModEditorDialog: failed to show critical message")
+    def _find_mod_folder(self) -> str | None:
+        path = self.mod_data.get("folder_path")
+        if isinstance(path, str) and os.path.isdir(path):
+            return path
+        service = getattr(self.parent_app, "mod_service", None)
+        found = service.get_mod_folder_path(self.mod_id) if service and self.mod_id else None
+        return found if isinstance(found, str) and os.path.isdir(found) else None
 
-    def _safe_information(self, parent, title: str, message: str) -> None:
-        try:
-            QMessageBox.information(parent, title, message)
-        except Exception:
-            logger.exception("ModEditorDialog: failed to show information message")
+    def _refresh_library(self) -> None:
+        service = getattr(self.parent_app, "mod_service", None)
+        if service:
+            service.invalidate_mods_cache()
+            service.load_local_mods()
+            service.mod_list_updated.emit()
+        if display := getattr(self.parent_app, "library_display", None):
+            display.update_display()
 
-    def _safe_warning(self, title: str, message: str) -> None:
-        try:
-            QMessageBox.warning(self, title, message)
-        except Exception:
-            logger.exception("ModEditorDialog: failed to show warning message")
+    def _relocalize_form_labels(self) -> None:
+        width = max(
+            label.fontMetrics().horizontalAdvance(tr(key))
+            for key, label in self._form_labels.items()
+        )
+        for key, label in self._form_labels.items():
+            label.setText(tr(key))
+            label.setFixedWidth(width)
 
-    def _safe_question(self, *args, **kwargs):
+    def closeEvent(self, event) -> None:
+        for thread in list(self._hash_threads):
+            retire_qthread(thread)
+        self._hash_threads.clear()
+        super().closeEvent(event)
+
+    def _cancel(self) -> None:
+        self.reject()
+
+    def reject(self) -> None:
+        if self._safe_question(
+            self, tr("dialogs.cancel_changes"), tr("dialogs.unsaved_changes_lost")
+        ) == QMessageBox.StandardButton.Yes:
+            super().reject()
+
+    def _delete(self) -> None:
+        root = self._find_mod_folder()
+        if not root or self._safe_question(self, tr("dialogs.are_you_sure"), tr("dialogs.local_mod_deletion_confirmation")) != QMessageBox.StandardButton.Yes:
+            return
         try:
-            return QMessageBox.question(*args, **kwargs)
-        except Exception:
-            logger.exception("ModEditorDialog: failed to show question message")
+            shutil.rmtree(root)
+        except OSError as error:
+            self._safe_critical(self, tr("errors.deletion_error"), format_filesystem_error(error, path=root))
+            return
+        self._refresh_library()
+        self.accept()
+
+    def _export(self) -> None:
+        root = self._find_mod_folder()
+        if not root:
+            return
+        path, _ = get_save_file_name(self, tr("ui.select_export_location"), f"{self.name_edit.text().strip() or 'mod'}.zip", "ZIP Archives (*.zip);;All Files (*)")
+        if not path:
+            return
+        try:
+            if Path(path).resolve().is_relative_to(Path(root).resolve()):
+                raise ValueError("Export destination must be outside the mod folder")
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+                for directory, _folders, files in os.walk(root):
+                    for filename in files:
+                        source = os.path.join(directory, filename)
+                        if not os.path.islink(source):
+                            archive.write(source, os.path.relpath(source, root))
+        except (OSError, ValueError) as error:
+            self._safe_critical(self, tr("errors.error"), format_filesystem_error(error, path=path))
+            return
+        self._safe_information(self, tr("dialogs.success"), tr("status.mod_exported_success"))
+
+    def _open_folder(self) -> None:
+        if root := self._find_mod_folder():
+            open_path_native(root)
+
+    def _open_versions(self) -> None:
+        if root := self._find_mod_folder():
+            from ui.dialogs.mod.versions_dialog import ModVersionsDialog
+            ModVersionsDialog(root, self.mod_data, self._app_state, self).exec()
+
+    @staticmethod
+    def _safe_information(*args) -> None:
+        try:
+            QMessageBox.information(*args)
+        except RuntimeError:
+            logger.exception("Could not show information dialog")
+
+    @staticmethod
+    def _safe_warning(*args) -> None:
+        try:
+            QMessageBox.warning(*args)
+        except RuntimeError:
+            logger.exception("Could not show warning dialog")
+
+    @staticmethod
+    def _safe_critical(*args) -> None:
+        try:
+            QMessageBox.critical(*args)
+        except RuntimeError:
+            logger.exception("Could not show critical dialog")
+
+    @staticmethod
+    def _safe_question(*args) -> QMessageBox.StandardButton:
+        try:
+            return QMessageBox.question(*args)
+        except RuntimeError:
+            logger.exception("Could not show question dialog")
             return QMessageBox.StandardButton.No
 
-    def _create_local_mod(self):
-        mod_id = f"local_{uuid.uuid4().hex[:12]}"
-        data = self._collect_mod_data()
-        folder = get_unique_mod_dir(self.parent_app.app_state.mods_dir, data["name"])
-        mod_dir = os.path.join(self.parent_app.app_state.mods_dir, folder)
-        try:
-            os.makedirs(mod_dir)
-            data, _icon_val, _processed_files, config = prepare_mod_save_payload(
-                mod_id=mod_id,
-                mod_dir=mod_dir,
-                collect_mod_data=self._collect_mod_data,
-                process_icon=self._process_icon,
-                copy_files_to_mod_dir=self._copy_files_to_mod_dir,
-                copy_info_files_to_mod_dir=self._copy_info_files_to_mod_dir,
-            )
-            self.parent_app.settings_service.write_json(
-                os.path.join(mod_dir, "mod_config.json"),
-                build_mod_config_data(config),
-            )
-            self._finish_successful_save(
-                tr("dialogs.local_mod_created_title"),
-                tr("dialogs.local_mod_created_message", mod_name=data["name"]),
-            )
-        except Exception as e:
-            self._is_saving = False
-            if hasattr(self, "_save_button"):
-                self._save_button.setEnabled(True)
-            self._safe_critical(
-                tr("errors.mod_creation_error"),
-                tr(
-                    "errors.mod_creation_failed",
-                    error=format_filesystem_error(e, path=mod_dir),
-                ),
-            )
-            if os.path.exists(mod_dir):
-                shutil.rmtree(mod_dir)
-
-    def _find_mod_folder(self):
-        if "folder_path" in self.mod_data and os.path.exists(
-            self.mod_data["folder_path"]
-        ):
-            return self.mod_data["folder_path"]
-        if self.mod_id and hasattr(self.parent_app, "mod_service"):
-            p = self.parent_app.mod_service.get_mod_folder_path(self.mod_id)
-            if p and os.path.exists(p):
-                return p
-        if "folder_name" in self.mod_data:
-            p = os.path.join(
-                self.parent_app.app_state.mods_dir, self.mod_data["folder_name"]
-            )
-            if os.path.exists(p):
-                return p
-        return None
-
-    def _update_local_mod(self):
-        if not self.mod_id:
-            self._safe_critical(tr("errors.error"), tr("errors.id_not_found_update"))
-            return
-        mod_folder = self._find_mod_folder()
-        if not mod_folder:
-            self._safe_critical(
-                tr("errors.error"), tr("errors.mod_folder_not_found_update")
-            )
-            return
-        try:
-            config_path = os.path.join(mod_folder, "mod_config.json")
-            config = self.parent_app.settings_service.read_json(config_path)
-            normalize_mod_config_data(config)
-            data, _icon_val, processed_files, config = prepare_mod_save_payload(
-                mod_id=self.mod_id,
-                mod_dir=mod_folder,
-                collect_mod_data=self._collect_mod_data,
-                process_icon=self._process_icon,
-                copy_files_to_mod_dir=self._copy_files_to_mod_dir,
-                copy_info_files_to_mod_dir=self._copy_info_files_to_mod_dir,
-                existing_config=config,
-            )
-            self._remove_stale_managed_files(
-                mod_folder,
-                config.get("files", {}),
-                processed_files,
-                data["game"],
-            )
-            self.parent_app.settings_service.write_json(
-                config_path, build_mod_config_data(config)
-            )
-            self._finish_successful_save(
-                tr("dialogs.local_mod_updated_title"),
-                tr("dialogs.local_mod_updated_message", mod_name=data["name"]),
-            )
-        except Exception as e:
-            self._is_saving = False
-            if hasattr(self, "_save_button"):
-                self._save_button.setEnabled(True)
-            self._safe_critical(
-                tr("errors.update_error"),
-                tr(
-                    "errors.local_mod_update_failed",
-                    error=format_filesystem_error(e),
-                ),
-            )
-
-    def _delete_mod(self):
-        if (
-            self._safe_question(
-                self,
-                tr("dialogs.are_you_sure"),
-                tr("dialogs.local_mod_deletion_confirmation"),
-            )
-            != QMessageBox.StandardButton.Yes
-        ):
-            return
-        if not self.mod_id:
-            self._safe_critical(
-                tr("errors.error"), tr("errors.id_not_found_for_deletion")
-            )
-            return
-        mod_folder = self._find_mod_folder()
-        if not mod_folder:
-            self._safe_critical(
-                tr("errors.error"), tr("errors.mod_folder_not_found_for_deletion")
-            )
-            return
-        try:
-            shutil.rmtree(mod_folder)
-            self._refresh_after_save()
-            self.accept()
-        except Exception as e:
-            self._safe_critical(
-                tr("errors.deletion_error"),
-                tr(
-                    "errors.local_mod_deletion_failed",
-                    error=format_filesystem_error(e, path=mod_folder),
-                ),
-            )
-
-    def _export_mod(self):
-        if not self.mod_id:
-            return
-        mod_folder = self._find_mod_folder()
-        if not mod_folder or not os.path.exists(mod_folder):
-            self._safe_critical(
-                tr("errors.error"),
-                tr("errors.mod_folder_not_found_simple", path=mod_folder or ""),
-            )
-            return
-        mod_name = self.name_edit.text().strip() or "mod"
-        export_path, _ = get_save_file_name(
-            self,
-            tr("ui.select_export_location"),
-            f"{mod_name}.zip",
-            "ZIP Archives (*.zip);;All Files (*)",
+    def relocalize_ui(self) -> None:
+        self.setWindowTitle(tr("ui.create_mod") if self.is_creating else tr("ui.edit_mod"))
+        self._tabs.setTabText(0, tr("ui.mod_editor_tab_metadata"))
+        self._tabs.setTabText(1, tr("ui.mod_editor_tab_compatibility"))
+        self._tabs.setTabText(2, tr("ui.mod_editor_tab_files"))
+        self._tabs.setTabText(3, tr("ui.mod_editor_tab_placeholders"))
+        self._tabs.setTabText(4, tr("ui.mod_editor_tab_help"))
+        self._files_hint.setText(tr("ui.mod_editor_files_hint"))
+        self._compatibility_hint.setText(tr("ui.mod_editor_compatibility_hint"))
+        self._custom_placeholders_hint.setText(
+            tr("ui.mod_editor_custom_placeholders_hint")
         )
-        if not export_path:
-            return
-        try:
-            import zipfile
-
-            with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for root, _dirs, files in os.walk(mod_folder):
-                    for f in files:
-                        fp = os.path.join(root, f)
-                        zf.write(fp, os.path.relpath(fp, mod_folder))
-            self._safe_information(
-                self, tr("dialogs.success"), tr("status.mod_exported_success")
-            )
-        except Exception as e:
-            self._safe_critical(
-                tr("errors.error"),
-                tr(
-                    "errors.mod_export_failed",
-                    error=format_filesystem_error(e, path=export_path),
-                ),
-            )
-
-    def _open_mod_folder(self):
-        mod_folder = self._find_mod_folder()
-        if mod_folder and os.path.exists(mod_folder):
-            open_path_native(mod_folder)
-        else:
-            self._safe_warning(
-                tr("errors.error"),
-                tr("errors.mod_folder_not_found_simple", path=mod_folder or ""),
-            )
-
-    def _open_mod_versions(self):
-        mod_folder = self._find_mod_folder()
-        if not mod_folder or not os.path.exists(mod_folder):
-            self._safe_warning(
-                tr("errors.error"),
-                tr("errors.mod_folder_not_found_simple", path=mod_folder or ""),
-            )
-            return
-        from ui.dialogs.mod.versions_dialog import ModVersionsDialog
-
-        app_state = getattr(self.parent_app, "app_state", None)
-        if not app_state:
-            logger.warning(
-                "ModEditorDialog: Cannot open mod versions - app_state not available"
-            )
-            return
-        dialog = ModVersionsDialog(mod_folder, self.mod_data, app_state, self)
-        dialog.exec()
-
-    def _populate_fields(self):
-        d = self.mod_data
-        if "mod_data" in d:
-            d = d["mod_data"]
-        self.name_edit.setText(d.get("name", ""))
-        self.author_edit.setText(d.get("author", ""))
-        self.description_edit.setText(d.get("description", ""))
-        self.homepage_edit.setText(d.get("homepage", ""))
-        icon_val = d.get("icon", "")
-        mod_folder = self._find_mod_folder()
-        if (
-            not (icon_val and icon_val.startswith(("http://", "https://")))
-            and mod_folder
-        ):
-            config_icon = d.get("icon")
-            if config_icon and isinstance(config_icon, str) and config_icon.strip():
-                config_icon = config_icon.strip()
-                if config_icon.startswith(("http://", "https://")):
-                    icon_val = config_icon
-                else:
-                    ip = os.path.normpath(os.path.join(mod_folder, config_icon))
-                    if os.path.isfile(ip):
-                        icon_val = config_icon
-            if not icon_val:
-                for ext in [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico"]:
-                    ip = os.path.join(mod_folder, f"_icon{ext}")
-                    if os.path.exists(ip):
-                        icon_val = os.path.relpath(ip, mod_folder)
-                        break
-        self.icon_edit.setText(icon_val)
-        version = d.get("version", "")
-        if isinstance(version, str) and "|" in version:
-            version = version.split("|")[0]
-        self.version_edit.setText(version)
-        game = d.get("game", "deltarune")
-        if game not in self._visible_game_ids:
-            game_def = get_game(game)
-            if game_def:
-                self.game_combo.addItem(game_def.display_name, game)
-        for i in range(self.game_combo.count()):
-            if self.game_combo.itemData(i) == game:
-                self.game_combo.setCurrentIndex(i)
-                break
-        tags = d.get("tags", [])
-        self.tag_textedit.setChecked("textedit" in tags)
-        self.tag_customization.setChecked("customization" in tags)
-        self.tag_gameplay.setChecked("gameplay" in tags)
-        self.tag_other.setChecked("other" in tags)
-        self.game_version_edit.setText(d.get("game_version", ""))
-        self._populate_info_files(d)
-        files_data = d.get("files", {})
-        if files_data:
-            self._populate_file_tabs(files_data, game)
-
-    def _populate_info_files(self, mod_data: dict) -> None:
-        mod_folder = self._find_mod_folder()
-        entries: list[dict] = []
-        seen: set[str] = set()
-        self._removed_info_files = set()
-        for path, state in (mod_data.get("info_files", {}) or {}).items():
-            normalized_path = self._normalize_info_file_name(path)
-            if not normalized_path or normalized_path in seen:
-                continue
-            normalized_state = self._normalize_info_file_state(state)
-            if normalized_state == "remove":
-                seen.add(normalized_path)
-                self._removed_info_files.add(normalized_path)
-                continue
-            source_path = (
-                os.path.join(mod_folder, normalized_path)
-                if mod_folder
-                else normalized_path
-            )
-            missing = bool(mod_folder and not os.path.isfile(source_path))
-            seen.add(normalized_path)
-            entries.append(
-                {
-                    "path": normalized_path,
-                    "state": normalized_state,
-                    "custom": True,
-                    "source_path": source_path,
-                    "missing": missing,
-                }
-            )
-        for path in find_mod_info_candidates(mod_folder):
-            normalized_path = self._normalize_info_file_name(path)
-            if normalized_path in seen:
-                continue
-            seen.add(normalized_path)
-            entries.append(
-                {
-                    "path": normalized_path,
-                    "state": "show",
-                    "custom": False,
-                    "source_path": os.path.join(mod_folder, normalized_path)
-                    if mod_folder
-                    else normalized_path,
-                    "missing": False,
-                }
-            )
-        self._set_info_file_entries(entries)
-
-    def _populate_file_tabs(self, files_data, game):
-        game_def = get_game(game)
-        if not game_def:
-            logger.warning(
-                "Unknown game '%s' in _populate_file_tabs, using first tab", game
-            )
-            fi = next(iter(files_data.values()), None)
-            if fi and self.file_tabs.count():
-                tab = self.file_tabs.widget(0)
-                layout = getattr(tab, "_file_layout", None) if tab else None
-                data_path = fi.get("data_file_path") or fi.get("data_file_url")
-                if tab and layout and data_path:
-                    self._create_file_frame(layout, "data")
-                    self._fill_data_in_tab(layout, data_path)
-            return
-        for ti, tab_def in enumerate(game_def.tabs):
-            fi = files_data.get(tab_def.files_key) or files_data.get(tab_def.tab_id)
-            if fi and ti < self.file_tabs.count():
-                tab = self.file_tabs.widget(ti)
-                layout = getattr(tab, "_file_layout", None) if tab else None
-                if not tab or not layout:
-                    continue
-                data_path = fi.get("data_file_path") or fi.get("data_file_url")
-                if data_path:
-                    self._create_file_frame(layout, "data")
-                    self._fill_data_in_tab(layout, data_path)
-                for entry in parse_extra_file_entries_raw(fi.get("extra_files", [])):
-                    self._create_file_frame(layout, "extra")
-                    self._fill_extra_in_tab(
-                        layout,
-                        entry["file_path"],
-                        entry["target"],
-                        entry.get("target_path", ""),
-                    )
-        self._populate_unconfigured_dependencies(files_data)
-
-    def _populate_unconfigured_dependencies(self, files_data):
-        mod_folder = self._find_mod_folder()
-        if (
-            not mod_folder
-            or not os.path.isdir(mod_folder)
-            or not self.file_tabs.count()
-        ):
-            return
-        configured = {os.path.abspath(os.path.join(mod_folder, "mod_config.json"))}
-        icon = self.mod_data.get("icon")
-        if (
-            isinstance(icon, str)
-            and icon
-            and not icon.startswith(("http://", "https://"))
-        ):
-            configured.add(os.path.abspath(resolve_mod_file_path(mod_folder, icon)))
-        for info_path in self.mod_data.get("info_files") or {}:
-            configured.add(
-                os.path.abspath(resolve_mod_file_path(mod_folder, info_path))
-            )
-        for file_info in (files_data or {}).values():
-            data_path = file_info.get("data_file_path") or file_info.get(
-                "data_file_url"
-            )
-            if isinstance(data_path, str) and data_path:
-                configured.add(
-                    os.path.abspath(resolve_mod_file_path(mod_folder, data_path))
-                )
-            for entry in parse_extra_file_entries_raw(file_info.get("extra_files", [])):
-                configured.add(
-                    os.path.abspath(
-                        resolve_mod_file_path(mod_folder, entry["file_path"])
-                    )
-                )
-        layout = self._get_tab_file_layout(self.file_tabs.widget(0))
-        if not layout:
-            return
-        for path in find_unconfigured_root_entries(mod_folder, configured):
-            relative_path = os.path.relpath(path, mod_folder).replace("\\", "/")
-            if os.path.isdir(path):
-                relative_path += "/"
-            self._create_file_frame(layout, "extra")
-            self._fill_extra_in_tab(layout, relative_path, EXTRA_FILE_TARGET_NONE)
-
-    def _resolve_path(self, file_path, tab_idx, mod_folder, game=None):
-        if not file_path:
-            return file_path
-        if os.path.isabs(file_path) and os.path.exists(file_path):
-            return file_path
-        if not mod_folder:
-            return file_path
-        resolved = resolve_mod_file_path(mod_folder, file_path)
-        return resolved if os.path.exists(resolved) else file_path
-
-    def _fill_data_in_tab(self, layout, path):
-        for i in range(layout.count() - 1, -1, -1):
-            w = layout.itemAt(i).widget() if layout.itemAt(i) else None
-            if not w or not hasattr(w, "layout") or not (fl := w.layout()):
-                continue
-            title = fl.itemAt(0).widget() if fl.count() > 0 and fl.itemAt(0) else None
-            if not isinstance(title, QLabel) or title.property("file_type") != "data":
-                continue
-            for j in range(fl.count()):
-                sub = fl.itemAt(j).widget() if fl.itemAt(j) else None
-                if isinstance(sub, QLineEdit) and sub.property("is_local_path"):
-                    sub.setText(path)
-            return
-
-    def _fill_extra_in_tab(
-        self,
-        layout,
-        filename,
-        target=EXTRA_FILE_TARGET_GAME_FOLDER,
-        target_path="",
-    ):
-        for i in range(layout.count() - 1, -1, -1):
-            w = layout.itemAt(i).widget() if layout.itemAt(i) else None
-            if not w or not hasattr(w, "layout") or not (fl := w.layout()):
-                continue
-            title = fl.itemAt(0).widget() if fl.count() > 0 and fl.itemAt(0) else None
-            if not isinstance(title, QLabel) or title.property("file_type") != "extra":
-                continue
-            for j in range(fl.count()):
-                sub = fl.itemAt(j).widget() if fl.itemAt(j) else None
-                if (
-                    isinstance(sub, QLineEdit)
-                    and sub.property("is_local_extra_path")
-                    and not sub.text()
-                ):
-                    sub.setText(filename)
-                    self._set_extra_target_controls(w, target)
-                    custom_path_edit = next(
-                        (
-                            child
-                            for child in w.findChildren(QLineEdit)
-                            if child.property("is_custom_target_path")
-                        ),
-                        None,
-                    )
-                    if custom_path_edit is not None:
-                        custom_path_edit.setText(target_path)
-                    return
-
-    def relocalize_ui(self):
-        self.setWindowTitle(
-            tr("ui.create_mod") if self.is_creating else tr("ui.edit_mod")
+        self._custom_placeholders_tree.setHeaderLabels(
+            [
+                tr("ui.mod_editor_placeholder_name"),
+                tr("ui.mod_editor_placeholder_path"),
+            ]
         )
-        for label, key in self._localized_labels:
-            label.setText(tr(key))
-        self.game_combo.setToolTip(tr("tooltips.mod_editor_game"))
-        self.name_edit.setPlaceholderText(tr("ui.enter_mod_name"))
-        self.name_edit.setToolTip(tr("tooltips.mod_editor_name"))
-        self.author_edit.setPlaceholderText(tr("ui.enter_author_name"))
-        self.author_edit.setToolTip(tr("tooltips.mod_editor_author"))
-        self.description_edit.setPlaceholderText(tr("ui.short_description_placeholder"))
-        self.description_edit.setToolTip(tr("tooltips.mod_editor_description"))
-        self.homepage_edit.setToolTip(tr("tooltips.mod_editor_homepage"))
-        self.icon_browse_btn.setToolTip(tr("ui.mod_editor_pick_icon_tooltip"))
-        self.icon_edit.setPlaceholderText(tr("ui.icon_file_path_placeholder"))
-        self.icon_edit.setToolTip(tr("tooltips.mod_editor_icon"))
-        if not self.icon_preview.pixmap():
-            self.icon_preview.setText(tr("ui.icon_preview"))
-        for checkbox, key in (
-            (self.tag_textedit, "tags.textedit_text"),
-            (self.tag_customization, "tags.customization"),
-            (self.tag_gameplay, "tags.gameplay"),
-            (self.tag_other, "tags.other"),
-        ):
-            checkbox.setText(tr(key))
-            checkbox.setToolTip(tr("tooltips.mod_editor_tags"))
-        self.version_edit.setToolTip(tr("tooltips.mod_editor_version"))
-        self.game_version_edit.setToolTip(tr("tooltips.mod_editor_game_version"))
-        for section in self._section_widgets.values():
-            section["title"].setText(tr(section["title_key"]))
-        if hasattr(self, "_metadata_hint") and self._metadata_hint:
-            self._metadata_hint.setText(tr("ui.mod_editor_fields_hint"))
-        if hasattr(self, "_info_files_hint") and self._info_files_hint:
-            self._info_files_hint.setText(tr("ui.mod_editor_info_files_hint"))
-        if hasattr(self, "_files_hint") and self._files_hint:
-            self._files_hint.setText(tr("ui.mod_editor_files_hint"))
-        for index in range(self.file_tabs.count()):
-            tab = self.file_tabs.widget(index)
-            layout = self._get_tab_file_layout(tab)
-            if layout:
-                self._refresh_extra_file_titles(layout)
-                for checkbox in tab.findChildren(QCheckBox):
-                    if checkbox.property("is_none_target_file"):
-                        checkbox.setText(tr("files.dependency_only"))
-                        checkbox.setToolTip(tr("tooltips.mod_editor_dependency_only"))
-                    elif checkbox.property("is_data_folder_file"):
-                        checkbox.setText(tr("files.data_folder_target"))
-                        checkbox.setToolTip(
-                            tr("tooltips.mod_editor_data_folder_target")
-                        )
-                    elif checkbox.property("is_custom_target_file"):
-                        checkbox.setText(tr("files.custom_target"))
-                        checkbox.setToolTip(tr("tooltips.mod_editor_custom_target"))
-                for path_edit in tab.findChildren(QLineEdit):
-                    if path_edit.property("is_custom_target_path"):
-                        path_edit.setPlaceholderText(tr("dialogs.custom_target_folder_path"))
-                        path_edit.setToolTip(tr("tooltips.mod_editor_custom_target"))
-                for label in tab.findChildren(QLabel):
-                    if label.property("is_custom_target_label"):
-                        label.setText(tr("files.custom_target_folder"))
-            data_button = getattr(tab, "_data_button", None)
-            if data_button is not None:
-                data_button.setText(tr("ui.add_data_file"))
-                data_button.setToolTip(tr("tooltips.mod_editor_add_data"))
-            action_row = (
-                layout.itemAt(0).widget() if layout and layout.count() else None
+        self._custom_placeholder_name.setPlaceholderText(
+            tr("ui.mod_editor_placeholder_name_placeholder")
+        )
+        self._custom_placeholder_path.setPlaceholderText(
+            tr("ui.mod_editor_placeholder_path_placeholder")
+        )
+        for index, section in enumerate(_HELP_SECTIONS):
+            title = tr(f"ui.mod_editor_help_{section}_title")
+            self._help_tabs.setTabText(index, title.replace("&", "&&"))
+            body = tr(f"ui.mod_editor_help_{section}_body")
+            if section == "placeholders":
+                body += self._placeholder_examples_html()
+            self._help_sections[section].setHtml(body)
+        for field, tree in self._relation_trees.items():
+            self._relation_titles[field].setText(tr(f"ui.mod_editor_{field}"))
+            tree.setHeaderLabels(
+                [tr("ui.mod_editor_relation_mod_id"), tr("ui.mod_editor_relation_order")]
             )
-            if action_row and action_row.layout() and action_row.layout().count() > 1:
-                extra_button = action_row.layout().itemAt(1).widget()
-                if isinstance(extra_button, QPushButton):
-                    extra_button.setText(tr("ui.add_extra_files"))
-                    extra_button.setToolTip(tr("tooltips.mod_editor_add_extra"))
-        game_def = get_game(self.game_combo.currentData())
-        if game_def:
-            for index, tab in enumerate(game_def.tabs):
-                if index < self.file_tabs.count():
-                    self.file_tabs.setTabText(index, tr(tab.name_key))
-        if hasattr(self, "_info_add_button"):
-            self._info_add_button.setText(tr("ui.add_info_file"))
-        if hasattr(self, "_info_toggle_button"):
-            self._info_toggle_button.setText(tr("ui.info_file_toggle_visibility"))
-        if hasattr(self, "_info_up_button"):
-            self._info_up_button.setText(tr("ui.move_up"))
-        if hasattr(self, "_info_down_button"):
-            self._info_down_button.setText(tr("ui.move_down"))
-        if hasattr(self, "_info_reset_button"):
-            self._info_reset_button.setText(tr("ui.info_file_remove_custom"))
-        if hasattr(self, "_info_delete_button"):
-            self._info_delete_button.setText(tr("ui.delete_info_file_entry"))
-        if hasattr(self, "_cancel_button"):
-            self._cancel_button.setText(tr("ui.cancel_button"))
-        if hasattr(self, "_save_button"):
-            self._save_button.setText(
-                tr("ui.finish_creation") if self.is_creating else tr("ui.save_changes")
-            )
-        if hasattr(self, "_delete_button"):
-            self._delete_button.setText(tr("ui.delete_mod"))
-            self._delete_button.setToolTip(tr("tooltips.delete_mod"))
-        if hasattr(self, "_export_button"):
-            self._export_button.setText(tr("ui.export_mod"))
-            self._export_button.setToolTip(tr("tooltips.export_mod"))
-        if hasattr(self, "_open_folder_button"):
-            self._open_folder_button.setText(tr("ui.open_mod_folder"))
-            self._open_folder_button.setToolTip(tr("tooltips.open_mod_folder"))
-        if hasattr(self, "_switch_version_button"):
-            self._switch_version_button.setText(
-                tr("mod_versions.switch_version_button")
-            )
-            self._switch_version_button.setToolTip(tr("tooltips.mod_versions"))
-        self._cancel_button.setToolTip(tr("tooltips.cancel"))
-        self._save_button.setToolTip(tr("tooltips.save_mod"))
-        self._refresh_info_files_list()
-        self._refresh_all_extra_file_special_states()
+            self._populate_relation_modes(self._relation_mode_combos[field])
+            for index in range(tree.topLevelItemCount()):
+                item = tree.topLevelItem(index)
+                _relation_id, mode = self._split_relation(
+                    item.data(0, Qt.ItemDataRole.UserRole)
+                )
+                item.setText(1, tr(self._relation_mode_key(mode)))
+        self._operation_tree_title.setText(tr("ui.mod_editor_processing_order"))
+        self._relocalize_form_labels()
+        self._populate_operation_types()
+        path = self._path()
+        entry = self._entry(path) if path is not None else None
+        self._operation_inspector_title.setText(
+            tr("ui.mod_editor_group")
+            if entry is not None and self._group(entry)
+            else tr("ui.mod_editor_operation")
+        )
+        self._source_hash_box.setText(tr("ui.mod_editor_include_source_hash"))
+        self._target_hash_box.setText(tr("ui.mod_editor_include_target_hash"))
 
     def apply_theme(self) -> None:
-        self._apply_theme_styles()
-        if hasattr(self, "icon_browse_btn"):
-            self.icon_browse_btn.setIcon(self._icon("folder_icon.svg"))
-        if hasattr(self, "_info_add_button"):
-            self._info_add_button.setIcon(self._icon("add_icon.svg"))
-        if hasattr(self, "_info_reset_button"):
-            self._info_reset_button.setIcon(self._icon("cross_icon.svg"))
-        if hasattr(self, "_info_delete_button"):
-            self._info_delete_button.setIcon(self._icon("delete_icon.svg"))
-        if hasattr(self, "_info_up_button"):
-            self._info_up_button.setIcon(self._icon("arrow_up.svg"))
-        if hasattr(self, "_info_down_button"):
-            self._info_down_button.setIcon(self._icon("arrow_down.svg"))
-        self._refresh_all_extra_file_special_states()
+        border = self._color("border", "#039d5b")
+        elements = self._color("elements", "#222222")
+        main_text = self._color("main_text", "#e8e9eb")
+        secondary_text = self._color("secondary_text", "#6de985")
+        hover = self._color("hover", "#616b78")
+        selected = self._path()
+        self._refresh_operation_icons()
+        self._populate_operation_types()
+        self.setStyleSheet(
+            f"QFrame#modEditorFrame {{ border: 2px solid {border}; border-radius: {self._radius()}px; background: {self._color('background', '#282828')}; }} "
+            f"QFrame#modEditorOperationPane {{ border: 2px solid {border}; border-radius: {self._radius()}px; background: {elements}; }} "
+            f"QLineEdit, QComboBox, QTreeWidget {{ background: {elements}; }} "
+            f"QTabWidget::tab-bar {{ alignment: center; }} "
+            f"QTabWidget::pane {{ border: 2px solid {border}; border-radius: {self._radius()}px; background: {self._color('background', '#282828')}; top: -2px; }} "
+            f"QTabBar::tab {{ background: {elements}; color: {main_text}; border: 2px solid {border}; border-bottom: none; padding: 6px 16px; margin: 0 3px 4px; border-top-left-radius: {self._radius()}px; border-top-right-radius: {self._radius()}px; }} "
+            f"QTabBar::tab:selected {{ background: {hover}; border-bottom: 2px solid {self._color('background', '#282828')}; margin-bottom: 0; }} "
+            f"QTabBar::tab:hover {{ background: {hover}; }} "
+            f"QLabel#modEditorPaneTitle {{ padding: 7px 10px; color: {secondary_text}; font-weight: bold; border-bottom: 1px solid {border}; }} "
+            f"QTreeWidget#modEditorOperationTree {{ border: none; outline: none; }} "
+            f"QTreeWidget#modEditorOperationTree::item {{ min-height: 28px; padding: 3px 6px; }} "
+            f"QTreeWidget#modEditorOperationTree::item:hover, QTreeWidget#modEditorOperationTree::item:selected {{ background: {hover}; color: {main_text}; }} "
+            f"QTextBrowser#modEditorHelpText {{ border: 1px solid {border}; border-radius: {self._radius()}px; padding: 10px; background: {elements}; color: {main_text}; }} "
+            f"QLabel#modEditorHint {{ color: {secondary_text}; }} QLabel#modEditorValidation {{ color: #d9534f; }}"
+        )
+        self._refresh_tree(selected)
+        self.icon_browse_button.setIcon(colored_icon("folder", self._color("main_text", "#e8e9eb")))
+        self._source_browse.setIcon(colored_icon("folder", self._color("main_text", "#e8e9eb")))
+        self._target_browse.setIcon(colored_icon("folder", self._color("main_text", "#e8e9eb")))
+        self._load_icon_preview(self.icon_edit.text())
+
+    @override
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if screen := self.screen():
+            frame = self.frameGeometry()
+            frame.moveCenter(screen.availableGeometry().center())
+            self.move(frame.topLeft())

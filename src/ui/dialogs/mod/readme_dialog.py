@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QFont, QTextCharFormat, QTextCursor
 from PyQt6.QtPdf import QPdfDocument
 from PyQt6.QtPdfWidgets import QPdfView
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QStackedWidget,
     QTabWidget,
     QTextBrowser,
     QVBoxLayout,
@@ -26,6 +30,11 @@ from ui.common.dialog_theme import (
     get_dialog_theme_values,
 )
 from ui.common.rich_html import set_rich_html
+from utils.mod.archive import (
+    ArchiveValidationError,
+    materialize_archive,
+    split_archive_virtual_path,
+)
 from utils.mod.readme_utils import (
     is_html_file,
     is_markdown_file,
@@ -76,6 +85,8 @@ class _ReadmeTab(QWidget):
     def __init__(self, file_path: str, parent=None) -> None:
         super().__init__(parent)
         self.file_path = file_path
+        self._content_file_path: str | None = None
+        self._temporary_directory: TemporaryDirectory[str] | None = None
         self._loaded = False
         self._build_ui()
 
@@ -106,8 +117,18 @@ class _ReadmeTab(QWidget):
     def load_content(self) -> None:
         if self._loaded:
             return
+        content_path = self._resolve_content_path()
+        if content_path is None:
+            if self.viewer:
+                self.viewer.setPlainText(tr("status.loading_error"))
+            elif self.pdf_viewer and self.pdf_error_label:
+                self.pdf_viewer.hide()
+                self.pdf_error_label.setText(tr("status.loading_error"))
+                self.pdf_error_label.show()
+            self._loaded = True
+            return
         if self._pdf_document and self.pdf_viewer:
-            error = self._pdf_document.load(self.file_path)
+            error = self._pdf_document.load(content_path)
             if (
                 error != QPdfDocument.Error.None_
                 or self._pdf_document.status() == QPdfDocument.Status.Error
@@ -121,7 +142,7 @@ class _ReadmeTab(QWidget):
             self.pdf_viewer.setDocument(self._pdf_document)
             self._loaded = True
             return
-        content = read_mod_readme(self.file_path)
+        content = read_mod_readme(content_path)
         if self.viewer is None:
             return
         if is_markdown_file(self.file_path):
@@ -131,19 +152,21 @@ class _ReadmeTab(QWidget):
             set_rich_html(
                 self.viewer,
                 content,
-                base_path=os.path.dirname(os.path.abspath(self.file_path)),
+                base_path=os.path.dirname(os.path.abspath(content_path)),
             )
         else:
             self.viewer.setPlainText(content)
         self._loaded = True
 
     def unload_content(self) -> None:
-        if not self._loaded:
-            return
         if self.viewer:
             self.viewer.clear()
         if self._pdf_document:
             self._pdf_document.close()
+        if self._temporary_directory:
+            self._temporary_directory.cleanup()
+            self._temporary_directory = None
+        self._content_file_path = None
         self._loaded = False
 
     def dispose(self) -> None:
@@ -154,22 +177,51 @@ class _ReadmeTab(QWidget):
         if url and url.isValid() and url.scheme().lower() in allowed_schemes:
             open_url_native(url.toString())
 
+    def _resolve_content_path(self) -> str | None:
+        if self._content_file_path:
+            return self._content_file_path
+        try:
+            virtual = split_archive_virtual_path(self.file_path)
+        except ArchiveValidationError:
+            return None
+        if virtual is None:
+            self._content_file_path = self.file_path
+            return self.file_path
+        temporary = TemporaryDirectory(prefix="g3m_readme_")
+        try:
+            materialize_archive(virtual.archive, temporary.name)
+            path = Path(temporary.name).joinpath(*virtual.member.split("/"))
+            if not path.is_file():
+                raise OSError("archive member is not a file")
+        except (ArchiveValidationError, OSError, ValueError):
+            temporary.cleanup()
+            return None
+        self._temporary_directory = temporary
+        self._content_file_path = str(path)
+        return self._content_file_path
+
 
 class ModReadmeDialog(QDialog):
     """Tabbed README viewer with lazy per-tab loading."""
 
-    def __init__(self, app_state, mod_name: str, readme_files: list[str], parent=None) -> None:
+    def __init__(
+        self,
+        app_state,
+        mod_name: str,
+        readme_files: list[str],
+        unlisted_files: list[str] | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._app_state = app_state
         self._mod_name = mod_name or "Mod"
-        self._readme_files = list(readme_files or [])
+        self._listed_files = list(readme_files or [])
+        self._unlisted_files = list(unlisted_files or [])
         self._current_index = -1
         self._build_ui()
         self.relocalize_ui()
         self.refresh_theme()
-        if self._tabs.count():
-            self._tabs.setCurrentIndex(0)
-            self._on_tab_changed(0)
+        self._rebuild_tabs()
 
     def _build_ui(self) -> None:
         self.resize(920, 680)
@@ -181,18 +233,25 @@ class ModReadmeDialog(QDialog):
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._title_label)
 
-        self._tabs = QTabWidget(self)
+        self._unlisted_checkbox = QCheckBox(self)
+        self._unlisted_checkbox.toggled.connect(self._set_show_unlisted)
+        layout.addWidget(self._unlisted_checkbox, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self._content_stack = QStackedWidget(self)
+        self._tabs = QTabWidget(self._content_stack)
         self._tabs.setDocumentMode(True)
         self._tabs.currentChanged.connect(self._on_tab_changed)
-        layout.addWidget(self._tabs, 1)
 
-        for file_path in self._readme_files:
-            tab = _ReadmeTab(file_path, self._tabs)
-            self._tabs.addTab(tab, os.path.basename(file_path))
-
-        self._empty_label = QLabel(tr("dialogs.no_readme_files"), self)
+        self._empty_page = QWidget(self._content_stack)
+        empty_layout = QVBoxLayout(self._empty_page)
+        empty_layout.addStretch()
+        self._empty_label = QLabel(self._empty_page)
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._empty_label)
+        empty_layout.addWidget(self._empty_label)
+        empty_layout.addStretch()
+        self._content_stack.addWidget(self._tabs)
+        self._content_stack.addWidget(self._empty_page)
+        layout.addWidget(self._content_stack, 1)
 
         button_row = QHBoxLayout()
         button_row.addStretch()
@@ -202,12 +261,44 @@ class ModReadmeDialog(QDialog):
         button_row.addStretch()
         layout.addLayout(button_row)
 
-        self._sync_empty_state()
-
     def _sync_empty_state(self) -> None:
-        has_tabs = self._tabs.count() > 0
-        self._tabs.setVisible(has_tabs)
-        self._empty_label.setVisible(not has_tabs)
+        self._content_stack.setCurrentWidget(
+            self._tabs if self._tabs.count() else self._empty_page
+        )
+
+    def _set_show_unlisted(self, _checked: bool) -> None:
+        self._rebuild_tabs()
+
+    def _rebuild_tabs(self) -> None:
+        self._current_index = -1
+        while self._tabs.count():
+            tab = self._tabs.widget(0)
+            if isinstance(tab, _ReadmeTab):
+                tab.dispose()
+            self._tabs.removeTab(0)
+            if tab is not None:
+                tab.deleteLater()
+        files = list(self._listed_files)
+        if self._unlisted_checkbox.isChecked():
+            files.extend(self._unlisted_files)
+        basename_counts: dict[str, int] = {}
+        for file_path in files:
+            basename = os.path.basename(file_path)
+            basename_counts[basename] = basename_counts.get(basename, 0) + 1
+        try:
+            common_root = os.path.commonpath(files)
+        except ValueError:
+            common_root = ""
+        for file_path in files:
+            label = os.path.basename(file_path)
+            if basename_counts[label] > 1:
+                label = os.path.relpath(file_path, common_root) if common_root else file_path
+            tab = _ReadmeTab(file_path, self._tabs)
+            self._tabs.addTab(tab, label)
+        self._sync_empty_state()
+        if self._tabs.count():
+            self._tabs.setCurrentIndex(0)
+            self._on_tab_changed(0)
 
     def _on_tab_changed(self, index: int) -> None:
         if self._current_index == index:
@@ -305,6 +396,10 @@ class ModReadmeDialog(QDialog):
         )
         self._empty_label.setText(tr("dialogs.no_readme_files"))
         self._close_button.setText(tr("ui.close_button"))
+        self._unlisted_checkbox.setText(
+            tr("dialogs.show_unlisted_info_files", count=len(self._unlisted_files))
+        )
+        self._unlisted_checkbox.setVisible(bool(self._unlisted_files))
 
     def _unload_tabs(self) -> None:
         for index in range(self._tabs.count()):

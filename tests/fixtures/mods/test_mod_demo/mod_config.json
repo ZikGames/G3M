@@ -1,18 +1,19 @@
 {
-    "config_version": "1.0.0",
-    "metadata": {
-        "id": "local_test_mod_demo",
-        "name": "Test Mod Demo",
-        "version": "1.0.0",
-        "author": "Test Author",
-        "description": "Test mod for DELTARUNE Demo - place data.win or xdelta patch in demo/",
-        "game": "deltarunedemo",
-        "game_version": "1.0.0"
-    },
-    "files": {
-        "deltarunedemo": {
-            "description": "Demo modification",
-            "data_file_path": "demo/data.win"
-        }
+  "config_version": "2.0.0",
+  "id": "local_test_mod_demo",
+  "name": "Test Mod Demo",
+  "version": "1.0.0",
+  "authors": [
+    "Test Author"
+  ],
+  "game": "deltarunedemo",
+  "description": "Test mod for DELTARUNE Demo - place data.win or xdelta patch in demo/",
+  "game_version": "1.0.0",
+  "files": [
+    {
+      "source": "${mod_path}/demo/data.win",
+      "target": "${game_path}/data.win",
+      "type": "patch"
     }
+  ]
 }

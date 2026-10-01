@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from config.config import (
     PLUGIN_API_VERSION as CONFIG_PLUGIN_API_VERSION,
@@ -102,9 +102,7 @@ class PluginTaskRuntime:
     set_progress_callback: Any = None
     set_status_callback: Any = None
     is_cancelled_callback: Any = None
-    get_backup_manager_callback: Any = None
-    restore_backups_callback: Any = None
-    copy_backups_callback: Any = None
+    track_process_callback: Any = None
 
     def set_progress(self, progress: int, message: str = "") -> None:
         if callable(self.set_progress_callback):
@@ -121,16 +119,49 @@ class PluginTaskRuntime:
         if self.is_cancelled():
             raise InterruptedError("Plugin task cancelled")
 
-    def get_host_backup_manager(self) -> Any:
-        return self.get_backup_manager_callback() if callable(self.get_backup_manager_callback) else None
+    def track_process(self, process: Any, cancel: Any = None) -> None:
+        """Ensure a process started by this task is stopped when it is cancelled."""
+        if callable(self.track_process_callback):
+            self.track_process_callback(process, cancel)
 
-    def restore_host_backups(self) -> bool:
-        return bool(self.restore_backups_callback()) if callable(self.restore_backups_callback) else False
 
-    def copy_host_backups_to(self, destination_dir: str) -> list[str]:
-        if callable(self.copy_backups_callback):
-            return cast(list[str], self.copy_backups_callback(destination_dir))
-        return []
+@dataclass(frozen=True, slots=True)
+class PluginLaunchAction:
+    """A plugin-provided action shown alongside the built-in launch modes."""
+
+    id: str
+    label: str
+    description: str = ""
+    requires_confirmation: bool = True
+    plugin_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PluginLaunchOption:
+    """A checkable launch-menu option supplied by a plugin.
+
+    Plugins provide options from ``get_launch_options(context)`` and receive
+    changes through ``on_launch_option_changed(context, option_id, checked)``.
+    Returning ``False`` from the change handler rejects the new value.
+    """
+
+    id: str
+    label: str
+    description: str = ""
+    checked: bool = False
+    enabled: bool = True
+    disabled_reason: str = ""
+    plugin_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PluginCommunityFeed:
+    """A validated HTTPS RSS feed contributed by a plugin."""
+
+    id: str
+    label: str
+    url: str
+    plugin_id: str = ""
 
 
 @dataclass(slots=True)
@@ -141,9 +172,6 @@ class PluginContext:
     settings_service: Any
     profile_service: Any
     game_registry_service: Any
-    customization_service: Any
-    used_mods_service: Any
-    downloads_manager: Any
     localization_service: Any
     plugin_settings: PluginSettingsAccessor
     task_runtime: PluginTaskRuntime | None = None
@@ -154,7 +182,3 @@ class PluginUiContext:
     plugin_id: str
     host_context: PluginContext
     app_state: Any
-    feedback_service: Any
-    customization_service: Any
-    localization_service: Any
-    plugin_settings: PluginSettingsAccessor

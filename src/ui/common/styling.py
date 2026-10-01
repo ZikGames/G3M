@@ -160,24 +160,30 @@ def apply_rounded_mask(widget, radius, inset=0):
         logger.debug("Failed to apply rounded mask to widget")
 
 
+def sync_scroll_area_height(widget, scroll_area) -> None:
+    height = widget.sizeHint().height()
+    scrollbar_height = scroll_area.horizontalScrollBar().sizeHint().height()
+    if not isinstance(height, int) or not isinstance(scrollbar_height, int):
+        return
+    scroll_area.setFixedHeight(height + scrollbar_height)
+
+
 def install_size_hint_height_sync(
     widget, scroll_area, attr_name="_size_hint_height_filter"
 ):
+    def sync_height() -> None:
+        sync_scroll_area_height(widget, scroll_area)
+
     install_widget_update_handler(
         widget,
-        lambda target=widget, target_scroll=scroll_area: target_scroll.setMaximumHeight(
-            target.sizeHint().height()
-        ),
+        sync_height,
         attr_name=attr_name,
     )
-
-
-def set_layout_stretch_factors(layout, *factors):
-    try:
-        for index, factor in enumerate(factors):
-            layout.setStretch(index, factor)
-    except Exception as e:
-        logger.debug(f"set_layout_stretch_factors: Error setting stretch: {e}")
+    install_widget_update_handler(
+        scroll_area.horizontalScrollBar(),
+        sync_height,
+        attr_name=f"{attr_name}_scrollbar",
+    )
 
 
 def get_widget_dimensions(widget):

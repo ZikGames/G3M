@@ -6,6 +6,7 @@ import logging
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from models.mod_models import format_mod_authors
 from services.localization_service import tr
 from ui.common.styling import (
     apply_stylesheet_if_changed,
@@ -37,7 +38,7 @@ class BaseModWidget(QFrame):
         self._icon_label_stylesheet_cache = None
         self._name_label_stylesheet_cache = None
         self._version_label_stylesheet_cache = None
-        self._author_label_stylesheet_cache = None
+        self._authors_label_stylesheet_cache = None
         self._category_label_stylesheet_cache = None
 
     def _layout_scale(self) -> float:
@@ -123,17 +124,17 @@ class BaseModWidget(QFrame):
         info_layout.addLayout(title_layout)
         metadata_layout = QHBoxLayout()
         metadata_layout.setSpacing(10)
-        author_text = self.mod_data.author or tr("defaults.unknown")
-        author_container = QWidget(self)
-        author_container_layout = QHBoxLayout(author_container)
-        author_container_layout.setContentsMargins(0, 0, 0, 0)
-        author_container_layout.setSpacing(0)
-        self.author_label_title = QLabel(tr("ui.author_label"), author_container)
-        self.author_label_title.setObjectName("primaryText")
-        author_label_value = QLabel(f" {author_text}", author_container)
-        author_label_value.setObjectName("secondaryText")
-        author_container_layout.addWidget(self.author_label_title)
-        author_container_layout.addWidget(author_label_value)
+        authors_text = format_mod_authors(self.mod_data.authors) or tr("defaults.unknown")
+        authors_container = QWidget(self)
+        authors_container_layout = QHBoxLayout(authors_container)
+        authors_container_layout.setContentsMargins(0, 0, 0, 0)
+        authors_container_layout.setSpacing(0)
+        self.authors_label_title = QLabel(tr("ui.authors_label"), authors_container)
+        self.authors_label_title.setObjectName("primaryText")
+        authors_label_value = QLabel(f" {authors_text}", authors_container)
+        authors_label_value.setObjectName("secondaryText")
+        authors_container_layout.addWidget(self.authors_label_title)
+        authors_container_layout.addWidget(authors_label_value)
         category_text = getattr(self.mod_data, "gamebanana_category", None) or "N/A"
         category_container = QWidget(self)
         category_container_layout = QHBoxLayout(category_container)
@@ -145,7 +146,7 @@ class BaseModWidget(QFrame):
         category_label_value.setObjectName("secondaryText")
         category_container_layout.addWidget(self.category_label_title)
         category_container_layout.addWidget(category_label_value)
-        self.author_container = author_container
+        self.authors_container = authors_container
         self.category_container = category_container
         self.metadata_layout = metadata_layout
         info_layout.addLayout(metadata_layout)
@@ -265,12 +266,12 @@ class BaseModWidget(QFrame):
                         f"font-size: {title_font_size}px; color: {secondary_text_color};",
                         cache_attr="_version_label_stylesheet_cache",
                     )
-            if hasattr(self, "author_label_title") and self.author_label_title:
+            if hasattr(self, "authors_label_title") and self.authors_label_title:
                 with contextlib.suppress(RuntimeError):
                     apply_stylesheet_if_changed(
-                        self.author_label_title,
+                        self.authors_label_title,
                         f"color: {text_color};",
-                        cache_attr="_author_label_stylesheet_cache",
+                        cache_attr="_authors_label_stylesheet_cache",
                     )
             if hasattr(self, "category_label_title") and self.category_label_title:
                 with contextlib.suppress(RuntimeError):
@@ -281,9 +282,9 @@ class BaseModWidget(QFrame):
                     )
 
     def update_labels_text(self):
-        if hasattr(self, "author_label_title") and self.author_label_title:
+        if hasattr(self, "authors_label_title") and self.authors_label_title:
             with contextlib.suppress(RuntimeError):
-                self.author_label_title.setText(tr("ui.author_label"))
+                self.authors_label_title.setText(tr("ui.authors_label"))
         if hasattr(self, "category_label_title") and self.category_label_title:
             with contextlib.suppress(RuntimeError):
                 self.category_label_title.setText(tr("ui.category_label"))

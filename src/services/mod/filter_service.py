@@ -40,16 +40,18 @@ def _get_mod_tags(mod, is_gamebanana: bool = False):
 
 
 def _build_searchable_text(mod, is_gamebanana: bool = False) -> str:
+    authors = _get_mod_attr(mod, "authors", [])
+    author_values = authors if isinstance(authors, (list, tuple, set)) else [authors]
     search_values = [
         _get_mod_attr(mod, "name", ""),
         _get_mod_attr(mod, "description", ""),
-        _get_mod_attr(mod, "author", ""),
         _get_mod_attr(mod, "last_updated", ""),
         _get_mod_attr(mod, "updated_date", ""),
         _get_mod_attr(mod, "added_date", ""),
         _get_mod_attr(mod, "gamebanana_category", ""),
         _get_mod_attr(mod, "category", ""),
     ]
+    search_values.extend(author_values)
     search_values.extend(_get_mod_tags(mod, is_gamebanana))
     return " ".join(str(value).strip() for value in search_values if value).casefold()
 

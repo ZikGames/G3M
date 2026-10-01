@@ -1,8 +1,10 @@
 """Unit tests for network-sensitive refresh behavior."""
 
+import threading
 from collections.abc import Callable
 from unittest.mock import Mock, patch
 
+import pytest
 from PyQt6.QtCore import QObject
 
 from presentation.update_presenter import reload_global_settings
@@ -31,6 +33,43 @@ def test_download_file_uses_get_length_when_head_omits_it(tmp_path):
 
     assert progress == [50, 100]
     assert received == [6]
+
+
+def test_trusted_download_rejects_redirect_before_following_it(tmp_path):
+    from utils.network_utils import download_file
+
+    session = Mock()
+    session.head.return_value = Mock(
+        status_code=302,
+        headers={"location": "https://example.com/mod.zip"},
+    )
+
+    with pytest.raises(RuntimeError, match="trusted HTTPS hosts"):
+        download_file(
+            session,
+            "https://gamebanana.com/dl/1",
+            str(tmp_path / "mod.zip"),
+            allowed_hosts=frozenset({"gamebanana.com"}),
+        )
+
+    session.get.assert_not_called()
+
+
+def test_get_session_isolated_between_threads(monkeypatch):
+    from utils import network_utils
+
+    sessions = [object(), object()]
+    monkeypatch.setattr(network_utils, "_thread_local", threading.local())
+    monkeypatch.setattr(network_utils, "_build_session", Mock(side_effect=sessions))
+    main_session = network_utils.get_session()
+    worker_sessions = []
+    worker = threading.Thread(target=lambda: worker_sessions.append(network_utils.get_session()))
+
+    worker.start()
+    worker.join()
+
+    assert worker_sessions == [sessions[1]]
+    assert worker_sessions[0] is not main_session
 
 
 def test_reload_global_settings_skips_refresh_when_cached():

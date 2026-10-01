@@ -807,7 +807,7 @@ class TestThemeApplication:
         mod = SimpleNamespace(
             name="Test Mod",
             description="A mod description for theme refresh regression coverage.",
-            author="Tester",
+            authors=["Tester"],
             version="1.0.0",
             game_version="1.0",
             added_date="2025-01-01",

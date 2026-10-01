@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from utils.file_utils import get_chapter_folder_name
+from utils.mod.config import parse_mod_config
 
 
 class TestModStructure:
@@ -19,7 +19,9 @@ class TestModStructure:
         assert 'name' in config
         assert 'version' in config
         assert 'files' in config
-        assert isinstance(config['files'], dict)
+        assert config['config_version'] == '2.0.0'
+        assert isinstance(config['files'], list)
+        assert parse_mod_config(config) == config
 
     def test_mod_structure_validation(self, full_mod_structure_dir):
         """Checks that mod structure validation."""
@@ -28,12 +30,12 @@ class TestModStructure:
         assert config_path.is_file(), 'mod_config.json not found.'
         with open(config_path, encoding='utf-8') as f:
             config = json.load(f)
-        files = config.get('files', {})
-        for chapter_key in files:
-            chapter_dir = mod_path / get_chapter_folder_name(chapter_key, config.get('game'))
-            assert chapter_dir.is_dir(), chapter_dir
-            if files[chapter_key].get('data_file_path') or files[chapter_key].get('data_file_url'):
-                assert any(chapter_dir.iterdir()), chapter_dir
+        for operation in config.get('files', []):
+            source = operation['source']
+            assert source.startswith('${mod_path}/')
+            source_path = mod_path / source.removeprefix('${mod_path}/')
+            assert source_path.is_file(), source_path
+            assert operation['target'].startswith('${game_path}/')
 
     def test_mod_file_discovery(self, full_mod_structure_dir):
         """Checks that mod file discovery."""
@@ -116,7 +118,8 @@ class TestModInstallation:
             with open(config_path, encoding='utf-8') as f:
                 config = json.load(f)
             assert 'files' in config
-            assert isinstance(config['files'], dict)
+            assert config['config_version'] == '2.0.0'
+            assert isinstance(config['files'], list)
 
 
 class TestModProcessing:
@@ -128,14 +131,10 @@ class TestModProcessing:
         assert config_path.is_file(), 'mod_config.json not found.'
         with open(config_path, encoding='utf-8') as f:
             config = json.load(f)
-        files = config.get('files', {})
-        for chapter_key, chapter_data in files.items():
-            data_file_url = chapter_data.get('data_file_url')
-            if data_file_url:
-                chapter_dir = mod_path / get_chapter_folder_name(chapter_key, config.get('game'))
-                if chapter_dir.exists():
-                    file_path = chapter_dir / data_file_url
-                    assert file_path.parent == chapter_dir
+        for operation in config.get('files', []):
+            source = operation['source']
+            source_path = mod_path / source.removeprefix('${mod_path}/')
+            assert source_path.is_file(), source_path
 
     def test_mod_chapter_mapping(self, full_mod_structure_dir):
         """Checks that mod chapter mapping."""
@@ -144,35 +143,12 @@ class TestModProcessing:
         assert config_path.is_file(), 'mod_config.json not found.'
         with open(config_path, encoding='utf-8') as f:
             config = json.load(f)
-        files = config.get('files', {})
-        for chapter_key in files:
-            expected_dir = mod_path / get_chapter_folder_name(chapter_key, config.get('game'))
-            assert expected_dir.is_dir(), expected_dir
-
-
-class TestModMergingWithStructure:
-    """Tests for mod system."""
-    def test_multiple_mods_merging(self, app_state, feedback_service, mods_dir):
-        """Checks that multipleing mods merging."""
-        from unittest.mock import Mock
-
-        from services.g3mtool_patching_service import G3MToolPatchingService
-        mod_service = Mock()
-        patcher = G3MToolPatchingService(app_state, mod_service)
-        assert patcher is not None
-        assert hasattr(patcher, 'g3mtool')
-        assert hasattr(patcher, 'cleanup_processes_and_temp_files')
-        assert patcher.patching_logger.name == 'patching'
-
-    def test_mod_priority_with_structure(self, app_state, feedback_service):
-        """Checks that mod priority with structure."""
-        from unittest.mock import Mock
-
-        from services.g3mtool_patching_service import G3MToolPatchingService
-        mod_service = Mock()
-        patcher = G3MToolPatchingService(app_state, mod_service)
-        assert patcher is not None
-        assert hasattr(patcher, 'backup_service')
+        targets = {operation['target'] for operation in config.get('files', [])}
+        assert targets == {
+            '${game_path}/data.win',
+            '${game_path}/chapter1_windows/data.win',
+            '${game_path}/chapter2_windows/data.win',
+        }
 
 
 class TestModMetadata:
@@ -267,3 +243,27 @@ class TestModMetadata:
         assert 'mod_files_to_cleanup' not in after, 'Cleanup keys should be removed'
         assert 'mod_dirs_to_cleanup' not in after, 'Cleanup keys should be removed'
         mod_service._write_metadata({})
+
+    def test_legacy_cleanup_metadata_never_deletes_files(self, app_state, feedback_service, tmp_path, monkeypatch):
+        from services.mod.service import ModManager
+
+        mods_dir = tmp_path / "mods"
+        mods_dir.mkdir()
+        outside_dir = tmp_path / "unrelated"
+        outside_dir.mkdir()
+        sentinel = outside_dir / "keep.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+        app_state.mods_dir = str(mods_dir)
+        app_state.mods_metadata_path = str(mods_dir / "mods_data.json")
+        mod_service = ModManager(app_state, feedback_service)
+        monkeypatch.setattr(mod_service, "_get_mods_cache", lambda **_kwargs: {})
+        monkeypatch.setattr(mod_service, "_migrate_owned_mods", lambda: None)
+        mod_service._write_metadata({
+            "mod_files_to_cleanup": [str(sentinel)],
+            "mod_dirs_to_cleanup": [str(outside_dir)],
+        })
+
+        assert mod_service.load_local_mods()
+
+        assert sentinel.read_text(encoding="utf-8") == "keep"
+        assert mod_service._read_metadata() == {}

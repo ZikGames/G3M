@@ -1,13 +1,11 @@
 """Worker thread for scanning mod directories."""
 
 import logging
-import os
 
 from PyQt6.QtCore import pyqtSignal
 
-from config.config import MOD_CONFIG_FILENAME
 from ui.utils.thread_lifetime import ManagedQThread
-from utils.file_utils import load_json
+from utils.mod.scan_utils import scan_mods_directory
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +28,7 @@ class ModScanThread(ManagedQThread):
     def __init__(self, mods_dir: str, parent=None) -> None:
         super().__init__(parent)
         self.mods_dir = mods_dir
+        self._app_state = getattr(parent, "app_state", None)
         self._cancel_flag = False
 
     def cancel(self):
@@ -37,74 +36,31 @@ class ModScanThread(ManagedQThread):
 
     def run(self):
         try:
-            if self.parent() and hasattr(self.parent(), "app_state"):
-                app_state = self.parent().app_state
+            if self._app_state is not None:
+                app_state = self._app_state
                 if hasattr(app_state, "_scan_blocked") and app_state._scan_blocked:
                     logger.debug("ModScanThread: Scan blocked during installation")
                     _safe_emit_scan_completed(self, {})
                     return
         except Exception as e:
             logger.debug(f"ModScanThread: Could not check scan block status: {e}")
-        result = {}
-        if not os.path.exists(self.mods_dir):
-            _safe_emit_scan_completed(self, result)
-            return
         try:
-            with os.scandir(self.mods_dir) as entries:
-                for entry in entries:
-                    if self._cancel_flag:
-                        break
-                    try:
-                        if not entry.is_dir(follow_symlinks=True):
-                            continue
-                    except OSError:
-                        logger.debug(
-                            "ModScanThread: inaccessible directory link %s", entry.path
-                        )
-                        continue
-                    folder_name = entry.name
-                    folder_path = entry.path
-                    config_path = os.path.join(folder_path, MOD_CONFIG_FILENAME)
-                    if not os.path.exists(config_path):
-                        continue
-                    try:
-                        config_size = os.path.getsize(config_path)
-                        if config_size == 0:
-                            logger.warning(
-                                f"ModScanThread: Corrupted config detected (0 bytes) in {config_path}, skipping mod"
-                            )
-                            continue
-                        config_mtime = os.path.getmtime(config_path)
-                        config_data = load_json(config_path)
-                        mod_id = config_data.get("id")
-                        if not mod_id:
-                            continue
-                        if mod_id in result:
-                            existing_info = result[mod_id]
-                            if config_mtime <= existing_info.get("config_mtime", 0):
-                                continue
-                        result[mod_id] = {
-                            "id": mod_id,
-                            "folder_path": folder_path,
-                            "folder_name": folder_name,
-                            "config_data": config_data,
-                            "config_mtime": config_mtime,
-                        }
-                    except (OSError, PermissionError, ValueError):
-                        logger.warning(
-                            f"ModScanThread: Corrupted config detected (failed to access) in {config_path}"
-                        )
-                        continue
-                    except KeyError:
-                        logger.debug(f"ModScanThread: missing id in {config_path}")
-                        continue
-                    except Exception:
-                        logger.error(
-                            f"ModScanThread: Corrupted config detected (unexpected error) in {folder_path}"
-                        )
-                        continue
-        except OSError:
-            logger.error(f"ModScanThread: failed to list directory {self.mods_dir}")
-        except Exception as e:
-            logger.debug(f"ModScanThread: Unexpected error during scan: {e}")
+            cache, _ = scan_mods_directory(
+                self.mods_dir,
+                is_cancelled=lambda: self._cancel_flag or self.isInterruptionRequested(),
+            )
+            result = {
+                mod_id: {
+                    "id": info.id,
+                    "folder_path": info.folder_path,
+                    "folder_name": info.folder_name,
+                    "config_data": info.config_data,
+                    "config_mtime": info.config_mtime,
+                    "config_digest": info.config_digest,
+                }
+                for mod_id, info in cache.items()
+            }
+        except Exception as error:
+            logger.error("ModScanThread: failed to scan %s: %s", self.mods_dir, error)
+            result = {}
         _safe_emit_scan_completed(self, result)

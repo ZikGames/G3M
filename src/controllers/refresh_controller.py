@@ -259,7 +259,7 @@ class RefreshController:
             self.mod_service, self.app_state, parent=self.app_window
         )
 
-        def _on_post_fetch_done(worker_success):
+        def _on_post_fetch_done(_worker_success):
             try:
                 if not self.app_state.mods_loaded:
                     self.app_state.mods_loaded = True

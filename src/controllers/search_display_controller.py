@@ -66,20 +66,15 @@ class SearchDisplayController(QObject):
         self.app = app_window
         self.blocklist_service = BlocklistManager()
         self._load_more_threads = []
-        self._current_details_thread = None
         self._active_search_timers = []
         self._update_display_in_progress = False
         self._pending_display_update = False
         self._update_filtered_mods_in_progress = False
         self._pending_filter_update = False
-        self._exhausted_search_keys = set()
         self._search_error = ""
         self.card_widget_cache: dict[str, ModCardWidget] = {}
         self._update_display_debounce = DebounceTimer(delay_ms=75)
         self._virtual_scroll_debounce = DebounceTimer(delay_ms=80)
-        self._initial_mods_display_done = False
-        self._layout_refresh_tries = 0
-        self._last_virtual_card_range: tuple[int, int] | None = None
         self._last_display_columns = None
         self._centered_loading_indicator = None
         self._layout_refresh_pending = False
@@ -255,6 +250,7 @@ class SearchDisplayController(QObject):
         layout = getattr(self.app, "mod_list_layout", None)
         column_span = 1
         if isinstance(layout, QGridLayout):
+            layout.removeWidget(widget)
             position = max(position, layout.count())
             column_span = self._mod_list_column_count()
         self._place_layout_widget(
@@ -373,7 +369,7 @@ class SearchDisplayController(QObject):
         with contextlib.suppress(Exception):
             self.app.mod_list_layout.removeWidget(widget)
 
-    def refresh_visible_layout(self):
+    def refresh_visible_layout(self, *, reflow_existing: bool = False):
         layout = getattr(self.app, "mod_list_layout", None)
         if layout is None:
             return
@@ -382,12 +378,12 @@ class SearchDisplayController(QObject):
         if not self._sync_mod_grid_metrics():
             self._update_virtual_visibility()
             return
-        if (
-            self._last_display_columns is not None
-            and self._last_display_columns != self._mod_list_column_count()
-        ):
-            self.update_display()
-            return
+        columns = self._mod_list_column_count()
+        if self._last_display_columns is not None and self._last_display_columns != columns:
+            if not reflow_existing:
+                self.update_display()
+                return
+            self._last_display_columns = columns
         visible_cards = [
             widget for widget in self._iter_layout_cards() if widget.isVisible()
         ]
@@ -400,8 +396,14 @@ class SearchDisplayController(QObject):
                 if not widget.updatesEnabled():
                     widget.setUpdatesEnabled(True)
                 widget.show()
-                widget._mods_browser_position = position
                 self._place_layout_widget(widget, position)
+            position = self._next_full_grid_row_position(len(visible_cards))
+            indicators = list(self._iter_loading_indicators())
+            for indicator in indicators:
+                layout.removeWidget(indicator)
+            for indicator in indicators:
+                self._place_loading_indicator(indicator, position)
+                position += columns
             layout.invalidate()
             with contextlib.suppress(Exception):
                 layout.activate()
@@ -995,7 +997,6 @@ class SearchDisplayController(QObject):
             current_page_cache_keys = {
                 get_mod_cache_key(mod) for mod in current_page_mods if mod is not None
             }
-            self._last_virtual_card_range = None
             existing_widgets_in_layout = {}
             existing_card_keys = set()
             for i in range(self.app.mod_list_layout.count()):
@@ -1056,7 +1057,6 @@ class SearchDisplayController(QObject):
                             if not animate:
                                 card.show()
                             self._place_layout_widget(card, position)
-                            card._mods_browser_position = position
                             if hasattr(card, "update_action_button_state"):
                                 card.update_action_button_state()
                             if animate:
@@ -1152,7 +1152,6 @@ class SearchDisplayController(QObject):
                                     pending_card_placements.append(
                                         (card, target_position, False)
                                     )
-                                card._mods_browser_position = target_position
                                 target_position += 1
                             else:
                                 parent_widget = (
@@ -1177,7 +1176,6 @@ class SearchDisplayController(QObject):
                                 pending_card_placements.append(
                                     (card, target_position, True)
                                 )
-                                card._mods_browser_position = target_position
                                 self.card_widget_cache[cache_key] = card
                                 target_position += 1
                         except Exception as e:
@@ -1438,26 +1436,6 @@ class SearchDisplayController(QObject):
                 continue
             if getattr(widget, "is_selected", False):
                 widget.set_selected(False)
-
-    def _update_cards_for_mods(self, mod_ids: list):
-        try:
-            mod_ids_set = set(mod_ids)
-            for widget in self._iter_layout_cards():
-                mod = widget.mod_data
-                if mod and mod.is_gamebanana_mod():
-                    mod_id = mod.get_gamebanana_mod_id()
-                    if mod_id and mod_id in mod_ids_set:
-                        try:
-                            self._refresh_card(widget)
-                        except Exception as e:
-                            logger.warning(
-                                f"SearchDisplayController: Error updating card for mod {mod_id}: {e}"
-                            )
-        except Exception as e:
-            logger.error(
-                f"SearchDisplayController: Error in _update_cards_for_mods: {e}",
-                exc_info=True,
-            )
 
     def update_all_cards_labels(self):
         try:

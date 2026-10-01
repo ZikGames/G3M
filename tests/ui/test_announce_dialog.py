@@ -28,7 +28,7 @@ class TestAnnounceDialog:
         dialog.panel.select_option(0)
         assert dialog.panel.ok_button.isEnabled() is True
         assert dialog.panel.selected_options() == ["A"]
-        assert dialog.panel.option_buttons[0].toolTip() == tr("tooltips.announcement_option")
+        assert dialog.panel._option_buttons[0].toolTip() == tr("tooltips.announcement_option")
 
         dialog.close()
         parent.deleteLater()

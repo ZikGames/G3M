@@ -36,8 +36,8 @@ def begin_close_event(window, event, *, single_shot):
 def run_deferred_close_cleanup(window) -> None:
     try:
         try:
-            if hasattr(window, "plugins_ui") and window.plugins_ui:
-                window.plugins_ui.shutdown()
+            if hasattr(window, "catalog_ui") and window.catalog_ui:
+                window.catalog_ui.shutdown()
             from app.cleanup import perform_close_cleanup
 
             perform_close_cleanup(window)

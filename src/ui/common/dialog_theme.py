@@ -16,6 +16,9 @@ def get_dialog_theme_values(app_state):
             "border_radius": get_border_radius(None),
             "button_radius": clamp_border_radius(get_border_radius(None), height=30),
             "field_radius": clamp_border_radius(get_border_radius(None), height=30),
+            "checkbox_indicator_radius": clamp_border_radius(
+                get_border_radius(None), width=18, height=18, border_width=2
+            ),
         }
     colors = get_theme_colors(app_state.local_config)
     br = get_border_radius(app_state.local_config)
@@ -24,6 +27,9 @@ def get_dialog_theme_values(app_state):
         "border_radius": br,
         "button_radius": clamp_border_radius(br, height=30),
         "field_radius": clamp_border_radius(br, height=30),
+        "checkbox_indicator_radius": clamp_border_radius(
+            br, width=18, height=18, border_width=2
+        ),
     }
 
 
@@ -136,6 +142,20 @@ def build_dialog_theme_stylesheet(app_state):
         }}
         QCheckBox:disabled {{
             color: #8f8f8f;
+        }}
+        QCheckBox::indicator, QTreeWidget::indicator {{
+            width: 18px;
+            height: 18px;
+            background-color: {theme["elements"]};
+            border: 2px solid {theme["border"]};
+            border-radius: {theme["checkbox_indicator_radius"]}px;
+        }}
+        QCheckBox::indicator:checked, QTreeWidget::indicator:checked {{
+            background-color: {theme["select"]};
+        }}
+        QCheckBox::indicator:disabled, QTreeWidget::indicator:disabled {{
+            background-color: #6f6f6f;
+            border-color: #6f6f6f;
         }}
     """
 

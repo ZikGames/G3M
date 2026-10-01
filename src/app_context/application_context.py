@@ -11,6 +11,7 @@ from adapters.gamebanana_adapter import GameBananaAPI
 from app_context.service_container import ServiceContainer
 from models.app_state import AppState
 from services.announce_service import AnnounceService
+from services.catalog_service import CatalogService
 from services.customization_service import CustomizationManager
 from services.discord_rich_presence_service import DiscordRichPresenceService
 from services.downloads.manager import DownloadsManager
@@ -20,7 +21,6 @@ from services.launch_service import GameLauncher
 from services.localization_service import localization_service
 from services.mod.service import ModManager
 from services.pizza_oven_conversion_service import PizzaOvenConversionService
-from services.plugins.catalog_service import PluginCatalogService
 from services.plugins.install_service import PluginInstallService
 from services.plugins.runtime_service import PluginRuntimeService
 from services.plugins.state_service import PluginStateService
@@ -130,32 +130,28 @@ def build_application_context(parent=None) -> ApplicationContext:
     discord_rich_presence_service.used_mods_service = used_mods_service
     user_root = get_user_data_root()
     plugins_dir = os.path.join(user_root, "plugins")
+    themes_dir = os.path.join(user_root, "themes")
     os.makedirs(plugins_dir, exist_ok=True)
     downloads_manager = DownloadsManager(
         user_root, lambda: app_state.local_config, parent
     )
 
     plugin_state_service: PluginStateService | None = None
-    plugin_catalog_service: PluginCatalogService | None = None
+    catalog_service: CatalogService | None = None
     plugin_runtime_service: PluginRuntimeService | None = None
     plugin_install_service: PluginInstallService | None = None
 
     try:
         plugin_state_service = PluginStateService(settings_service, plugins_dir)
-        plugin_catalog_service = PluginCatalogService(
-            app_state, settings_service, plugins_dir
-        )
+        catalog_service = CatalogService(app_state, settings_service, plugins_dir)
         plugin_runtime_service = PluginRuntimeService(
             app_state,
             feedback_service,
             settings_service,
             profile_service,
             game_registry_service,
-            customization_service,
-            used_mods_service,
-            downloads_manager,
             plugin_state_service,
-            plugin_catalog_service,
+            catalog_service,
             plugins_dir,
         )
         plugin_install_service = PluginInstallService(
@@ -165,7 +161,7 @@ def build_application_context(parent=None) -> ApplicationContext:
     except Exception as e:
         logger.error("Failed to initialize plugin services: %s", e, exc_info=True)
     downloads_manager.set_app_context(
-        mods_dir=app_state.mods_dir, plugin_install_service=plugin_install_service
+        mods_dir=app_state.mods_dir, plugin_install_service=plugin_install_service, themes_dir=themes_dir
     )
     downloads_manager.startup()
     game_versions_manager = GameVersionsManager(
@@ -188,7 +184,8 @@ def build_application_context(parent=None) -> ApplicationContext:
         game_versions_manager=game_versions_manager,
         pizza_oven_conversion_service=pizza_oven_conversion_service,
         plugin_state_service=plugin_state_service,
-        plugin_catalog_service=plugin_catalog_service,
+        catalog_service=catalog_service,
+        plugin_catalog_service=catalog_service,
         plugin_runtime_service=plugin_runtime_service,
         plugin_install_service=plugin_install_service,
     )

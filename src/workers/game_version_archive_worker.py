@@ -5,14 +5,29 @@ import logging
 import os
 import shutil
 import zipfile
+from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
 
 from config.config import GAME_VERSION_MANIFEST_FILENAME
 from services.localization_service import tr
+from services.mod_operation_executor import (
+    ModOperationExecutionError,
+    ModOperationExecutor,
+)
+from services.mod_operation_support import (
+    collect_profile_operation_inputs,
+    collect_selected_merge_steps,
+    collect_selected_mod_ids,
+    create_g3mtool_merger,
+    create_g3mtool_patcher,
+    format_direct_operation_paths,
+)
 from ui.utils.thread_lifetime import ManagedQThread
 from ui.utils.thread_lifetime import safe_emit as _safe_emit
+from utils.mod.archive import ArchiveVirtualPath, list_archive_members
 from utils.network_utils import get_session
+from utils.path_utils import resolve_execution_runtime, resolve_game_executable
 from utils.process_utils import format_filesystem_error, format_network_error
 
 logger = logging.getLogger(__name__)
@@ -76,7 +91,7 @@ class CreateVersionWorker(ManagedQThread):
 
 
 class CreatePatchedVersionWorker(ManagedQThread):
-    """Copy game folder to temp, apply mods via G3MToolPatchingService, then archive."""
+    """Copy a game, apply selected config operations, then archive the copy."""
 
     progress = pyqtSignal(int)
     result_ready = pyqtSignal(bool, str, int, int, str)
@@ -99,6 +114,79 @@ class CreatePatchedVersionWorker(ManagedQThread):
         self._mod_service = mod_service
         self._chapter_mods = chapter_mods
         self._temp_copy = None
+        self._patcher = create_g3mtool_patcher(
+            app_state, is_cancelled=self.isInterruptionRequested
+        )
+        self._merger = create_g3mtool_merger(
+            app_state, is_cancelled=self.isInterruptionRequested
+        )
+
+    def _selected_mod_ids(self) -> tuple[str, ...]:
+        return collect_selected_mod_ids(self._chapter_mods)
+
+    def _build_operation_plan(self, game_copy: Path):
+        game_mode = self._app_state.game_mode
+        config = self._app_state.local_config
+        custom_key = game_mode.get_custom_exec_config_key()
+        custom_executable = config.get(custom_key, "") if custom_key else ""
+        executable = (
+            custom_executable
+            if isinstance(custom_executable, str) and os.path.isfile(custom_executable)
+            else resolve_game_executable(
+                game_mode.get_game_path(config), game_mode.executable_type
+            )
+        )
+        runtime = resolve_execution_runtime(executable)
+        resolved_game_copy = game_copy.resolve(strict=False)
+        inputs = collect_profile_operation_inputs(
+            self._mod_service,
+            self._selected_mod_ids(),
+            game_id=str(getattr(game_mode, "game_id", "") or ""),
+            game_path=resolved_game_copy,
+            game_data_path=resolved_game_copy.parent / "game_data",
+            runtime=runtime,
+            user_path=resolved_game_copy.parent / "user",
+        )
+        plan = inputs.build_plan(
+            tuple(inputs.configs),
+            merge_steps=collect_selected_merge_steps(self._chapter_mods),
+        )
+        safe_operations = []
+        skipped_indexes: set[int] = set()
+        for operation in plan.operations:
+            target = operation.target
+            target_path = target.archive if isinstance(target, ArchiveVirtualPath) else target
+            resolved_target = Path(target_path).resolve(strict=False) if target_path is not None else None
+            if resolved_target is not None and not resolved_target.is_relative_to(resolved_game_copy):
+                skipped_indexes.add(operation.index)
+                continue
+            safe_operations.append(operation)
+        if skipped_indexes:
+            logger.warning(
+                "Skipped %s custom operation(s) while creating game version",
+                len(skipped_indexes),
+            )
+        # Findings are indexed by the operation that produced them.  A target
+        # outside the copied game is intentionally not applied here, so its
+        # missing/hash/link diagnostics must not reject an otherwise valid
+        # snapshot.  Keep findings for every retained operation and all
+        # profile/configuration-level findings (which have no operation index).
+        findings = tuple(
+            finding
+            for finding in plan.findings
+            if finding.operation_index not in skipped_indexes
+        )
+        return plan.__class__(tuple(safe_operations), findings), len(skipped_indexes)
+
+    def direct_operation_path_details(self) -> str:
+        details: list[str] = []
+        for mod_id in self._selected_mod_ids():
+            config = self._mod_service.get_mod_config(mod_id)
+            if isinstance(config, dict):
+                detail = format_direct_operation_paths(config, mod_id=mod_id)
+                if detail:
+                    details.append(detail)
+        return "\n".join(details)
 
     def run(self):
         import tempfile
@@ -123,27 +211,24 @@ class CreatePatchedVersionWorker(ManagedQThread):
                 shutil.copy2(full, dest)
                 _safe_emit(self.__class__.__name__, self.progress, int((i + 1) * 40 / total_copy))
 
-            try:
-                from services.g3mtool_patching_service import G3MToolPatchingService
-
-                patcher = G3MToolPatchingService(
-                    self._app_state, self._mod_service, None
+            operation_plan, skipped = self._build_operation_plan(Path(temp_game).resolve(strict=False))
+            if operation_plan.has_errors:
+                raise ModOperationExecutionError(operation_plan.findings[0].message)
+            ModOperationExecutor(
+                Path(self._temp_copy) / "journal", patcher=self._patcher, merger=self._merger
+            ).execute(
+                operation_plan,
+                progress=lambda done, total, _operation: _safe_emit(
+                    self.__class__.__name__,
+                    self.progress,
+                    40 + int(done * 40 / max(total, 1)),
+                ),
+                is_cancelled=self.isInterruptionRequested,
+            )
+            if skipped:
+                patching_error = tr(
+                    "status.skipped_operations_outside_game", count=skipped
                 )
-                patcher.progress_update.connect(
-                    lambda p, _msg: _safe_emit(self.__class__.__name__, self.progress, 40 + int(p * 0.4))
-                )
-                patcher.set_override_game_path(temp_game)
-                success = patcher.process_sections(
-                    self._chapter_mods, is_modpack=False
-                )
-                if not success:
-                    patching_error = "Mod patching failed"
-                patcher.cleanup(force=True)
-            except Exception as e:
-                logger.error(
-                    "CreatePatchedVersionWorker: patching failed: %s", e, exc_info=True
-                )
-                patching_error = str(e)
 
             archive_files = []
             for root, _, files in os.walk(temp_game):
@@ -217,6 +302,7 @@ class ApplyVersionWorker(ManagedQThread):
                     False, tr("errors.file_not_found", path=self._archive_path)
                 )
                 return
+            list_archive_members(self._archive_path)
             with zipfile.ZipFile(self._archive_path, "r") as zf:
                 bad = zf.testzip()
                 if bad is not None:
@@ -294,6 +380,9 @@ class GameExportVersionWorker(ManagedQThread):
                     False, tr("errors.file_not_found", path=self._source)
                 )
                 return
+            if os.path.exists(self._dest) and os.path.samefile(self._source, self._dest):
+                raise ValueError("Archive destination must differ from its source")
+            list_archive_members(self._source)
             with zipfile.ZipFile(self._source, "r") as src_zf:
                 entries = [info for info in src_zf.infolist() if not info.is_dir()]
                 total = len(entries) or 1
@@ -340,6 +429,9 @@ class GameImportVersionWorker(ManagedQThread):
                     False, tr("errors.file_not_found", path=self._source), {}
                 )
                 return
+            if os.path.exists(self._dest) and os.path.samefile(self._source, self._dest):
+                raise ValueError("Archive destination must differ from its source")
+            list_archive_members(self._source)
             with zipfile.ZipFile(self._source, "r") as zf:
                 if GAME_VERSION_MANIFEST_FILENAME not in zf.namelist():
                     _safe_emit(self.__class__.__name__, self.result_ready,

@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 from unittest.mock import Mock, patch
 
 import pytest
@@ -44,6 +45,7 @@ class TestModManager:
         from services.mod.service import ModManager
 
         mod_service = ModManager(app_state=app_state, feedback_service=feedback_service)
+        mod_service.load_local_mods()
         cache = mod_service._get_mods_cache(use_async=False)
         assert len(cache) > 0
         assert "test_mod_001" in cache
@@ -53,13 +55,13 @@ class TestModManager:
         from utils.mod.scan_utils import validate_mod_config
 
         valid_config = {
-            "config_version": "1.0.0",
+            "config_version": "2.0.0",
             "id": "test_mod",
             "name": "Test Mod",
             "version": "1.0.0",
+            "authors": [],
             "game": "deltarune",
-            "files": {},
-            "tags": [],
+            "files": [],
         }
         result = validate_mod_config(valid_config, "/fake/path", "test_mod")
         assert result is True
@@ -297,20 +299,20 @@ class TestSettingsManager:
         )
 
         archive_path = tmp_path / "broken_theme.zip"
-        with patch("zipfile.ZipFile") as zip_cls:
-            zip_obj = Mock()
-            zip_obj.__enter__ = Mock(return_value=zip_obj)
-            zip_obj.__exit__ = Mock(return_value=False)
-            zip_obj.namelist.return_value = ["theme.json"]
-            zip_cls.return_value = zip_obj
-            monkeypatch.setattr(
-                "utils.archive_utils.extract_any_archive",
-                lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                    PermissionError(13, "Permission denied", str(archive_path))
-                ),
-            )
+        archive_member = Mock()
+        archive_member.name = "theme.json"
+        monkeypatch.setattr(
+            "services.settings_themes.list_archive_members",
+            lambda _path: [archive_member],
+        )
+        monkeypatch.setattr(
+            "utils.archive_utils.extract_any_archive",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                PermissionError(13, "Permission denied", str(archive_path))
+            ),
+        )
 
-            manager._install_theme_from_file(str(archive_path))
+        manager._install_theme_from_file(str(archive_path))
 
         manager.feedback_service.show_message.assert_called_once_with(
             "error",
@@ -789,49 +791,168 @@ class TestLaunchManager:
         launcher.restore_window_callback.assert_called_once()
         parent.game_launch.update_button_state.assert_called_once()
 
-    def test_cancelled_launch_restores_backups_and_can_start_again(
-        self, app_state, feedback_service, tmp_path
+    def test_keep_changes_mode_does_not_restore_after_game_exit(
+        self, app_state, feedback_service
     ):
-        from services.backup_service import BackupManager
+        from models.launch_modes import LaunchMode
+        from services.launch_service import GameLauncher
+
+        launcher = GameLauncher(app_state, feedback_service, Mock())
+        launcher._selected_launch_mode = LaunchMode.KEEP_CHANGES
+        launcher.restore_window_callback = Mock()
+        launcher._record_launch_playtime = Mock()
+        launcher._complete_game_cleanup = Mock()
+        launcher._run_journal_operation = Mock()
+
+        launcher._check_game_running(False)
+
+        launcher.restore_window_callback.assert_called_once_with()
+        launcher._run_journal_operation.assert_not_called()
+        launcher._complete_game_cleanup.assert_called_once_with(False)
+
+    def test_keep_changes_restores_if_game_was_not_detected(
+        self, app_state, feedback_service
+    ):
+        from models.launch_modes import LaunchMode
+        from services.launch_service import GameLauncher
+
+        launcher = GameLauncher(app_state, feedback_service, Mock())
+        launcher._selected_launch_mode = LaunchMode.KEEP_CHANGES
+        launcher._operation_journal = Mock()
+        launcher._cleanup_direct_launch_files = Mock()
+        launcher._complete_game_cleanup = Mock()
+
+        launcher._check_game_running(False)
+
+        launcher._cleanup_direct_launch_files.assert_called_once()
+        launcher._complete_game_cleanup.assert_not_called()
+
+    def test_permanent_changes_commit_only_after_game_is_detected(
+        self, app_state, feedback_service
+    ):
+        from services.launch_service import GameLauncher
+
+        launcher = GameLauncher(app_state, feedback_service, Mock())
+        launcher._commit_permanent_operation = Mock()
+        launcher._safe_discord_rich_presence_call = Mock()
+
+        launcher._on_game_process_detected(False)
+
+        launcher._commit_permanent_operation.assert_called_once_with()
+        launcher._safe_discord_rich_presence_call.assert_called_once_with(
+            "on_after_game_started", False
+        )
+
+    def test_plugin_restore_failure_stops_file_restore(
+        self, app_state, feedback_service
+    ):
+        from PyQt6.QtCore import QObject
+
+        from services.launch_service import GameLauncher
+
+        parent = QObject()
+        parent.plugin_runtime_service = Mock(
+            execute_hook_with_runtime=Mock(return_value=[False])
+        )
+        launcher = GameLauncher(app_state, feedback_service, Mock(), parent)
+        launcher._finish_game_exit_without_restore = Mock()
+
+        launcher._restore_after_verified_game_exit(False)
+
+        parent.plugin_runtime_service.execute_hook_with_runtime.assert_called_once_with(
+            "before_restore_after_exit", None, False, raise_errors=True
+        )
+        launcher._finish_game_exit_without_restore.assert_called_once_with(False)
+
+    def test_patching_only_mode_never_starts_the_game(
+        self, app_state, feedback_service
+    ):
+        from models.launch_modes import LaunchMode
+        from services.launch_service import GameLauncher
+
+        launcher = GameLauncher(app_state, feedback_service, Mock())
+        launcher._selected_launch_mode = LaunchMode.PATCHING_ONLY
+        launcher._commit_permanent_operation = Mock()
+        launcher._execute_game = Mock()
+        started = []
+        launcher.game_launch_started.connect(started.append)
+
+        launcher._complete_launch_after_journal_checkpoint({}, False)
+
+        launcher._commit_permanent_operation.assert_called_once_with()
+        launcher._execute_game.assert_not_called()
+        assert started == []
+
+    def test_permanent_mode_records_commit_before_deleting_backups(
+        self, app_state, feedback_service
+    ):
+        from models.launch_modes import LaunchMode
+        from services.launch_service import GameLauncher
+
+        launcher = GameLauncher(app_state, feedback_service, Mock())
+        launcher._selected_launch_mode = LaunchMode.KEEP_CHANGES
+        journal = Mock()
+        launcher._operation_journal = journal
+        launcher._run_journal_operation = Mock(return_value=True)
+        launcher._execute_plugin_hook = Mock()
+        launcher.launch_transaction.begin()
+
+        launcher._commit_permanent_operation()
+
+        journal.retire.assert_called_once_with()
+        assert launcher._operation_journal is None
+        assert launcher._permanent_committed is True
+        assert launcher._run_journal_operation.call_args.args[0] == "discard"
+        assert launcher._run_journal_operation.call_args.kwargs["journal"] is journal
+
+    def test_failed_pre_launch_restores_plugin_temporary_changes(
+        self, app_state, feedback_service
+    ):
+        from services.launch_service import GameLauncher
+
+        launcher = GameLauncher(app_state, feedback_service, Mock())
+        launcher._before_mod_apply_completed = True
+        launcher._execute_plugin_hook = Mock()
+
+        launcher._handle_launch_failure("execute")
+
+        launcher._execute_plugin_hook.assert_called_once_with(
+            "mod_apply_cancelled", {"hook": "launch", "reason": "execute"}
+        )
+
+    def test_cancelled_launch_restores_backups_and_can_start_again(
+        self, app_state, feedback_service, tmp_path, qtbot
+    ):
         from services.launch_service import GameLauncher
         from services.launch_transaction import LaunchState
 
-        target = tmp_path / "data.win"
-        target.write_bytes(b"ORIGINAL")
         launcher = GameLauncher(app_state, feedback_service, Mock())
-        launcher.mod_patcher.backup_service = BackupManager(str(tmp_path / "backups"))
-        assert launcher.mod_patcher.backup_service.backup_file(
-            "deltarune_1", str(target)
-        )
-        target.write_bytes(b"MODDED")
+        journal = Mock(state="applied")
+        launcher._operation_journal = journal
         launcher.launch_transaction.begin()
         launcher.launch_transaction.begin_apply()
 
         launcher.cancel_pending_launch()
+        qtbot.waitUntil(lambda: launcher._operation_journal is None)
         launcher.launch_transaction.begin()
 
-        assert target.read_bytes() == b"ORIGINAL"
+        journal.restore.assert_called_once_with()
+        assert launcher._operation_journal is None
         assert launcher.launch_transaction.state == LaunchState.PREPARING
 
     @pytest.mark.parametrize("thread_attr", ["_patching_thread", "_plugin_hook_thread"])
     def test_cancelled_background_launch_restores_before_next_launch(
-        self, app_state, feedback_service, tmp_path, thread_attr
+        self, app_state, feedback_service, tmp_path, thread_attr, qtbot
     ):
-        from services.backup_service import BackupManager
         from services.launch_service import GameLauncher
         from services.launch_transaction import LaunchState
 
-        target = tmp_path / "data.win"
-        target.write_bytes(b"ORIGINAL")
         launcher = GameLauncher(app_state, feedback_service, Mock())
-        launcher.mod_patcher.backup_service = BackupManager(str(tmp_path / "backups"))
-        assert launcher.mod_patcher.backup_service.backup_file(
-            "deltarune_1", str(target)
-        )
-        target.write_bytes(b"MODDED")
+        journal = Mock(state="applied")
+        launcher._operation_journal = journal
         launcher.launch_transaction.begin()
         launcher.launch_transaction.begin_apply()
-        thread = Mock(patcher=launcher.mod_patcher, _cancelled=True)
+        thread = Mock(_cancelled=True)
         thread.isInterruptionRequested.return_value = True
         setattr(launcher, thread_attr, thread)
         launcher._execute_plugin_hook = Mock()
@@ -842,7 +963,9 @@ class TestLaunchManager:
             else:
                 launcher._on_plugin_hook_finished(({}, True), False)
 
-        assert target.read_bytes() == b"ORIGINAL"
+        qtbot.waitUntil(lambda: launcher._operation_journal is None)
+        journal.restore.assert_called_once_with()
+        assert launcher._operation_journal is None
         assert launcher.launch_transaction.state == LaunchState.COMPLETED
         if thread_attr == "_patching_thread":
             launcher._execute_plugin_hook.assert_called_once_with(
@@ -852,51 +975,125 @@ class TestLaunchManager:
             launcher._execute_plugin_hook.assert_not_called()
 
     def test_empty_profile_restores_pending_mod_before_launch(
-        self, app_state, feedback_service, tmp_path
+        self, app_state, feedback_service, tmp_path, qtbot
     ):
-        from services.backup_service import BackupManager
         from services.launch_service import GameLauncher
 
-        target = tmp_path / "data.win"
-        target.write_bytes(b"ORIGINAL")
         launcher = GameLauncher(app_state, feedback_service, Mock())
-        launcher.mod_patcher.backup_service = BackupManager(str(tmp_path / "backups"))
-        assert launcher.mod_patcher.backup_service.backup_file(
-            "deltarune_1", str(target)
-        )
-        target.write_bytes(b"MODDED")
+        journal = Mock(state="applied")
+        launcher._operation_journal = journal
         launcher._has_selected_mods = Mock(return_value=False)
         launcher._get_current_game_path = Mock(return_value=str(tmp_path))
         launcher._continue_after_patching = Mock()
 
         launcher._launch_game_with_selections({})
 
-        assert target.read_bytes() == b"ORIGINAL"
+        qtbot.waitUntil(lambda: launcher._continue_after_patching.called)
+        journal.restore.assert_called_once_with()
+        assert launcher._operation_journal is None
         launcher._continue_after_patching.assert_called_once_with({}, True, False)
 
-    def test_pending_restore_failure_blocks_launch_and_keeps_recovery(
-        self, app_state, feedback_service, tmp_path
+    @pytest.mark.parametrize("choice", ["force", "keep"])
+    def test_pending_restore_conflict_is_resolved_before_launch(
+        self, app_state, feedback_service, tmp_path, qtbot, choice
     ):
-        from services.backup_service import BackupManager
+        from services.launch_service import GameLauncher
+        from services.mod_operation_executor import ModRecoveryConflictError
+
+        feedback = Mock()
+        launcher = GameLauncher(app_state, feedback, Mock())
+        journal = Mock(state="applied")
+        journal.restore.side_effect = (
+            [ModRecoveryConflictError("external changes"), None]
+            if choice == "force"
+            else ModRecoveryConflictError("external changes")
+        )
+        launcher._operation_journal = journal
+        launcher._has_selected_mods = Mock(return_value=False)
+        launcher._get_current_game_path = Mock(return_value=str(tmp_path))
+        launcher._before_mod_apply_completed = True
+        launcher._continue_after_patching = Mock()
+        feedback.ask_operation_recovery_conflict.return_value = choice
+
+        launcher._launch_game_with_selections({})
+
+        qtbot.waitUntil(lambda: launcher._continue_after_patching.called)
+        feedback.ask_operation_recovery_conflict.assert_called_once_with(
+            "external changes"
+        )
+        if choice == "force":
+            assert journal.restore.call_count == 2
+            journal.restore.assert_called_with(force=True)
+            journal.retire.assert_not_called()
+        else:
+            journal.retire.assert_called_once_with()
+        assert launcher._operation_journal is None
+
+    def test_queued_cleanup_runs_after_journal_operation_finishes(
+        self, app_state, feedback_service, qtbot
+    ):
         from services.launch_service import GameLauncher
 
-        target = tmp_path / "data.win"
-        target.write_bytes(b"ORIGINAL")
+        gate = threading.Event()
         launcher = GameLauncher(app_state, feedback_service, Mock())
-        manager = BackupManager(str(tmp_path / "backups"))
-        launcher.mod_patcher.backup_service = manager
-        assert manager.backup_file("undertale", str(target))
-        target.write_bytes(b"MODDED")
-        backup = manager.original_files["undertale"][str(target)]
-        assert backup is not None
-        os.remove(backup)
+        journal = Mock()
+        journal.checkpoint.side_effect = lambda: gate.wait(1)
+        launcher._operation_journal = journal
+        launcher.launch_transaction.begin()
+        operation_finished = Mock()
+        cleanup_finished = Mock()
+
+        assert launcher._run_journal_operation(
+            "checkpoint", operation_finished, journal=journal
+        )
+        qtbot.waitUntil(lambda: launcher._operation_journal_thread is not None)
+        launcher.launch_transaction.cancel()
+        launcher._cleanup_direct_launch_files(cleanup_finished)
+        gate.set()
+
+        qtbot.waitUntil(lambda: cleanup_finished.called)
+        operation_finished.assert_called_once_with(True, [])
+        journal.restore.assert_called_once_with()
+
+    def test_cancelled_or_restoring_checkpoint_does_not_continue_launch(
+        self, app_state, feedback_service
+    ):
+        from services.launch_service import GameLauncher
+        from services.launch_transaction import LaunchState
+
+        launcher = GameLauncher(app_state, feedback_service, Mock())
+        launcher._finalize_launch_after_plugin_hooks = Mock()
+        launcher.launch_transaction.begin()
+        launcher.launch_transaction.cancel()
+
+        launcher._on_plugin_checkpoint_finished({}, False, True, False, True, [])
+
+        launcher._finalize_launch_after_plugin_hooks.assert_not_called()
+        launcher._complete_launch_after_journal_checkpoint = Mock()
+        launcher.launch_transaction.begin()
+        launcher.launch_transaction.begin_apply()
+        launcher.launch_transaction.transition(LaunchState.RESTORING)
+
+        launcher._on_finalize_checkpoint_finished({}, False, True, [])
+
+        launcher._complete_launch_after_journal_checkpoint.assert_not_called()
+
+    def test_pending_restore_failure_blocks_launch_and_keeps_recovery(
+        self, app_state, feedback_service, tmp_path, qtbot
+    ):
+        from services.launch_service import GameLauncher
+
+        launcher = GameLauncher(app_state, feedback_service, Mock())
+        journal = Mock(state="applied")
+        journal.restore.side_effect = OSError("restore failed")
+        launcher._operation_journal = journal
         launcher._continue_after_patching = Mock()
         launcher._handle_launch_failure = Mock()
 
         launcher._launch_game_with_selections({})
 
-        assert target.read_bytes() == b"MODDED"
-        assert manager.original_files
+        qtbot.waitUntil(lambda: launcher._handle_launch_failure.called)
+        assert launcher._operation_journal is journal
         launcher._continue_after_patching.assert_not_called()
         launcher._handle_launch_failure.assert_called_once_with("restore")
 
@@ -936,37 +1133,6 @@ class TestLaunchManager:
         thread.deleteLater.assert_called_once_with()
         assert operations.snapshot()["threads"] == 0
 
-    def test_recover_previous_session_restores_even_if_status_update_fails(
-        self, app_state, feedback_service, tmp_path, monkeypatch
-    ):
-        """Checks that stale session recovery is not blocked by status UI failures."""
-        from services.launch_service import GameLauncher
-
-        app_state.config_dir = str(tmp_path)
-        (tmp_path / "session.lock").write_text("{}", encoding="utf-8")
-        backup_mgr = Mock()
-        backup_mgr.original_files = ["data.win"]
-        backup_mgr.added_files = []
-        monkeypatch.setattr(
-            feedback_service,
-            "update_status",
-            Mock(side_effect=RuntimeError("status failed")),
-        )
-        launcher = GameLauncher(
-            app_state=app_state,
-            feedback_service=feedback_service,
-            mod_service=Mock(),
-        )
-
-        with patch(
-            "services.backup_service.BackupManager.load_from_manifest",
-            return_value=backup_mgr,
-        ):
-            launcher.recover_previous_session()
-
-        backup_mgr.restore_all_backups.assert_called_once_with()
-        backup_mgr.clear_backup_dir.assert_called_once_with()
-
     def test_execute_game_uses_detached_steam_launch_on_linux(
         self, app_state, feedback_service
     ):
@@ -1000,6 +1166,7 @@ class TestLaunchManager:
 
         parent = Mock()
         parent.game_launch = Mock()
+        parent.plugin_runtime_service = None
         launcher = GameLauncher(
             app_state=app_state, feedback_service=feedback_service, mod_service=Mock()
         )
@@ -1025,77 +1192,12 @@ class TestLaunchManager:
             assert app_state.progress_bar_visible is True
 
             callbacks[0]()
+            launcher._cleanup_direct_launch_files.assert_called_once()
+            launcher._cleanup_direct_launch_files.call_args.args[0]()
 
-        launcher._cleanup_direct_launch_files.assert_called_once()
         assert app_state.is_patching is False
         assert app_state.progress_bar_visible is False
         parent.game_launch.update_button_state.assert_called_once()
-
-    def test_plugin_restore_refreshes_host_deployed_state(
-        self, app_state, feedback_service
-    ):
-        from services.launch_service import GameLauncher
-
-        launcher = GameLauncher(
-            app_state=app_state, feedback_service=feedback_service, mod_service=Mock()
-        )
-        launcher._execute_plugin_hook = Mock(
-            return_value=[{"refresh_host_deployed_state": True}]
-        )
-        launcher.mod_patcher.finalize_session_state = Mock(return_value=True)
-
-        with patch("services.launch_service.QTimer.singleShot"):
-            launcher._check_game_running(False)
-
-        launcher.mod_patcher.finalize_session_state.assert_called_once_with()
-
-    def test_plugin_restore_ignores_unmarked_results(
-        self, app_state, feedback_service
-    ):
-        from services.launch_service import GameLauncher
-
-        launcher = GameLauncher(
-            app_state=app_state, feedback_service=feedback_service, mod_service=Mock()
-        )
-        launcher._execute_plugin_hook = Mock(return_value=["ignored", {"other": True}])
-        launcher.mod_patcher.finalize_session_state = Mock(return_value=True)
-
-        with patch("services.launch_service.QTimer.singleShot"):
-            launcher._check_game_running(False)
-
-        launcher.mod_patcher.finalize_session_state.assert_not_called()
-
-    @pytest.mark.parametrize("result", [False, RuntimeError("refresh failed")])
-    def test_plugin_restore_refresh_failure_stays_a_warning(
-        self, app_state, feedback_service, result
-    ):
-        from services.launch_service import GameLauncher
-        from services.localization_service import tr
-
-        launcher = GameLauncher(
-            app_state=app_state, feedback_service=feedback_service, mod_service=Mock()
-        )
-        statuses = []
-        launcher.status_changed.connect(
-            lambda message, color: statuses.append((message, color))
-        )
-        launcher._execute_plugin_hook = Mock(
-            return_value=[{"refresh_host_deployed_state": True}]
-        )
-        if isinstance(result, Exception):
-            launcher.mod_patcher.finalize_session_state = Mock(side_effect=result)
-        else:
-            launcher.mod_patcher.finalize_session_state = Mock(return_value=result)
-
-        with patch("services.launch_service.QTimer.singleShot"):
-            launcher._check_game_running(False)
-        launcher._cleanup_direct_launch_files()
-
-        assert any(
-            message == tr("status.restore_skipped_external_changes")
-            for message, _color in statuses
-        )
-        assert all(message != tr("status.files_restored") for message, _color in statuses)
 
     def test_execute_game_falls_back_to_xdg_open_when_steam_detach_fails_on_linux(
         self, app_state, feedback_service

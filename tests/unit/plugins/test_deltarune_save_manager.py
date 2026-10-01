@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 PLUGIN_DIR = (
     Path(__file__).resolve().parents[3]
@@ -13,6 +14,7 @@ PLUGIN_DIR = (
 )
 SAVE_MANAGER_PATH = PLUGIN_DIR / "save_manager.py"
 SAVE_EDITOR_PATH = PLUGIN_DIR / "save_editor.py"
+PLUGIN_PATH = PLUGIN_DIR / "plugin.py"
 
 
 class _PluginSettings:
@@ -65,6 +67,16 @@ def _module():
 def _editor_module():
     name = "_deltarune_save_editor_for_test"
     spec = importlib.util.spec_from_file_location(name, SAVE_EDITOR_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _plugin_module():
+    name = "_deltarune_save_manager_plugin_for_test"
+    spec = importlib.util.spec_from_file_location(name, PLUGIN_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
@@ -142,6 +154,47 @@ def test_launch_collection_prompt_skips_when_path_missing(tmp_path):
     assert manager.prompt_for_save_collection_on_launch() == -1
 
 
+def test_keep_changes_retains_save_backup_until_game_exit(tmp_path, monkeypatch):
+    manager = _manager(_module(), tmp_path)
+    plugin = _plugin_module().DRSaveManagerPlugin()
+    active_save = tmp_path / "filech1_0"
+    backup = tmp_path / "filech1_0.g3m_backup"
+    active_save.write_text("selected collection", encoding="utf-8")
+    backup.write_text("original save", encoding="utf-8")
+    plugin._backup_info = {str(active_save): str(backup), "__empty_slots__": {}}
+    monkeypatch.setattr(plugin, "_save_manager_instance", lambda: manager)
+
+    assert plugin.on_after_mod_apply_committed(
+        None, {"mode": "launch_keep_changes"}
+    ) is True
+
+    assert active_save.read_text(encoding="utf-8") == "selected collection"
+    assert backup.read_text(encoding="utf-8") == "original save"
+    plugin.on_after_restore_after_exit(None)
+    assert active_save.read_text(encoding="utf-8") == "original save"
+    assert not backup.exists()
+    assert plugin._backup_info == {}
+
+
+def test_patching_only_restores_selected_save_collection(monkeypatch):
+    module = _plugin_module()
+    plugin = module.DRSaveManagerPlugin()
+    manager = SimpleNamespace(
+        restore_original_saves_after_launch=Mock(),
+    )
+    plugin._backup_info = {"active": "backup"}
+    monkeypatch.setattr(plugin, "_save_manager_instance", lambda: manager)
+
+    assert plugin.on_after_mod_apply_committed(
+        None, {"mode": "launch_patching_only"}
+    ) is True
+
+    manager.restore_original_saves_after_launch.assert_called_once_with(
+        {"active": "backup"}
+    )
+    assert plugin._backup_info == {}
+
+
 def test_current_tenna_data_includes_all_five_chapters_and_associations():
     module = _editor_module()
     data = module.load_simple_mode_data()
@@ -170,7 +223,7 @@ def test_save_editor_mode_pages_use_the_theme_background(tmp_path, qapp):
         dialog.close()
 
 
-def test_v2_round_trip_preserves_extended_flag_tail():
+def test_operation_round_trip_preserves_extended_flag_tail():
     module = _editor_module()
     character = {
         "health": 1,

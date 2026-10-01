@@ -77,7 +77,11 @@ class TestFilterScaling:
         resize_event = QEvent(QEvent.Type.Resize)
         builder.eventFilter(filters_widget, resize_event)
 
-        assert filters_scroll.maximumHeight() == filters_widget.sizeHint().height()
+        assert filters_scroll.maximumHeight() == (
+            filters_widget.sizeHint().height()
+            + filters_scroll.horizontalScrollBar().sizeHint().height()
+        )
+        assert filters_scroll.minimumHeight() == filters_scroll.maximumHeight()
 
         widget.close()
         widget.deleteLater()
@@ -157,7 +161,37 @@ class TestFilterScaling:
         resize_event = QEvent(QEvent.Type.Resize)
         builder.eventFilter(filters_widget, resize_event)
 
-        assert filters_scroll.maximumHeight() == filters_widget.sizeHint().height()
+        assert filters_scroll.maximumHeight() == (
+            filters_widget.sizeHint().height()
+            + filters_scroll.horizontalScrollBar().sizeHint().height()
+        )
+        assert filters_scroll.minimumHeight() == filters_scroll.maximumHeight()
+
+        widget.close()
+        widget.deleteLater()
+        QApplication.processEvents()
+
+    def test_filter_height_updates_when_horizontal_scrollbar_appears(
+        self, qapp, app_state, feedback_service
+    ):
+        from ui.builders.library_tab_builder import LibraryTabBuilder
+
+        builder = LibraryTabBuilder(app_state, None)
+        widget = builder.build()
+        widget.resize(2200, 680)
+        widget.show()
+        QApplication.processEvents()
+
+        filters_scroll = builder.widgets["filters_scroll"]
+        widget.resize(300, 680)
+        QApplication.processEvents()
+
+        assert filters_scroll.horizontalScrollBar().isVisible()
+        assert filters_scroll.height() >= (
+            filters_scroll.widget().height()
+            + filters_scroll.horizontalScrollBar().height()
+        )
+        assert filters_scroll.verticalScrollBar().maximum() == 0
 
         widget.close()
         widget.deleteLater()

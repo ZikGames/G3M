@@ -1,20 +1,23 @@
 """GameBanana mod format conversion."""
 
-import contextlib
 import json
 import logging
 import os
 import shutil
 import tempfile
-import zipfile
 from typing import Any
 
 from utils.file_utils import (
     check_filename_is_deltamod_info,
     find_deltamod_info_file,
+    flatten_single_child_directories,
     normalize_mod_package,
 )
-from utils.mod.config_parser import build_mod_config_data, normalize_mod_config_data
+from utils.mod.config import (
+    MOD_CONFIG_TAGS,
+    parse_mod_config,
+    write_mod_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,9 @@ class GameBananaConverter:
         self.mods_dir = mods_dir
         self.gamebanana_metadata = gamebanana_metadata or {}
         self.temp_extract_dir: str | None = None
+        self._previous_mod_dir: str | None = None
+        self._previous_mod_backup: str | None = None
+        self._converted_mod_dir: str | None = None
 
     def _cleanup_temp_dir(self) -> None:
         if self.temp_extract_dir and os.path.exists(self.temp_extract_dir):
@@ -41,6 +47,7 @@ class GameBananaConverter:
                 logger.warning(f"Failed to cleanup temp directory: {e}")
 
     def convert(self) -> str | None:
+        self._converted_mod_dir = None
         try:
             self.temp_extract_dir = tempfile.mkdtemp(prefix="gb_convert_")
             if not self._check_compatibility():
@@ -52,11 +59,11 @@ class GameBananaConverter:
             normalize_mod_package(self.temp_extract_dir, require_manifest=True)
             target_mod_id = None
             if self.gamebanana_metadata.get("mod_id"):
-                item_type = self.gamebanana_metadata.get("item_type", "mod")
+                item_type = "wip" if str(self.gamebanana_metadata.get("item_type", "mod")).strip().casefold() == "wip" else "mod"
                 target_mod_id = f"gb_{item_type}_{self.gamebanana_metadata['mod_id']}"
             if target_mod_id:
                 self._update_deltamod_info_mod_id(target_mod_id)
-                self._remove_existing_mod_folder(target_mod_id)
+                self._stage_existing_mod_folder(target_mod_id)
             from adapters.deltamod_adapter import DeltamodConverter
 
             deltamod_converter = DeltamodConverter(
@@ -64,89 +71,46 @@ class GameBananaConverter:
             )
             result_path = deltamod_converter.convert()
             if result_path:
+                self._converted_mod_dir = result_path
                 result_path = self._update_config_with_gb_metadata(result_path)
+                self._restore_versions(result_path)
+                self._discard_backup()
+            else:
+                self._restore_previous_mod()
             return result_path
         except Exception as e:
             logger.error(f"GameBanana conversion failed: {e}", exc_info=True)
+            self._remove_failed_conversion()
+            self._restore_previous_mod()
             return None
         finally:
+            if self._previous_mod_backup is None:
+                self._discard_backup()
             self._cleanup_temp_dir()
 
     def _check_compatibility(self) -> bool:
         try:
             if not os.path.exists(self.archive_path):
                 return False
-            try:
-                with zipfile.ZipFile(self.archive_path, "r") as zf:
-                    return any(
-                        check_filename_is_deltamod_info(os.path.basename(name))
-                        for name in zf.namelist()
-                    )
-            except zipfile.BadZipFile as error:
-                logger.debug("Best-effort operation failed: %s", error, exc_info=True)
-            from utils.archive_utils import _detect_archive_format_by_signature
+            from utils.mod.archive import list_archive_members
 
-            detected = _detect_archive_format_by_signature(self.archive_path)
-            if detected == "rar":
-                try:
-                    import rarfile
-
-                    with rarfile.RarFile(self.archive_path, "r") as rf:
-                        return any(
-                            check_filename_is_deltamod_info(os.path.basename(n))
-                            for n in rf.namelist()
-                        )
-                except Exception as e:
-                    logger.debug(
-                        f"Failed to inspect RAR archive {self.archive_path}: {e}",
-                        exc_info=True,
-                    )
-            elif detected == "7z":
-                try:
-                    import py7zr
-
-                    with py7zr.SevenZipFile(self.archive_path, mode="r") as zf:
-                        return any(
-                            check_filename_is_deltamod_info(os.path.basename(n))
-                            for n in zf.getnames()
-                        )
-                except Exception as e:
-                    logger.debug(
-                        f"Failed to inspect 7z archive {self.archive_path}: {e}",
-                        exc_info=True,
-                    )
-            return False
+            return any(
+                check_filename_is_deltamod_info(os.path.basename(member.name))
+                for member in list_archive_members(self.archive_path)
+            )
         except Exception as e:
             logger.error(f"Error checking archive compatibility: {e}")
             return False
 
     def _extract_archive(self) -> None:
         try:
-            from utils.archive_utils import (
-                extract_any_archive,
-                unwrap_single_directory_chain,
-            )
+            from utils.archive_utils import extract_any_archive
 
             temp_extract_dir = self.temp_extract_dir
             if temp_extract_dir is None:
                 raise RuntimeError("Temporary extraction directory is not initialized")
             extract_any_archive(self.archive_path, temp_extract_dir)
-            nested_root = unwrap_single_directory_chain(temp_extract_dir)
-            if os.path.normcase(os.path.normpath(nested_root)) != os.path.normcase(
-                os.path.normpath(temp_extract_dir)
-            ):
-                for item in os.listdir(nested_root):
-                    shutil.move(
-                        os.path.join(nested_root, item),
-                        os.path.join(temp_extract_dir, item),
-                    )
-                current = nested_root
-                while os.path.normcase(os.path.normpath(current)) != os.path.normcase(
-                    os.path.normpath(temp_extract_dir)
-                ):
-                    parent = os.path.dirname(current)
-                    os.rmdir(current)
-                    current = parent
+            flatten_single_child_directories(temp_extract_dir)
         except Exception as e:
             logger.error(f"Error extracting archive: {e}")
             raise
@@ -174,7 +138,7 @@ class GameBananaConverter:
         except Exception as e:
             logger.warning(f"Failed to update packageID in deltamod info file: {e}")
 
-    def _remove_existing_mod_folder(self, mod_id: str) -> None:
+    def _stage_existing_mod_folder(self, mod_id: str) -> None:
         if not os.path.exists(self.mods_dir):
             return
         try:
@@ -190,17 +154,17 @@ class GameBananaConverter:
                         config_data = json.load(f)
                     if config_data.get("id") == mod_id:
                         logger.info(
-                            f"GameBananaConverter: Removing existing mod folder {folder_path} with id {mod_id}"
+                            "GameBananaConverter: staging existing mod folder %s with id %s",
+                            folder_path,
+                            mod_id,
                         )
-                        for item in os.listdir(folder_path):
-                            if item == "mod_versions":
-                                continue
-                            item_path = os.path.join(folder_path, item)
-                            if os.path.isdir(item_path):
-                                shutil.rmtree(item_path, ignore_errors=True)
-                            else:
-                                with contextlib.suppress(OSError):
-                                    os.remove(item_path)
+                        backup_root = tempfile.mkdtemp(
+                            prefix=".g3m-update-", dir=self.mods_dir
+                        )
+                        backup_path = os.path.join(backup_root, "previous")
+                        shutil.move(folder_path, backup_path)
+                        self._previous_mod_dir = folder_path
+                        self._previous_mod_backup = backup_path
                         break
                 except Exception as e:
                     logger.debug(
@@ -212,13 +176,65 @@ class GameBananaConverter:
                 f"GameBananaConverter: Error checking for existing mod folder: {e}"
             )
 
+    def _restore_versions(self, mod_dir: str) -> None:
+        if not self._previous_mod_backup:
+            return
+        versions_dir = os.path.join(self._previous_mod_backup, "mod_versions")
+        if not os.path.isdir(versions_dir):
+            return
+        try:
+            shutil.copytree(
+                versions_dir,
+                os.path.join(mod_dir, "mod_versions"),
+                dirs_exist_ok=True,
+            )
+        except OSError as error:
+            logger.error("GameBananaConverter: failed to preserve mod versions: %s", error)
+            raise
+
+    def _restore_previous_mod(self) -> bool:
+        if not self._previous_mod_dir or not self._previous_mod_backup:
+            return True
+        try:
+            if os.path.exists(self._previous_mod_dir):
+                shutil.rmtree(self._previous_mod_dir)
+            if os.path.exists(self._previous_mod_backup):
+                shutil.move(self._previous_mod_backup, self._previous_mod_dir)
+            self._discard_backup()
+            return True
+        except OSError as error:
+            logger.critical(
+                "GameBananaConverter: could not restore previous mod at %s: %s",
+                self._previous_mod_dir,
+                error,
+            )
+            return False
+
+    def _remove_failed_conversion(self) -> None:
+        """Remove a newly created replacement before restoring an old mod."""
+        converted = self._converted_mod_dir
+        if not converted or not os.path.isdir(converted):
+            return
+        if self._previous_mod_dir and os.path.normcase(os.path.abspath(converted)) == os.path.normcase(os.path.abspath(self._previous_mod_dir)):
+            return
+        try:
+            shutil.rmtree(converted)
+        except OSError:
+            logger.warning("GameBananaConverter: failed to remove incomplete replacement %s", converted)
+
+    def _discard_backup(self) -> None:
+        if self._previous_mod_backup:
+            shutil.rmtree(os.path.dirname(self._previous_mod_backup), ignore_errors=True)
+        self._previous_mod_dir = None
+        self._previous_mod_backup = None
+
     def _update_config_with_gb_metadata(self, mod_dir: str) -> str:
         config_path = os.path.join(mod_dir, "mod_config.json")
         if not os.path.exists(config_path):
             logger.warning(
                 f"GameBananaConverter: Config file not found at {config_path}"
             )
-            return mod_dir
+            raise FileNotFoundError(config_path)
         try:
             with open(config_path, encoding="utf-8") as f:
                 config_data = json.load(f)
@@ -226,24 +242,29 @@ class GameBananaConverter:
                 logger.warning(
                     f"GameBananaConverter: Config data is not a dict at {config_path}"
                 )
-                return mod_dir
-            normalize_mod_config_data(config_data)
+                raise ValueError(f"config data is not an object: {config_path}")
+            config_data = parse_mod_config(config_data)
             if self.gamebanana_metadata.get("mod_id"):
                 mod_id = str(self.gamebanana_metadata["mod_id"])
-                item_type = self.gamebanana_metadata.get("item_type", "mod")
+                item_type = (
+                    "wip"
+                    if str(self.gamebanana_metadata.get("item_type", "mod")).strip().casefold()
+                    == "wip"
+                    else "mod"
+                )
                 expected_mod_id = f"gb_{item_type}_{mod_id}"
                 config_data["id"] = expected_mod_id
                 logger.info(
                     f"GameBananaConverter: Updated config - id={expected_mod_id}, mod_dir={mod_dir} (folder name based on mod name)"
                 )
+            if self.gamebanana_metadata.get("version"):
+                config_data["version"] = str(self.gamebanana_metadata["version"])
             if not config_data.get("homepage"):
                 homepage = self.gamebanana_metadata.get("homepage") or self.gamebanana_metadata.get(
                     "profile_url"
                 )
                 if homepage:
                     config_data["homepage"] = homepage
-            if self.gamebanana_metadata.get("icon"):
-                config_data["icon"] = self.gamebanana_metadata["icon"]
             from adapters.gamebanana_adapter import GameBananaAPI
 
             tags = []
@@ -261,12 +282,10 @@ class GameBananaConverter:
                 if not isinstance(existing_tags, list):
                     existing_tags = [existing_tags] if existing_tags else []
                 for tag in tags:
-                    if tag and tag not in existing_tags:
+                    if tag in MOD_CONFIG_TAGS and tag not in existing_tags:
                         existing_tags.append(tag)
                 config_data["tags"] = existing_tags
-            from utils.file_utils import save_json
-
-            save_json(config_path, build_mod_config_data(config_data), indent=4)
+            write_mod_config(config_path, config_data)
             logger.info(
                 f"GameBananaConverter: Updated config for GameBanana mod: id={config_data.get('id')}, mod_dir={mod_dir}"
             )
@@ -276,10 +295,10 @@ class GameBananaConverter:
                 f"GameBananaConverter: Failed to update config with GameBanana metadata: {e}",
                 exc_info=True,
             )
-            return mod_dir
+            raise
         except Exception as e:
             logger.error(
                 f"GameBananaConverter: Unexpected error updating config: {e}",
                 exc_info=True,
             )
-            return mod_dir
+            raise

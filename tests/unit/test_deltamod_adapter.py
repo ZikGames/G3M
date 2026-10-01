@@ -34,7 +34,7 @@ def test_generate_config_uses_deltamod_game_mapping_for_supported_single_tab_gam
 
     config = converter._generate_config_json()
 
-    assert config["metadata"]["game"] == "undertale"
+    assert config["game"] == "undertale"
 
 
 def test_generate_config_uses_deltamod_game_mapping_for_pizzatower():
@@ -51,8 +51,8 @@ def test_generate_config_uses_deltamod_game_mapping_for_pizzatower():
 
     config = converter._generate_config_json()
 
-    assert config["metadata"]["game"] == "pizzatower"
-    assert "game_version" not in config["metadata"]
+    assert config["game"] == "pizzatower"
+    assert "game_version" not in config
 
 
 def test_generate_config_keeps_deltarune_target_version_only_for_deltarune():
@@ -70,12 +70,12 @@ def test_generate_config_keeps_deltarune_target_version_only_for_deltarune():
 
     config = converter._generate_config_json()
 
-    assert config["metadata"]["game"] == "deltarune"
-    assert config["metadata"]["game_version"] == "1.04"
+    assert config["game"] == "deltarune"
+    assert config["game_version"] == "1.04"
 
 
-def test_generate_files_structure_uses_single_tab_game_key():
-    """Checks that generateing files structure uses single tab game key."""
+def test_generate_operations_uses_the_single_tab_game_target():
+    """Deltamod conversion emits Operation operations without section IDs."""
     converter = _make_converter(
         {
             "metadata": {
@@ -94,10 +94,26 @@ def test_generate_files_structure_uses_single_tab_game_key():
         }
     ]
 
-    files = converter._generate_files_structure(patches)
+    operations = converter._generate_operations(patches)
 
-    assert list(files) == ["undertaleyellow"]
-    assert files["undertaleyellow"]["data_file_path"] == "patch.xdelta"
+    assert operations == [
+        {
+            "source": "${mod_path}/undertaleyellow/patch.xdelta",
+            "target": "${game_path}/data.win",
+            "type": "patch",
+        }
+    ]
+
+
+def test_generate_operations_treats_raw_xdelta_win_as_replacement():
+    converter = _make_converter({"metadata": {"name": "Raw data"}})
+    converter._target_game = "deltarune"
+
+    operations = converter._generate_operations(
+        [{"to": "./data.win", "patch": "./replacement.win", "type": "xdelta"}]
+    )
+
+    assert operations[0]["type"] == "overwrite"
 
 
 def test_generate_config_ignores_gamebanana_metadata_game():
@@ -115,7 +131,7 @@ def test_generate_config_ignores_gamebanana_metadata_game():
 
     config = converter._generate_config_json()
 
-    assert config["metadata"]["game"] == "undertale"
+    assert config["game"] == "undertale"
 
 
 def test_generate_config_uses_canonical_gamebanana_identity():
@@ -132,7 +148,7 @@ def test_generate_config_uses_canonical_gamebanana_identity():
 
     config = converter._generate_config_json()
 
-    assert config["metadata"]["id"] == "gb_mod_123"
+    assert config["id"] == "gb_mod_123"
 
 
 def test_generate_config_preserves_gamebanana_wip_identity():
@@ -149,7 +165,7 @@ def test_generate_config_preserves_gamebanana_wip_identity():
 
     config = converter._generate_config_json()
 
-    assert config["metadata"]["id"] == "gb_wip_456"
+    assert config["id"] == "gb_wip_456"
 
 
 def test_generate_config_uses_gamebanana_file_name_when_metadata_name_missing():
@@ -161,7 +177,19 @@ def test_generate_config_uses_gamebanana_file_name_when_metadata_name_missing():
 
     config = converter._generate_config_json()
 
-    assert config["metadata"]["name"] == "Downloaded Archive Name"
+    assert config["name"] == "Downloaded Archive Name"
+
+
+def test_generate_config_uses_gamebanana_authors():
+    converter = _make_converter(
+        {"metadata": {"author": ["Archive author"], "game": "toby.deltarune"}},
+        {"authors": ["GameBanana author", "Second author"]},
+    )
+
+    assert converter._generate_config_json()["authors"] == [
+        "GameBanana author",
+        "Second author",
+    ]
 
 
 def test_fallback_mod_name_ignores_gamebanana_file_name_suffixes():
@@ -243,12 +271,17 @@ def test_deltamod_patch_paths_stay_inside_the_converted_mod(tmp_path):
     )
 
     patches = converter._collect_patches()
-    files = converter._generate_files_structure(patches)
+    operations = converter._generate_operations(patches)
     converter._process_files(str(target_dir))
 
     assert [patch.get("patch") for patch in patches] == ["scripts/valid.xdelta"]
-    assert files == {"deltarune_1": {"data_file_path": "scripts/valid.xdelta"}}
-    assert files["deltarune_1"]["data_file_path"] == "scripts/valid.xdelta"
+    assert operations == [
+        {
+            "source": "${mod_path}/chapter_1/scripts/valid.xdelta",
+            "target": "${game_path}/chapter1_windows/data.win",
+            "type": "patch",
+        }
+    ]
     assert (target_dir / "chapter_1" / "scripts" / "valid.xdelta").is_file()
     assert not (tmp_path / "escape.xdelta").exists()
 
@@ -397,13 +430,21 @@ packageID = "example.revision.author"
     assert result is not None
     result_dir = tmp_path / "mods" / "Revision Four Mod"
     config = json.loads((result_dir / "mod_config.json").read_text(encoding="utf-8"))
-    metadata = config["metadata"]
-    assert metadata["id"] == "example_revision_author"
-    assert metadata["author"] == "First Author, Second Author"
-    assert metadata["game_version"] == "1.05"
-    assert config["files"]["deltarune_3"]["data_file_path"] == "chapter3.g3mpatch"
-    assert config["files"]["deltarune_3"]["extra_files"] == [
-        {"file_path": "mus/theme.ogg", "target": "game_folder"}
+    assert config["config_version"] == "2.0.0"
+    assert config["id"] == "example_revision_author"
+    assert config["authors"] == ["First Author", "Second Author"]
+    assert config["game_version"] == "1.05"
+    assert config["files"] == [
+        {
+            "source": "${mod_path}/chapter_3/chapter3.g3mpatch",
+            "target": "${game_path}/chapter3_windows/data.win",
+            "type": "patch",
+        },
+        {
+            "source": "${mod_path}/chapter_3/mus/theme.ogg",
+            "target": "${game_path}/chapter3_windows/mus/theme.ogg",
+            "type": "overwrite",
+        },
     ]
     assert (result_dir / "chapter_3" / "chapter3.g3mpatch").read_bytes() == b"patch"
     assert (result_dir / "chapter_3" / "mus" / "theme.ogg").read_bytes() == b"music"
@@ -445,17 +486,12 @@ packageID = "example.revision.five"
     assert result is not None
     result_dir = mods_dir / "Revision Five Mod"
     config = json.loads((result_dir / "mod_config.json").read_text(encoding="utf-8"))
-    chapter = config["files"]["deltarune_4"]
-    assert chapter["data_file_path"] == "scripts/build.csx"
-    assert chapter["extra_files"] == [
+    assert config["files"] == [
         {
-            "file_path": "resources/",
-            "target": "none",
-        },
-        {
-            "file_path": "scripts/",
-            "target": "none",
-        },
+            "source": "${mod_path}/scripts/build.csx",
+            "target": "${game_path}/chapter4_windows/data.win",
+            "type": "patch",
+        }
     ]
     assert (result_dir / "scripts" / "build.csx").is_file()
     assert (result_dir / "scripts" / "main.csx").is_file()
@@ -485,5 +521,5 @@ def test_revision_four_lts_demo_game_id_maps_to_demo():
 
     config = converter._generate_config_json()
 
-    assert config["metadata"]["game"] == "deltarunedemo"
-    assert config["metadata"]["author"] == "Author"
+    assert config["game"] == "deltarunedemo"
+    assert config["authors"] == ["Author"]

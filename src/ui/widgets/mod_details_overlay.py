@@ -11,7 +11,7 @@ import time
 from typing import Any, cast, override
 
 from PyQt6 import sip as _sip
-from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QColor,
     QGuiApplication,
@@ -39,6 +39,7 @@ from PyQt6.QtWidgets import (
 
 from adapters.gamebanana_adapter import GameBananaAPI
 from config.config import UI_COLORS
+from models.mod_models import format_mod_authors
 from services.background_operations import background_operations
 from services.localization_service import tr
 from ui.common.styling import (
@@ -871,7 +872,7 @@ class ModDetailsOverlay(QWidget):
                 (version.split("|")[0] if version and "|" in version else version)
                 or "N/A",
             ),
-            ("ui.author_label", self.mod_data.author),
+            ("ui.authors_label", format_mod_authors(self.mod_data.authors)),
             ("ui.updated_label", getattr(self.mod_data, "last_updated", None) or "N/A"),
             ("ui.created_label", getattr(self.mod_data, "created_date", None)),
             (
@@ -1383,19 +1384,20 @@ class ModDetailsOverlay(QWidget):
         """Close the overlay with fade-out animation."""
         self._cleanup_before_delete()
 
-        def cleanup():
-            self.hide()
-            self.deleteLater()
-
         if self._fade_anim:
             with contextlib.suppress(TypeError, RuntimeError):
                 self._fade_anim.finished.disconnect()
 
         fade = UIAnimator.fade_out(self, duration=300, app_state=self._app_state)
         if fade:
-            fade.finished.connect(cleanup)
+            fade.finished.connect(self._finish_close)
         else:
-            cleanup()
+            self._finish_close()
+
+    @pyqtSlot()
+    def _finish_close(self) -> None:
+        self.hide()
+        self.deleteLater()
 
     def keyPressEvent(self, a0):
         event = cast(Any, a0)

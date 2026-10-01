@@ -173,56 +173,53 @@ def populate_game_combo(
 
 def create_search_button(app_state=None):
     """Create search button."""
-    search_btn = QPushButton()
-    search_btn.setObjectName("searchBtn")
-    search_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    search_btn.setToolTip(tr("ui.search_placeholder"))
-    search_btn.setAccessibleName(tr("ui.search_placeholder"))
-    _install_themed_button_icon(search_btn, "search", app_state, QSize(16, 16))
-    return search_btn
+    return _create_icon_button(
+        "searchBtn", "ui.search_placeholder", "search", app_state, QSize(16, 16)
+    )
 
 
 def create_blocklist_button(app_state=None):
     """Create Blocklist button with icon only."""
-    btn = QPushButton()
-    btn.setObjectName("blocklistBtn")
-    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    btn.setToolTip(tr("ui.blocklist"))
-    btn.setAccessibleName(tr("ui.blocklist"))
-    _install_themed_button_icon(btn, "block", app_state, QSize(22, 22))
-    return btn
+    return _create_icon_button(
+        "blocklistBtn", "ui.blocklist", "block", app_state, QSize(22, 22)
+    )
 
 
 def create_downloads_button(app_state=None):
     """Create Downloads button with icon only. Badge count managed externally."""
-    btn = QPushButton()
-    btn.setObjectName("downloadsBtn")
-    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    btn.setToolTip(tr("downloads.title"))
-    btn.setAccessibleName(tr("downloads.title"))
-    _install_themed_button_icon(btn, "download", app_state, QSize(22, 22))
-    return btn
+    return _create_icon_button(
+        "downloadsBtn", "downloads.title", "download", app_state, QSize(22, 22)
+    )
 
 
 def create_game_versions_button(app_state=None):
     """Create Game Versions button with icon only."""
-    btn = QPushButton()
-    btn.setObjectName("gameVersionsBtn")
-    btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    btn.setToolTip(tr("game_versions.title"))
-    btn.setAccessibleName(tr("game_versions.title"))
-    _install_themed_button_icon(btn, "filerestore", app_state, QSize(22, 22))
-    return btn
+    return _create_icon_button(
+        "gameVersionsBtn", "game_versions.title", "filerestore", app_state, QSize(22, 22)
+    )
 
 
 def create_modding_tools_button(app_state=None):
     """Create Modding Tools button with icon only."""
+    return _create_icon_button(
+        "moddingToolsBtn", "modding_tools.title", "tool", app_state, QSize(22, 22)
+    )
+
+
+def _create_icon_button(
+    object_name: str,
+    tooltip_key: str,
+    icon_name: str,
+    app_state,
+    icon_size: QSize,
+) -> QPushButton:
     btn = QPushButton()
-    btn.setObjectName("moddingToolsBtn")
+    btn.setObjectName(object_name)
     btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-    btn.setToolTip(tr("modding_tools.title"))
-    btn.setAccessibleName(tr("modding_tools.title"))
-    _install_themed_button_icon(btn, "tool", app_state, QSize(22, 22))
+    tooltip = tr(tooltip_key)
+    btn.setToolTip(tooltip)
+    btn.setAccessibleName(tooltip)
+    _install_themed_button_icon(btn, icon_name, app_state, icon_size)
     return btn
 
 

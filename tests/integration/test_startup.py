@@ -17,9 +17,42 @@ from typing import cast
 from unittest.mock import Mock, patch
 
 import pytest
+from PyQt6.QtCore import qInstallMessageHandler
 
 TEST_TIMEOUT = 10
 PACKAGED_BINARY_STARTUP_GRACE_SECONDS = 4
+
+
+@pytest.fixture(autouse=True)
+def restore_startup_diagnostics():
+    from app import startup as startup_module
+
+    exception_hook = sys.excepthook
+    unraisable_hook = sys.unraisablehook
+    thread_hook = threading.excepthook
+    qt_handler = qInstallMessageHandler(None)
+    qInstallMessageHandler(qt_handler)
+    fault_enabled = faulthandler.is_enabled()
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    try:
+        yield
+    finally:
+        qInstallMessageHandler(qt_handler)
+        sys.excepthook = exception_hook
+        sys.unraisablehook = unraisable_hook
+        threading.excepthook = thread_hook
+        faulthandler.disable()
+        if startup_module._fault_log_handle is not None:
+            startup_module._fault_log_handle.close()
+            startup_module._fault_log_handle = None
+        if fault_enabled:
+            faulthandler.enable(file=sys.__stderr__, all_threads=True)
+        for handler in root.handlers:
+            if handler not in handlers:
+                handler.close()
+        root.handlers = handlers
+        root.setLevel(level)
 
 
 def _project_root() -> pathlib.Path:
@@ -1095,7 +1128,7 @@ def test_startup_window_creation_smoke(qapp, tmp_path):
             return_value=str(tmp_path),
         ),
         patch(
-            "services.g3mtool_patching_service.get_user_data_root",
+            "services.game_runner.get_user_data_root",
             return_value=str(user_root),
         ),
         patch(

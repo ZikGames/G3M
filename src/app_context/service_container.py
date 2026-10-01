@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from services.announce_service import AnnounceService
+from services.catalog_service import CatalogService
 from services.customization_service import CustomizationManager
 from services.discord_rich_presence_service import DiscordRichPresenceService
 from services.downloads.manager import DownloadsManager
@@ -13,7 +14,6 @@ from services.game_versions.manager import GameVersionsManager
 from services.launch_service import GameLauncher
 from services.mod.service import ModManager
 from services.pizza_oven_conversion_service import PizzaOvenConversionService
-from services.plugins.catalog_service import PluginCatalogService
 from services.plugins.install_service import PluginInstallService
 from services.plugins.runtime_service import PluginRuntimeService
 from services.plugins.state_service import PluginStateService
@@ -41,6 +41,7 @@ class ServiceContainer:
     game_versions_manager: GameVersionsManager
     pizza_oven_conversion_service: PizzaOvenConversionService
     plugin_state_service: PluginStateService | None
-    plugin_catalog_service: PluginCatalogService | None
+    catalog_service: CatalogService | None
+    plugin_catalog_service: CatalogService | None
     plugin_runtime_service: PluginRuntimeService | None
     plugin_install_service: PluginInstallService | None

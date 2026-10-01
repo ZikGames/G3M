@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 
-def tr(k, **kw):
+def tr(k, **_kw):
     return k
 
 

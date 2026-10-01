@@ -1,13 +1,9 @@
 """Unit tests for test pizza tower afom service."""
 
 import json
-import os
 from pathlib import Path
-from types import SimpleNamespace
 
-from services.backup_service import BackupManager
 from services.pizza_tower_afom_service import PizzaTowerAFOMService
-from utils.pizzatower_afom_utils import apply_afom_towers_from_mod_source
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -68,57 +64,25 @@ def test_afom_service_converts_multi_root_archive_to_towers_mod(tmp_path):
 
     result_path = Path(result)
     config = json.loads((result_path / "mod_config.json").read_text("utf-8"))
-    assert config["metadata"]["name"] == "Converted AFOM"
-    assert config["metadata"]["id"] == "gb_mod_42"
-    assert config["metadata"]["tags"] == ["CYOP/AFOM"]
-    assert config["files"]["pizzatower"]["extra_files"] == [
-        {"file_path": "towers/", "target": "game_data_folder"}
+    assert config["config_version"] == "2.0.0"
+    assert config["name"] == "Converted AFOM"
+    assert config["id"] == "gb_mod_42"
+    assert config["tags"] == ["CYOP/AFOM"]
+    assert config["files"] == [
+        {
+            "source": "${mod_path}/towers/",
+            "target": "${game_data_path}/towers/",
+            "type": "extract",
+        }
     ]
     assert (result_path / "towers" / "TowerOne" / "TowerOne.tower.ini").exists()
     assert (result_path / "towers" / "TowerTwo" / "TowerTwo.tower.ini").exists()
 
 
-def test_apply_afom_towers_copies_into_configured_data_folder_and_restores(tmp_path):
-    mod_source_dir = tmp_path / "mod"
-    _write_text(mod_source_dir / "towers" / "TowerOne" / "tower.ini", "new tower")
-    _write_text(mod_source_dir / "towers" / "TowerTwo" / "tower.ini", "second tower")
-
-    data_dir = tmp_path / "game_data"
-    towers_dir = data_dir / "towers"
-    existing_file = towers_dir / "TowerOne" / "tower.ini"
-    _write_text(existing_file, "original tower")
-
-    backup_mgr = BackupManager(str(tmp_path / "backups"))
-    ok = apply_afom_towers_from_mod_source(
-        str(mod_source_dir),
-        data_dir=str(data_dir),
-        backup_or_mark=lambda target_file: (
-            backup_mgr.backup_file("pizzatower", target_file)
-            if os.path.exists(target_file)
-            else backup_mgr.mark_file_added("pizzatower", target_file)
-        ),
-        logger=SimpleNamespace(debug=lambda *args, **kwargs: None),
-        extract_archive=lambda archive_path, target_dir: None,
+def test_afom_config_retains_only_supported_metadata_tags():
+    config = PizzaTowerAFOMService._build_config_data(
+        "AFOM",
+        {"tags": ["textedit", "unsupported", "CYOP/AFOM", "textedit"]},
     )
 
-    assert ok is True
-    assert existing_file.read_text("utf-8") == "new tower"
-    assert (towers_dir / "TowerTwo" / "tower.ini").read_text("utf-8") == "second tower"
-
-    backup_mgr.restore_all_backups()
-
-    assert existing_file.read_text("utf-8") == "original tower"
-    assert not (towers_dir / "TowerTwo" / "tower.ini").exists()
-
-
-def test_apply_afom_towers_ignores_mod_without_tower_files(tmp_path):
-    mod_source_dir = tmp_path / "mod"
-    _write_text(mod_source_dir / "readme.txt", "normal mod")
-
-    assert apply_afom_towers_from_mod_source(
-        str(mod_source_dir),
-        data_dir="",
-        backup_or_mark=lambda _target_file: None,
-        logger=SimpleNamespace(error=lambda *args, **kwargs: None),
-        extract_archive=lambda archive_path, target_dir: None,
-    )
+    assert config["tags"] == ["CYOP/AFOM", "textedit"]

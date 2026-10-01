@@ -10,6 +10,7 @@ import zipfile
 from collections import defaultdict
 from collections.abc import Iterable
 from multiprocessing import Process
+from pathlib import Path
 from typing import Any, cast
 
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
@@ -38,7 +39,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from models.execution_plan import PatchPlan
 from services.diagnostics.preflight_service import (
     DiagnosticsPreflightService,
     PreflightReport,
@@ -50,14 +50,21 @@ from services.mod_diagnostics_service import (
     DiagnosticsReport,
     ModDiagnosticsService,
 )
+from services.mod_operation_support import collect_profile_operation_inputs
 from ui.common.dialog_theme import (
     build_dialog_theme_stylesheet,
     get_dialog_theme_values,
 )
 from ui.utils.audio_utils import is_audio_playback_available
 from ui.utils.thread_lifetime import ManagedQThread
+from utils.mod.operation_plan import (
+    ModOperationPlan,
+    ModPathContext,
+    build_profile_operation_plan,
+)
 from utils.mod.utils import get_mod_id, get_mod_name
 from utils.native_integration import get_save_file_name
+from utils.path_utils import resolve_execution_runtime, resolve_game_executable
 
 MAX_G3MPATCH_PREVIEW_BYTES = 100 * 1024 * 1024
 logger = logging.getLogger(__name__)
@@ -84,15 +91,28 @@ class DiagnosticsWorker(ManagedQThread):
     def __init__(
         self,
         service: ModDiagnosticsService,
-        section_mods: dict[str, list[Any]],
+        operation_inputs: tuple[
+            dict[str, dict[str, object]],
+            list[list[str]],
+            dict[str, ModPathContext],
+        ]
+        | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._service = service
-        self._section_mods = section_mods
+        self._operation_inputs = operation_inputs
 
     def run(self) -> None:
-        self.result_ready.emit(self._service.build_report(self._section_mods))
+        if self._operation_inputs is None:
+            self.result_ready.emit(
+                self._service.unavailable_report(
+                    "One or more selected mods do not have a current configuration."
+                )
+            )
+            return
+        configs, steps, contexts = self._operation_inputs
+        self.result_ready.emit(self._service.build_operation_report(configs, steps, contexts))
 
 
 class DiagnosticsPreflightWorker(ManagedQThread):
@@ -103,16 +123,16 @@ class DiagnosticsPreflightWorker(ManagedQThread):
     def __init__(
         self,
         service: DiagnosticsPreflightService,
-        plan: PatchPlan,
-        resolver,
+        plan: ModOperationPlan,
         game_path: str,
+        game_data_path: str | None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._service = service
         self._plan = plan
-        self._resolver = resolver
         self._game_path = game_path
+        self._game_data_path = game_data_path
 
     def cancel(self) -> None:
         self.requestInterruption()
@@ -122,8 +142,9 @@ class DiagnosticsPreflightWorker(ManagedQThread):
         try:
             report = self._service.run(
                 self._plan,
-                self._resolver,
                 self._game_path,
+                self._game_data_path,
+                str(Path.home()),
                 progress=lambda value, phase: self.progress_update.emit(value, phase),
             )
             self.result_ready.emit(report)
@@ -495,10 +516,7 @@ class ModDiagnosticsDialog(QDialog):
         checker = getattr(self._mod_service, "mod_has_files_for_chapter", None)
         if callable(checker):
             return bool(checker(mod_data, section_id))
-        return bool(
-            hasattr(mod_data, "get_chapter_data")
-            and mod_data.get_chapter_data(section_id)
-        )
+        return bool(getattr(mod_data, "supports_section", lambda _id: False)(section_id))
 
     def _initial_section_mods(self) -> dict[str, list[Any]]:
         section_mods: dict[str, list[Any]] = {}
@@ -579,7 +597,7 @@ class ModDiagnosticsDialog(QDialog):
             mods = [
                 mod
                 for mod in selected_mods
-                if hasattr(mod, "get_chapter_data") and mod.get_chapter_data(tab.tab_id)
+                if getattr(mod, "supports_section", lambda _id: False)(tab.tab_id)
             ]
             if mods:
                 section_mods[tab.tab_id] = mods
@@ -588,56 +606,120 @@ class ModDiagnosticsDialog(QDialog):
             section_mods[str(default_tab)] = selected_mods
         return section_mods
 
+    def _operation_report_inputs(
+        self, section_mods: dict[str, list[Any]]
+    ) -> tuple[
+        dict[str, dict[str, object]],
+        list[list[str]],
+        dict[str, ModPathContext],
+    ] | None:
+        selected_by_id: dict[str, Any] = {}
+        for mods in section_mods.values():
+            for mod in mods:
+                mod_id = get_mod_id(mod)
+                if isinstance(mod_id, str) and mod_id:
+                    selected_by_id[mod_id] = mod
+        if not selected_by_id:
+            return None
+        game_mode = getattr(self._app_state, "game_mode", None)
+        game_path = (
+            game_mode.get_game_path(self._app_state.local_config)
+            if game_mode is not None and hasattr(game_mode, "get_game_path")
+            else None
+        )
+        game_data_path = (
+            game_mode.get_data_path(self._app_state.local_config)
+            if game_mode is not None and hasattr(game_mode, "get_data_path")
+            else None
+        )
+        custom_key = (
+            game_mode.get_custom_exec_config_key()
+            if game_mode is not None and hasattr(game_mode, "get_custom_exec_config_key")
+            else ""
+        )
+        custom_executable = self._app_state.local_config.get(custom_key, "")
+        executable = (
+            custom_executable
+            if isinstance(custom_executable, str) and os.path.isfile(custom_executable)
+            else resolve_game_executable(game_path, getattr(game_mode, "executable_type", ""))
+        )
+        runtime = resolve_execution_runtime(executable)
+        inputs = collect_profile_operation_inputs(
+            self._mod_service,
+            tuple(selected_by_id),
+            game_id=str(getattr(game_mode, "game_id", "") or ""),
+            game_path=game_path,
+            game_data_path=game_data_path,
+            runtime=runtime,
+        )
+        if inputs.findings:
+            return None
+        configs, contexts = inputs.configs, inputs.contexts
+
+        game_scope = self._current_scope_chapter() or getattr(
+            game_mode, "default_tab_id", None
+        )
+        get_steps = getattr(self._used_mods_service, "get_mod_steps", None)
+        stored_steps = get_steps(game_scope) if callable(get_steps) and game_scope else []
+        steps: list[list[str]] = []
+        if isinstance(stored_steps, Iterable) and not isinstance(
+            stored_steps, (str, bytes)
+        ):
+            for stored_step in stored_steps:
+                if not isinstance(stored_step, Iterable) or isinstance(
+                    stored_step, (str, bytes)
+                ):
+                    continue
+                step = [
+                    mod_id
+                    for mod in stored_step
+                    if isinstance(mod_id := get_mod_id(mod), str)
+                    and mod_id in selected_by_id
+                ]
+                if step:
+                    steps.append(step)
+        assigned = {mod_id for step in steps for mod_id in step}
+        unassigned = [mod_id for mod_id in selected_by_id if mod_id not in assigned]
+        if unassigned:
+            if steps:
+                steps[0].extend(unassigned)
+            else:
+                steps = [unassigned]
+        return configs, steps, contexts
+
     def _run_analysis(self) -> None:
         if self._worker and self._worker.isRunning():
             return
         self._refresh_mod_row_labels()
         self._set_busy(True)
         service = ModDiagnosticsService(self._app_state, self._mod_service)
-        self._worker = DiagnosticsWorker(service, self._selected_section_mods(), self)
+        section_mods = self._selected_section_mods()
+        self._worker = DiagnosticsWorker(
+            service,
+            self._operation_report_inputs(section_mods),
+            self,
+        )
         self._worker.result_ready.connect(self._on_report_ready)
         self._worker.finished.connect(lambda: self._set_busy(False))
         self._worker.start()
 
-    def _selected_patch_plan(self) -> tuple[PatchPlan, dict[str, Any]]:
+    def _selected_operation_plan(self) -> ModOperationPlan | None:
         selected_sections = self._selected_section_mods()
-        resolver_map: dict[str, Any] = {}
-        planned: dict[str, list[list[Any]]] = {}
-        get_steps = getattr(self._used_mods_service, "get_mod_steps", None)
-        for section_id, selected_mods in selected_sections.items():
-            selected_by_id = {
-                str(get_mod_id(mod)): mod for mod in selected_mods if get_mod_id(mod)
-            }
-            resolver_map.update(selected_by_id)
-            stored_steps = get_steps(section_id) if callable(get_steps) else []
-            steps = [
-                [
-                    selected_by_id[str(get_mod_id(mod))]
-                    for mod in step
-                    if str(get_mod_id(mod)) in selected_by_id
-                ]
-                for step in cast(Iterable[Iterable[Any]], stored_steps or [])
-            ]
-            steps = [step for step in steps if step]
-            assigned = {str(get_mod_id(mod)) for step in steps for mod in step}
-            unassigned = [
-                mod for mod in selected_mods if str(get_mod_id(mod)) not in assigned
-            ]
-            if unassigned:
-                if steps:
-                    steps[0].extend(unassigned)
-                else:
-                    steps = [unassigned]
-            if steps:
-                planned[str(section_id)] = steps
-        return PatchPlan.from_runtime(planned), resolver_map
+        inputs = self._operation_report_inputs(selected_sections)
+        if inputs is None:
+            return None
+        configs, steps, contexts = inputs
+        ordered_ids = tuple(mod_id for step in steps for mod_id in step)
+        return build_profile_operation_plan(
+            configs, contexts, ordered_ids, merge_steps=steps
+        )
 
     def _run_preflight(self) -> None:
         if self._preflight_worker and self._preflight_worker.isRunning():
             return
         self._clear_preflight_result()
-        plan, resolver_map = self._selected_patch_plan()
-        if not plan.sections:
+        plan = self._selected_operation_plan()
+        if plan is None or not plan.operations:
             self._preflight_phase.setText(tr("diagnostics.no_mods_selected"))
             return
         game_mode = getattr(self._app_state, "game_mode", None)
@@ -647,12 +729,15 @@ class ModDiagnosticsDialog(QDialog):
         if not game_path or not os.path.isdir(game_path):
             self._preflight_phase.setText(tr("diagnostics.actual_game_path_missing"))
             return
-        service = DiagnosticsPreflightService(self._app_state, self._mod_service)
+        game_data_path = (
+            game_mode.get_data_path(self._app_state.local_config) if game_mode else None
+        )
+        service = DiagnosticsPreflightService(self._app_state)
         worker = DiagnosticsPreflightWorker(
             service,
             plan,
-            resolver_map.get,
             game_path,
+            game_data_path,
             self,
         )
         self._preflight_worker = worker
@@ -1799,9 +1884,7 @@ class ModDiagnosticsDialog(QDialog):
         game_mode = getattr(self._app_state, "game_mode", None)
         labels = []
         for tab in getattr(game_mode, "tabs", []) or []:
-            if hasattr(mod_data, "get_chapter_data") and mod_data.get_chapter_data(
-                tab.tab_id
-            ):
+            if getattr(mod_data, "supports_section", lambda _id: False)(tab.tab_id):
                 labels.append(str(tab.tab_id).replace("deltarune_", "CH"))
         return labels
 
@@ -1813,27 +1896,12 @@ class ModDiagnosticsDialog(QDialog):
             if chapter_id
             else [tab.tab_id for tab in getattr(game_mode, "tabs", []) or []]
         )
-        kinds = set()
-        for cid in section_ids:
-            file_data = (
-                mod_data.get_chapter_data(cid)
-                if hasattr(mod_data, "get_chapter_data")
-                else None
-            )
-            if not file_data:
-                continue
-            data_path = str(getattr(file_data, "data_file_path", "") or "").lower()
-            if data_path.endswith(".g3mpatch"):
-                kinds.add("G3MPATCH")
-            elif data_path.endswith((".xdelta", ".vcdiff")):
-                kinds.add("XDELTA")
-            elif data_path.endswith(".csx"):
-                kinds.add("CSX")
-            elif data_path.endswith((".win", ".unx", ".ios", ".droid")):
-                kinds.add("DATA")
-            if getattr(file_data, "extra_files", None):
-                kinds.add("FILES")
-        return " + ".join(sorted(kinds)) or tr("diagnostics.mod_kind_unknown")
+        if any(
+            getattr(mod_data, "supports_section", lambda _id: False)(section_id)
+            for section_id in section_ids
+        ):
+            return "Operations"
+        return tr("diagnostics.mod_kind_unknown")
 
     def closeEvent(self, event) -> None:
         self._stop_preview_audio()

@@ -44,6 +44,7 @@ class TargetKind(StrEnum):
 
     MOD = "mod"
     PLUGIN = "plugin"
+    THEME = "theme"
 
 
 @dataclass

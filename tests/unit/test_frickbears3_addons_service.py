@@ -1,15 +1,9 @@
 """Unit tests for FRICKBEARS3 addon detection, conversion, and apply flows."""
 
 import json
-import os
 from pathlib import Path
-from types import SimpleNamespace
 
-import pytest
-
-from services.backup_service import BackupManager
 from services.frickbears3_addons_service import Frickbears3AddonsService
-from utils.frickbears3_addons_utils import apply_frickbears3_addons_from_mod_source
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -85,81 +79,27 @@ def test_frickbears3_service_converts_addon_archive_to_g3m_mod(tmp_path):
         str(extract_dir),
         str(mods_dir),
         source_file_path="goomba.zip",
-        gamebanana_metadata={"name": "GOOMBA ~ CUSTOM GUARD", "mod_id": 42, "game": "frickbears3"},
+        gamebanana_metadata={
+            "name": "GOOMBA ~ CUSTOM GUARD",
+            "mod_id": 42,
+            "game": "frickbears3",
+            "icon": "https://images.example.com/goomba.png",
+        },
     )
 
     result_path = Path(result)
     config = json.loads((result_path / "mod_config.json").read_text("utf-8"))
-    assert config["metadata"]["name"] == "GOOMBA ~ CUSTOM GUARD"
-    assert config["metadata"]["id"] == "gb_mod_42"
-    assert config["metadata"]["game"] == "frickbears3"
-    assert config["files"]["frickbears3"]["extra_files"] == [
-        {"file_path": "addons/", "target": "game_data_folder"}
+    assert config["config_version"] == "2.0.0"
+    assert config["name"] == "GOOMBA ~ CUSTOM GUARD"
+    assert config["id"] == "gb_mod_42"
+    assert config["game"] == "frickbears3"
+    assert config["icon"] == "https://images.example.com/goomba.png"
+    assert config["files"] == [
+        {
+            "source": "${mod_path}/addons/",
+            "target": "${game_data_path}/addons/",
+            "type": "extract",
+        }
     ]
     assert (result_path / "addons" / "Goomba" / "extras_info.txt").exists()
     assert (result_path / "addons" / "Goomba" / "icon.png").exists()
-
-
-def test_apply_frickbears3_addons_copies_into_configured_data_folder_and_restores(
-    tmp_path,
-):
-    mod_source_dir = tmp_path / "mod"
-    _write_text(
-        mod_source_dir / "addons" / "Goomba" / "extras_info.txt",
-        json.dumps({"FULL_NAME": "Goomba"}),
-    )
-    _write_bytes(mod_source_dir / "addons" / "Goomba" / "icon.png", b"new")
-    _write_text(mod_source_dir / "addons" / "Blox" / "opening_dialogue.txt", "hello")
-
-    data_dir = tmp_path / "game_data"
-    addons_dir = data_dir / "addons"
-    existing_file = addons_dir / "Goomba" / "icon.png"
-    _write_bytes(existing_file, b"old")
-
-    backup_mgr = BackupManager(str(tmp_path / "backups"))
-    ok = apply_frickbears3_addons_from_mod_source(
-        str(mod_source_dir),
-        data_dir=str(data_dir),
-        backup_or_mark=lambda target_file: (
-            backup_mgr.backup_file("frickbears3_addons", target_file)
-            if os.path.exists(target_file)
-            else backup_mgr.mark_file_added("frickbears3_addons", target_file)
-        ),
-        logger=SimpleNamespace(debug=lambda *args, **kwargs: None),
-        extract_archive=lambda archive_path, target_dir: None,
-    )
-
-    assert ok is True
-    assert existing_file.read_bytes() == b"new"
-    assert (addons_dir / "Blox" / "opening_dialogue.txt").read_text("utf-8") == "hello"
-
-    backup_mgr.restore_all_backups()
-
-    assert existing_file.read_bytes() == b"old"
-    assert not (addons_dir / "Blox" / "opening_dialogue.txt").exists()
-
-
-def test_apply_frickbears3_addons_skips_broken_symlink(tmp_path):
-    mod_source_dir = tmp_path / "mod"
-    valid_file = mod_source_dir / "addons" / "Guard" / "icon.png"
-    _write_bytes(valid_file, b"icon")
-    broken_link = mod_source_dir / "addons" / "Guard" / "optional.png"
-    try:
-        os.symlink(broken_link.parent / "missing.png", broken_link)
-    except OSError as exc:
-        pytest.skip(f"File symlinks are unavailable: {exc}")
-
-    data_dir = tmp_path / "game_data"
-
-    ok = apply_frickbears3_addons_from_mod_source(
-        str(mod_source_dir),
-        data_dir=str(data_dir),
-        backup_or_mark=lambda _target_file: None,
-        logger=SimpleNamespace(debug=lambda *args, **kwargs: None),
-        extract_archive=lambda archive_path, target_dir: None,
-    )
-
-    copied_guard = data_dir / "addons" / "Guard"
-    assert ok is True
-    assert (copied_guard / "icon.png").read_bytes() == b"icon"
-    assert not (copied_guard / "optional.png").exists()

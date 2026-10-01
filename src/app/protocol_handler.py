@@ -1,6 +1,7 @@
 """One-click install handler extracted from AppWindow."""
 
 import os
+from urllib.parse import unquote, urlparse
 
 from config.config import PRIMARY_URL_SCHEME, URL_PROTOCOL_PREFIXES
 from services.game_detection_service import is_game_running
@@ -42,7 +43,10 @@ def _enqueue_g3m_url(w, url: str):
     )
 
     download_url = _parse_g3m_url(url)
-    if not download_url or not download_url.startswith(("http://", "https://")):
+    local_path = _local_protocol_path(download_url)
+    if not download_url or (
+        not download_url.startswith(("http://", "https://")) and not local_path
+    ):
         safe_show_message(w.feedback_service, "error", "errors.error", tr("errors.mod_not_found"))
         return
     dialog = ConfirmExternalDownloadDialog(
@@ -50,9 +54,16 @@ def _enqueue_g3m_url(w, url: str):
     )
     if not dialog.exec():
         return
-    display_name = (
-        os.path.basename(download_url.split("?")[0]) or f"{PRIMARY_URL_SCHEME}:// mod"
-    )
+    if local_path:
+        w.downloads_manager.enqueue_with_feedback(
+            w.feedback_service,
+            display_name=os.path.basename(local_path),
+            source_kind=SourceKind.LOCAL_FILE,
+            target_kind=TargetKind.MOD,
+            source_file_path=local_path,
+        )
+        return
+    display_name = os.path.basename(download_url.split("?")[0]) or f"{PRIMARY_URL_SCHEME}:// mod"
     w.downloads_manager.enqueue_with_feedback(
         w.feedback_service,
         display_name=display_name,
@@ -60,3 +71,20 @@ def _enqueue_g3m_url(w, url: str):
         target_kind=TargetKind.MOD,
         source_url=download_url,
     )
+
+
+def _local_protocol_path(url: str) -> str | None:
+    """Resolve a local file URI while refusing network shares and directories."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
+        return None
+    path = unquote(parsed.path)
+    if os.name == "nt" and path.replace("/", "\\").startswith("\\\\"):
+        return None
+    if os.name == "nt" and len(path) >= 3 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    path = os.path.abspath(path)
+    return path if os.path.isfile(path) else None

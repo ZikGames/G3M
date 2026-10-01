@@ -164,6 +164,7 @@ def setup_library_tab(w):
         optional=(
             "add_mod_button",
             "diagnostics_button",
+            "update_mods_button",
             "installed_mods_label",
             "priority_button",
             "create_modpack_button",
@@ -198,6 +199,9 @@ def _wire_library_signals(w):
         )
     if getattr(w, "diagnostics_button", None):
         w.diagnostics_button.clicked.connect(lambda: open_diagnostics_dialog(w))
+    if getattr(w, "update_mods_button", None):
+        w.update_mods_button.clicked.connect(w.game_launch.open_mod_updates)
+        w.game_launch.refresh_mod_update_badge()
     if hasattr(w.installed_mods_container, "files_dropped"):
         w.installed_mods_container.files_dropped.connect(
             w.mod_import_export_controller.import_files_sequentially
@@ -257,7 +261,6 @@ def _setup_chapter_mode(w):
     w.app_state.is_installing_changed.connect(lambda v: w._update_all_action_buttons())
     w.app_state.current_mode = "chapter" if saved_chapter_mode else "normal"
     w.game_launch.update_button_state()
-    w._previous_mode = w.app_state.current_mode
     w.app_state.selected_chapter_id = None
     if saved_chapter_mode and hasattr(w, "chapter_tabs_widget"):
         w.chapter_tabs_widget.setVisible(True)

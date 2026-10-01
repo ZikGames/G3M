@@ -1,9 +1,15 @@
 #define AppName        "G3M"
-#define AppVersion     "3.3.4"
+#define AppVersion     "3.4.0"
 #define AppExeName     "G3M.exe"
 #define AppIcon        "assets\\icons\\icon.ico"
 #define AppSmallIcon   "assets\\SmallIcon.bmp"
 #define AppWizardImage "assets\\WizardImage.bmp"
+#ifndef AppArchitecture
+  #define AppArchitecture "x64compatible"
+#endif
+#ifndef AppArchitectureName
+  #define AppArchitectureName "x86_64"
+#endif
 
 [Setup]
 AppId={{6A8E9F32-1B3A-4F2F-9C0A-6E28B9B8C5D1}}
@@ -19,10 +25,10 @@ DisableDirPage=no
 UsePreviousAppDir=no
 WizardSmallImageFile={#AppSmallIcon}
 WizardImageFile={#AppWizardImage}
-OutputBaseFilename={#AppName}_setup_{#AppVersion}
+OutputBaseFilename={#AppName}_setup_{#AppVersion}_{#AppArchitectureName}
 OutputDir=..\\Output
-ArchitecturesAllowed=x64
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed={#AppArchitecture}
+ArchitecturesInstallIn64BitMode={#AppArchitecture}
 MinVersion=0,10.0.17763
 ShowLanguageDialog=yes
 LanguageDetectionMethod=uilanguage

@@ -80,6 +80,22 @@ def test_monitor_restores_promptly_after_confirmed_exit(qapp):
     process.wait.assert_not_called()
 
 
+def test_monitor_reports_when_game_is_detected(qapp):
+    process = Mock(pid=1234)
+    with patch("workers.game_monitor_worker.GameProcessTracker"):
+        worker = GameMonitorWorker(process, False)
+    worker._refresh_tracked_processes = Mock(
+        side_effect=[True, False, False, False, False]
+    )
+    detected = []
+    worker.game_detected.connect(detected.append)
+
+    with patch("workers.game_monitor_worker.time.sleep"):
+        worker.run()
+
+    assert detected == [False]
+
+
 def test_monitor_keeps_session_open_while_game_keeps_running(qapp):
     process = Mock(pid=1234)
     checks = [True] + [True] * 120 + [False] * 4

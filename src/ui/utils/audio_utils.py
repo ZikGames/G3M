@@ -4,7 +4,11 @@ import logging
 import os
 import shutil
 import sys
+import threading
+import time
 from multiprocessing import Process
+
+import psutil
 
 from utils.path_utils import get_user_data_root
 
@@ -16,7 +20,30 @@ def is_audio_playback_available() -> bool:
     return not sys.platform.startswith("linux") or shutil.which("gst-play-1.0") is not None
 
 
-def _play_sound_process(sound_path: str) -> None:
+def _parent_process_is_alive(parent_pid: int) -> bool:
+    """Return whether the application process that started playback still exists."""
+    try:
+        parent = psutil.Process(parent_pid)
+        return parent.is_running() and parent.status() != psutil.STATUS_ZOMBIE
+    except (psutil.Error, OSError):
+        return False
+
+
+def _watch_parent_process(parent_pid: int) -> None:
+    """Stop an audio worker left behind after an unexpected application exit."""
+    while _parent_process_is_alive(parent_pid):
+        time.sleep(0.5)
+    os._exit(0)
+
+
+def _play_sound_process(sound_path: str, parent_pid: int | None = None) -> None:
+    if parent_pid is not None:
+        threading.Thread(
+            target=_watch_parent_process,
+            args=(parent_pid,),
+            daemon=True,
+            name="g3m-audio-parent-watch",
+        ).start()
     try:
         from playsound3 import playsound
 
@@ -56,7 +83,7 @@ class AudioManager:
             self.stop_g3m_sound()
             process = Process(
                 target=_play_sound_process,
-                args=(os.path.abspath(sound_path),),
+                args=(os.path.abspath(sound_path), os.getpid()),
                 daemon=True,
             )
             process.start()

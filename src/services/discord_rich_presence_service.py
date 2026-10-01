@@ -383,11 +383,11 @@ class DiscordRichPresenceService(QObject):
         if not self._is_settings_open(main_window):
             return False
         tab_widget = getattr(main_window, "settings_tab_widget", None)
-        plugins_tab = getattr(main_window, "plugins_tab", None)
-        if tab_widget is None or plugins_tab is None or not hasattr(tab_widget, "currentWidget"):
+        catalog_tab = getattr(main_window, "catalog_tab", None)
+        if tab_widget is None or catalog_tab is None or not hasattr(tab_widget, "currentWidget"):
             return False
         try:
-            return tab_widget.currentWidget() is plugins_tab
+            return tab_widget.currentWidget() is catalog_tab
         except Exception:
             return False
 

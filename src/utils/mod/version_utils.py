@@ -1,6 +1,8 @@
 """Utilities for managing mod versions and snapshots."""
 
+import contextlib
 import os
+import tempfile
 import zipfile
 
 from config.config import MOD_VERSIONS_DIR
@@ -23,14 +25,23 @@ def create_version_zip(
     versions_dir = ensure_versions_dir(mod_folder)
     safe_name = sanitize_version_name(version_name)
     zip_path = os.path.join(versions_dir, f"{safe_name}.zip")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        for root, dirs, files in os.walk(source_dir):
-            if ignore_versions_dir and MOD_VERSIONS_DIR in dirs:
-                dirs.remove(MOD_VERSIONS_DIR)
-            for fname in files:
-                full = os.path.join(root, fname)
-                arcname = os.path.relpath(full, source_dir)
-                zf.write(full, arcname)
+    with tempfile.NamedTemporaryFile(dir=versions_dir, suffix=".tmp", delete=False) as handle:
+        temporary = handle.name
+    excluded = {os.path.normcase(os.path.abspath(path)) for path in (zip_path, temporary)}
+    try:
+        with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+            for root, dirs, files in os.walk(source_dir):
+                if ignore_versions_dir and MOD_VERSIONS_DIR in dirs:
+                    dirs.remove(MOD_VERSIONS_DIR)
+                for fname in files:
+                    full = os.path.join(root, fname)
+                    if os.path.normcase(os.path.abspath(full)) not in excluded:
+                        arcname = os.path.relpath(full, source_dir)
+                        zf.write(full, arcname)
+        os.replace(temporary, zip_path)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(temporary)
     return zip_path
 
 

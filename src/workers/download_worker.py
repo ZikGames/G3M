@@ -1,8 +1,10 @@
 """Worker thread for downloading files to the Downloads system."""
 
 import contextlib
+import hashlib
 import logging
 import os
+import re
 import shutil
 
 from PyQt6.QtCore import pyqtSignal
@@ -31,12 +33,17 @@ class DownloadWorker(ManagedQThread):
         record_id: str,
         url: str,
         target_path: str,
+        *,
+        expected_md5: str | None = None,
+        allowed_hosts: frozenset[str] | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._record_id = record_id
         self._url = url
         self._target_path = target_path
+        self._expected_md5 = expected_md5
+        self._allowed_hosts = allowed_hosts
         self._cancelled = False
         self._active_response = None
 
@@ -53,17 +60,10 @@ class DownloadWorker(ManagedQThread):
 
     def run(self):
         try:
-            from config.config import NETWORK_TIMEOUT_HEAD
             from utils.network_utils import download_file, get_session
 
             session = get_session()
             total_size = 0
-            with contextlib.suppress(Exception):
-                total_size = int(
-                    session.head(
-                        self._url, allow_redirects=True, timeout=NETWORK_TIMEOUT_HEAD
-                    ).headers.get("content-length", 0)
-                )
             downloaded_ref = [0]
 
             def on_progress(pct):
@@ -94,6 +94,7 @@ class DownloadWorker(ManagedQThread):
                 downloaded_ref=downloaded_ref,
                 cancel_check=lambda: self._cancelled,
                 on_response=on_response,
+                allowed_hosts=self._allowed_hosts,
             )
             if self._cancelled:
                 _cleanup_file(self._target_path)
@@ -106,6 +107,9 @@ class DownloadWorker(ManagedQThread):
                     "",
                 )
                 return
+            _verify_md5(self._target_path, self._expected_md5, cancel_check=lambda: self._cancelled)
+            if self._cancelled:
+                raise RuntimeError("download_cancelled")
             _safe_emit(
                 "DownloadWorker",
                 self.download_finished,
@@ -146,6 +150,22 @@ class DownloadWorker(ManagedQThread):
                 format_network_error(e, url=self._url),
                 "",
             )
+
+
+def _verify_md5(path: str, expected_md5: str | None, *, cancel_check=None) -> None:
+    if not expected_md5:
+        return
+    expected = str(expected_md5).strip().casefold()
+    if not re.fullmatch(r"[0-9a-f]{32}", expected):
+        raise RuntimeError("download has invalid MD5 integrity metadata")
+    digest = hashlib.md5(usedforsecurity=False)
+    with open(path, "rb") as source:
+        while chunk := source.read(1024 * 1024):
+            if cancel_check and cancel_check():
+                raise RuntimeError("download_cancelled")
+            digest.update(chunk)
+    if digest.hexdigest() != expected:
+        raise RuntimeError("download checksum does not match the expected MD5")
 
 
 class LocalFileCopyWorker(ManagedQThread):

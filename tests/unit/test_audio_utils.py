@@ -33,6 +33,27 @@ def test_audio_process_ignores_player_errors(monkeypatch):
     audio_utils._play_sound_process("missing.wav")
 
 
+def test_audio_process_watches_application_parent(monkeypatch):
+    watcher = Mock()
+    monkeypatch.setattr(audio_utils.threading, "Thread", lambda **_kwargs: watcher)
+    playsound = Mock()
+    monkeypatch.setitem(sys.modules, "playsound3", SimpleNamespace(playsound=playsound))
+
+    audio_utils._play_sound_process("sound.wav", parent_pid=1234)
+
+    watcher.start.assert_called_once_with()
+    playsound.assert_called_once_with(audio_utils.os.path.abspath("sound.wav"))
+
+
+def test_audio_process_treats_missing_parent_as_dead(monkeypatch):
+    def missing_process(_pid):
+        raise audio_utils.psutil.NoSuchProcess(1234)
+
+    monkeypatch.setattr(audio_utils.psutil, "Process", missing_process)
+
+    assert audio_utils._parent_process_is_alive(1234) is False
+
+
 def test_startup_sound_does_not_spawn_without_linux_backend(monkeypatch, tmp_path):
     process = Mock()
     monkeypatch.setattr(audio_utils, "get_user_data_root", lambda: str(tmp_path))

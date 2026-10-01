@@ -3,34 +3,41 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import shutil
 import tempfile
-import zipfile
 
 from config.config import THEME_CONFIG_FILENAME, THEME_CONFIG_FILENAMES
 from services.migration_service import normalize_theme_settings
-from utils.path_utils import find_theme_config_path, get_user_themes_dir, resource_path
+from utils.mod.archive import list_archive_members
+from utils.path_utils import find_theme_config_path, get_user_themes_dir
+
+
+def theme_archive_path(themes_dir: str, theme_id: str) -> str:
+    if not theme_id or ntpath.basename(theme_id) != theme_id or ntpath.isreserved(theme_id) or theme_id in {".", ".."}:
+        raise ValueError("Invalid theme name")
+    root = os.path.realpath(themes_dir)
+    path = os.path.join(root, f"{theme_id}.zip")
+    if os.path.commonpath((root, os.path.realpath(path))) != root:
+        raise ValueError("Theme path escapes its directory")
+    return path
 
 
 def theme_archive_contains_config(theme_file_path: str) -> bool:
-    with zipfile.ZipFile(theme_file_path, "r") as zipf:
-        archive_names = set(zipf.namelist())
-        return any(
-            name in archive_names
-            or any(archived_name.endswith(f"/{name}") for archived_name in archive_names)
-            for name in THEME_CONFIG_FILENAMES
-        )
+    archive_names = {member.name for member in list_archive_members(theme_file_path)}
+    return any(
+        name in archive_names
+        or any(archived_name.endswith(f"/{name}") for archived_name in archive_names)
+        for name in THEME_CONFIG_FILENAMES
+    )
 
 
 def maybe_copy_theme_archive(theme_file_path: str, parent_widget) -> None:
     theme_dir_abs = os.path.normcase(
         os.path.normpath(os.path.dirname(os.path.abspath(theme_file_path)))
     )
-    bundled_dirs = (
-        os.path.normcase(os.path.normpath(os.path.abspath(d)))
-        for d in (resource_path("assets/themes"), get_user_themes_dir())
-    )
+    bundled_dirs = (os.path.normcase(os.path.normpath(os.path.abspath(get_user_themes_dir()))),)
     if theme_dir_abs in bundled_dirs:
         return
     checkbox = getattr(parent_widget, "do_not_save_theme_checkbox", None)

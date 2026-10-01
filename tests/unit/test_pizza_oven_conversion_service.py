@@ -10,8 +10,10 @@ from unittest.mock import Mock
 
 from models.game_modes import get_game
 from presentation.pizza_oven_conversion_presenter import PizzaOvenConversionPresenter
-from services.g3mtool_patching_service import G3MToolPatchingService
+from services.mod_operation_executor import ModOperationExecutor
 from services.pizza_oven_conversion_service import PizzaOvenConversionService
+from utils.mod.config import load_mod_config
+from utils.mod.operation_plan import ModPathContext, build_profile_operation_plan
 
 
 class FakePizzaOvenG3MTool:
@@ -127,15 +129,6 @@ def _create_fake_pizzaoven_mod(mod_dir: Path) -> None:
     _write_bytes(mod_dir / "tutorial_english.png", b"PNG_FONT")
     _write_text(mod_dir / "custom.def", "font definition\n")
     _write_bytes(mod_dir / "music" / "custom.bank", b"CUSTOM_BANK")
-
-
-def _extra_files_to_map(extra_files: list[dict[str, str]]) -> dict[str, list[str]]:
-    result: dict[str, list[str]] = {}
-    for entry in extra_files:
-        file_path = entry["file_path"]
-        group = os.path.dirname(file_path).replace("\\", "/") or "root"
-        result.setdefault(group, []).append(file_path)
-    return result
 
 
 def test_inspect_source_disables_conversion_with_disable_gb1click(tmp_path):
@@ -457,24 +450,36 @@ def test_convert_builds_canonical_g3m_mod_from_pizzaoven_result(tmp_path):
 
     target_mod_dir = Path(result.mod_dir)
     config = json.loads((target_mod_dir / "mod_config.json").read_text("utf-8"))
-    chapter_data = config["files"]["pizzatower"]
-    extra_files = _extra_files_to_map(chapter_data["extra_files"])
+    operations = {entry["source"]: entry for entry in config["files"]}
 
-    assert chapter_data["data_file_path"] == "data.xdelta"
+    assert config["config_version"] == "2.0.0"
+    assert config["authors"] == ["Tests"]
+    assert operations["${mod_path}/data.xdelta"] == {
+        "source": "${mod_path}/data.xdelta",
+        "target": "${game_path}/data.win",
+        "type": "patch",
+    }
     assert (target_mod_dir / "data.xdelta").read_bytes() == b"patch"
-    assert extra_files["root"] == ["helper.dll", "noisecredits.txt"]
-    assert set(extra_files["lang"]) == {"lang/english.txt", "lang/custom.def"}
-    assert extra_files["lang/graphics"] == [
+    for relative_path in (
+        "helper.dll",
+        "noisecredits.txt",
+        "lang/english.txt",
+        "lang/custom.def",
         "lang/graphics/english.json",
         "lang/graphics/english.png",
-    ]
-    assert extra_files["lang/fonts"] == ["lang/fonts/tutorial_english.png"]
-    assert extra_files["sound/Desktop/music"] == ["sound/Desktop/music/custom.bank"]
+        "lang/fonts/tutorial_english.png",
+        "sound/Desktop/music/custom.bank",
+    ):
+        assert operations[f"${{mod_path}}/{relative_path}"] == {
+            "source": f"${{mod_path}}/{relative_path}",
+            "target": f"${{game_path}}/{relative_path}",
+            "type": "overwrite",
+        }
     assert (target_mod_dir / "Install Instructions.txt").exists()
 
 
-def test_convert_preserves_executable_xdelta_by_detected_target(tmp_path):
-    """An executable xdelta uses its detected target regardless of patch name."""
+def test_convert_preserves_executable_xdelta_as_patch_by_detected_target(tmp_path):
+    """An executable xdelta patches its detected target regardless of patch name."""
     game_dir = tmp_path / "game"
     mod_dir = tmp_path / "mod"
     mods_dir = tmp_path / "mods"
@@ -490,23 +495,23 @@ def test_convert_preserves_executable_xdelta_by_detected_target(tmp_path):
 
     target_mod_dir = Path(result.mod_dir)
     config = json.loads((target_mod_dir / "mod_config.json").read_text("utf-8"))
-    extra_files = config["files"]["pizzatower"]["extra_files"]
 
-    assert extra_files == [
-        {"file_path": "CustomTower.exe.xdelta", "target": "game_folder"}
+    assert config["files"] == [
+        {
+            "source": "${mod_path}/CustomTower.exe.xdelta",
+            "target": "${game_path}/CustomTower.exe",
+            "type": "patch",
+        }
     ]
     assert (target_mod_dir / "CustomTower.exe.xdelta").read_bytes() == b"EXE_PATCH"
     assert not (target_mod_dir / "CustomTower.exe").exists()
 
 
-def test_converted_mod_applies_expected_files_to_clean_game(
-    tmp_path, app_state, monkeypatch
-):
+def test_converted_mod_applies_expected_files_to_clean_game(tmp_path):
     """Checks that converteding mod applies expected files to clean game."""
     game_dir = tmp_path / "game"
     mod_dir = tmp_path / "mod"
     mods_dir = tmp_path / "mods"
-    user_data_dir = tmp_path / "user_data"
     _create_fake_pizzatower_game(game_dir)
     _create_fake_pizzaoven_mod(mod_dir)
 
@@ -528,30 +533,27 @@ def test_converted_mod_applies_expected_files_to_clean_game(
         else:
             target.write_bytes(item.read_bytes())
 
-    app_state.game_mode = get_game("pizzatower")
-    app_state.local_config = {}
-    app_state.mods_dir = str(mods_dir)
-    monkeypatch.setattr(
-        "services.g3mtool_patching_service.get_user_data_root",
-        lambda: str(user_data_dir),
-    )
-    mod_service = Mock()
-    mod_service.get_mod_folder_path.return_value = str(result.mod_dir)
-    patcher = G3MToolPatchingService(app_state, mod_service)
-    patcher.g3mtool = fake_tool
-    patcher.warning_handler = Mock(return_value=False)
-    patcher.set_override_game_path(str(apply_game_dir))
-
-    mod_config = json.loads((Path(result.mod_dir) / "mod_config.json").read_text("utf-8"))
-    mod_data = SimpleNamespace(
-        id=mod_config["metadata"]["id"],
-        name=mod_config["metadata"]["name"],
-        game="pizzatower",
+    mod_config = load_mod_config(Path(result.mod_dir) / "mod_config.json")
+    mod_id = mod_config["id"]
+    plan = build_profile_operation_plan(
+        {mod_id: mod_config},
+        {
+            mod_id: ModPathContext.create(
+                mod_path=result.mod_dir,
+                game_path=apply_game_dir,
+                game_data_path=None,
+                user_path=tmp_path,
+                runtime="windows",
+            )
+        },
+        [mod_id],
     )
 
-    success = patcher.process_sections({"pizzatower": [mod_data]})
+    def apply_patch(target: Path, patch: Path, output: Path) -> bool:
+        return fake_tool.apply_patch(str(target), str(patch), str(output))[0] == 0
 
-    assert success is True
+    ModOperationExecutor(tmp_path / "session", patcher=apply_patch).execute(plan)
+
     assert (apply_game_dir / "data.win").read_bytes() == b"ORIGINAL_DATA|po-patched|"
     assert (apply_game_dir / "helper.dll").read_bytes() == b"DLL_PAYLOAD"
     assert (apply_game_dir / "noisecredits.txt").read_text("utf-8") == "Credits go here\n"
