@@ -30,6 +30,7 @@
             "defusedxml"
             "rarfile"
             "python-dotenv"
+            "urllib3"
           ];
 
           pypaBuildFlags = [ "--skip-dependency-check" ];
