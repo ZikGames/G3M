@@ -1,20 +1,33 @@
 """Unit tests for test services."""
 
 import json
+import logging
 import os
 import time
 import zipfile
+from pathlib import Path
 from unittest.mock import Mock, call
 
 import pytest
 
-from models.plugin_models import CatalogPluginEntry
+from config.config import PLUGIN_API_VERSION
+from models.plugin_models import (
+    CatalogPluginEntry,
+    PluginCommunityFeed,
+    PluginLaunchAction,
+    PluginLaunchOption,
+)
 from services.localization_service import localization_service, tr
 from services.plugins.catalog_service import PluginCatalogService
 from services.plugins.install_service import PluginInstallService
 from services.plugins.runtime_service import PluginRuntimeService
 from services.plugins.state_service import PluginStateService
-from services.plugins.support import PluginValidationError, safe_extract_zip
+from services.plugins.support import (
+    PluginValidationError,
+    is_version_compatible,
+    load_manifest,
+    safe_extract_zip,
+)
 
 
 class _DummySettingsService:
@@ -26,6 +39,34 @@ class _DummySettingsService:
 
     def write_json(self, path, data):
         self._files[path] = json.loads(json.dumps(data))
+
+
+@pytest.mark.parametrize("plugin_id", ["custom_saves_folders", "deltarune_save_manager"])
+def test_published_plugin_matches_catalog_and_sources(plugin_id):
+    catalog_root = Path(__file__).resolve().parents[3] / "catalog" / "plugins"
+    source_root = catalog_root / plugin_id
+    manifest = load_manifest(str(source_root / "plugin_config.json"))
+    catalog = json.loads((catalog_root / "plugins.json").read_text(encoding="utf-8"))
+    entry = next(plugin for plugin in catalog["plugins"] if plugin["id"] == plugin_id)
+    assert entry["version"] == manifest.version
+    assert entry["api_version"] == manifest.api_version
+    assert is_version_compatible(PLUGIN_API_VERSION, manifest.api_version)
+    def _normalize(name: str, content: bytes) -> bytes:
+        if Path(name).suffix.lower() not in {".png", ".zip", ".ico", ".jpg", ".jpeg"}:
+            return content.replace(b"\r\n", b"\n")
+        return content
+
+    sources = {
+        path.relative_to(source_root).as_posix(): _normalize(path.name, path.read_bytes())
+        for path in source_root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    }
+    with zipfile.ZipFile(catalog_root / f"{plugin_id}.zip") as archive:
+        assert {
+            name: _normalize(name, archive.read(name))
+            for name in archive.namelist()
+            if not name.endswith("/")
+        } == sources
 
 
 @pytest.mark.parametrize("background_task", [False, True])
@@ -47,6 +88,84 @@ def test_plugin_interruption_only_propagates_for_cancellable_tasks(background_ta
         assert record.status == "broken"
 
 
+def test_plugin_runtime_returns_only_validated_community_feeds():
+    runtime = PluginRuntimeService.__new__(PluginRuntimeService)
+    record = Mock(enabled=True)
+    plugin = Mock()
+    plugin.get_community_feeds.return_value = [
+        {"id": "updates", "label": "Updates", "url": "https://example.com/rss"},
+        PluginCommunityFeed("bad url", "Unsafe", "http://example.com/rss"),
+        {"id": "missing", "label": "", "url": "https://example.com/rss"},
+        PluginCommunityFeed(1, "Unsafe", "https://example.com/rss"),
+        PluginCommunityFeed("unsafe", "Unsafe", None),
+    ]
+    runtime._installed = {"news_plugin": record}
+    runtime._instances = {"news_plugin": plugin}
+    runtime._build_ui_context = Mock()
+
+    assert runtime.get_community_feeds() == [
+        PluginCommunityFeed(
+            id="plugin:news_plugin:updates",
+            label="Updates",
+            url="https://example.com/rss",
+            plugin_id="news_plugin",
+        )
+    ]
+
+
+def test_plugin_runtime_skips_launch_actions_with_non_string_text_fields():
+    runtime = PluginRuntimeService.__new__(PluginRuntimeService)
+    record = Mock(enabled=True)
+    plugin = Mock()
+    plugin.get_launch_actions.return_value = [
+        PluginLaunchAction("refresh", "Refresh", "Refresh plugin data."),
+        PluginLaunchAction(1, "Unsafe", ""),
+        PluginLaunchAction("unsafe_label", None, ""),
+        PluginLaunchAction("unsafe_description", "Unsafe", None),
+    ]
+    runtime._installed = {"news_plugin": record}
+    runtime._instances = {"news_plugin": plugin}
+    runtime._build_ui_context = Mock()
+
+    assert runtime.get_launch_actions() == [
+        PluginLaunchAction(
+            id="plugin:news_plugin:refresh",
+            label="Refresh",
+            description="Refresh plugin data.",
+            plugin_id="news_plugin",
+        )
+    ]
+
+
+def test_plugin_runtime_returns_and_updates_validated_launch_options():
+    runtime = PluginRuntimeService.__new__(PluginRuntimeService)
+    record = Mock(enabled=True)
+    plugin = Mock()
+    plugin.get_launch_options.return_value = [
+        PluginLaunchOption("save_slot", "Use save slot", checked=True),
+        PluginLaunchOption("invalid", "Invalid", checked="yes"),
+    ]
+    runtime._installed = {"save_plugin": record}
+    runtime._instances = {"save_plugin": plugin}
+    runtime._build_ui_context = Mock(return_value="context")
+
+    options = runtime.get_launch_options()
+
+    assert options == [
+        PluginLaunchOption(
+            id="plugin:save_plugin:save_slot",
+            label="Use save slot",
+            checked=True,
+            plugin_id="save_plugin",
+        )
+    ]
+    plugin.on_launch_option_changed.return_value = False
+    assert not runtime.set_launch_option(options[0], False)
+    plugin.on_launch_option_changed.return_value = True
+    assert runtime.set_launch_option(options[0], False)
+    plugin.on_launch_option_changed.assert_called_with("context", "save_slot", False)
+
+
 class _CatalogSpy:
     def __init__(self, entries=None) -> None:
         self.calls = []
@@ -60,7 +179,7 @@ class _CatalogSpy:
         return self.entries.get(plugin_id)
 
 
-def _write_plugin(plugins_dir, plugin_id="sample_plugin", api_version=">=1.0.0", version="1.0.0"):
+def _write_plugin(plugins_dir, plugin_id="sample_plugin", api_version=">=1.0.0", version="1.0.0", *, hooks=None, relations=None):
     plugin_dir = os.path.join(plugins_dir, plugin_id)
     os.makedirs(os.path.join(plugin_dir, "lang"), exist_ok=True)
     with open(
@@ -79,8 +198,8 @@ def _write_plugin(plugins_dir, plugin_id="sample_plugin", api_version=">=1.0.0",
                 "api_version": api_version,
                 "entry": "plugin.py",
                 "tags": ["tool"],
-                "relations": {},
-                "hooks": [],
+                "relations": relations or {},
+                "hooks": hooks or [],
                 "settings_schema": {},
             },
             handle,
@@ -180,10 +299,12 @@ def test_plugin_state_service_persists_settings_and_filters(temp_dir):
     service.set_enabled("alpha", True)
     service.set_plugin_setting("alpha", "path", "C:/test")
     service.set_filters(installed_only=True, tags=["tool", "bad_tag"])
+    service.set_filters(installed_only=False, tags=["animated", "tool"], themes=True)
     reloaded = PluginStateService(settings_service, temp_dir)
     assert reloaded.is_enabled("alpha") is True
     assert reloaded.get_plugin_setting("alpha", "path") == "C:/test"
     assert reloaded.get_filters() == {"installed_only": True, "tags": ["tool"]}
+    assert reloaded.get_filters(themes=True) == {"installed_only": False, "tags": ["animated"]}
 
 
 def test_plugin_catalog_service_returns_empty_when_cache_is_empty(temp_dir):
@@ -213,6 +334,169 @@ def test_plugin_catalog_service_uses_in_memory_cache(temp_dir):
     assert service.get_entry("cached_plugin").name == "Cached"
 
 
+def test_catalog_skips_malformed_records_and_preserves_themes_on_partial_refresh(temp_dir):
+    app_state = Mock()
+    response = Mock()
+    response.json.return_value = {"plugins": [None, 123, {"id": "sample", "tags": "tool", "relations": None}]}
+    app_state.network_session.get.side_effect = [response, OSError("Offline")]
+    service = PluginCatalogService(app_state, _DummySettingsService(), temp_dir)
+    service._catalog = {"themes": [None, {"id": "retained", "tags": None}]}
+
+    service.refresh_catalog()
+
+    plugins = service.list_plugins()
+    themes = service.list_themes()
+    assert [entry.id for entry in plugins] == ["sample"]
+    assert plugins[0].tags == []
+    assert plugins[0].relations == {}
+    assert [entry.id for entry in themes] == ["retained"]
+    assert themes[0].tags == []
+
+
+@pytest.mark.parametrize("hook", ["app_ready", "app_shutdown", "navigation_actions", "game_registry", "background_task"])
+def test_removed_plugin_capabilities_are_incompatible_before_loading(tmp_path, hook):
+    _write_plugin(tmp_path, "legacy_plugin", api_version=">=1.1.0", hooks=[hook])
+    state = PluginStateService(_DummySettingsService(), str(tmp_path))
+    state.set_enabled("legacy_plugin", True)
+    runtime = PluginRuntimeService(
+        app_state=Mock(local_config={}), feedback_service=Mock(), settings_service=Mock(),
+        profile_service=Mock(), game_registry_service=Mock(), plugin_state_service=state,
+        plugin_catalog_service=_CatalogSpy(), plugins_dir=str(tmp_path),
+    )
+
+    record = runtime.scan_installed_plugins()["legacy_plugin"]
+
+    assert record.status == "installed"
+    assert record.compatible is False
+    assert record.error == tr("plugins.error_incompatible_api", plugin="legacy_plugin")
+    assert record.manifest.hooks == [hook]
+    assert "legacy_plugin" not in runtime._instances
+    assert runtime.get_settings_widget("legacy_plugin") is None
+    assert runtime.enable_plugin("legacy_plugin")[0] is False
+
+
+def test_legacy_settings_and_game_started_declarations_keep_supported_callbacks(tmp_path):
+    _write_plugin(
+        tmp_path, "legacy_plugin", api_version=">=1.1.0",
+        hooks=["settings_view", "before_mod_apply", "after_game_started"],
+    )
+    (tmp_path / "legacy_plugin" / "plugin.py").write_text(
+        "class Plugin:\n"
+        "    def on_before_mod_apply(self, context, *args): return 'applied'\n"
+        "    def on_after_game_started(self, context, *args): return 'started'\n"
+        "    def create_settings_widget(self, context, parent): return parent\n"
+        "def create_plugin(): return Plugin()\n",
+        encoding="utf-8",
+    )
+    state = PluginStateService(_DummySettingsService(), str(tmp_path))
+    state.set_enabled("legacy_plugin", True)
+    runtime = PluginRuntimeService(
+        app_state=Mock(local_config={}), feedback_service=Mock(), settings_service=Mock(),
+        profile_service=Mock(), game_registry_service=Mock(), plugin_state_service=state,
+        plugin_catalog_service=_CatalogSpy(), plugins_dir=str(tmp_path),
+    )
+
+    record = runtime.scan_installed_plugins()["legacy_plugin"]
+
+    assert record.compatible
+    assert record.status != "broken"
+    assert runtime.execute_hook("before_mod_apply") == ["applied"]
+    assert runtime.execute_hook("after_game_started", False) == ["started"]
+    parent = object()
+    assert runtime.get_settings_widget("legacy_plugin", parent) is parent
+
+
+def test_incompatible_required_plugin_cannot_satisfy_dependency(tmp_path):
+    _write_plugin(tmp_path, "legacy_plugin", hooks=["game_registry"])
+    _write_plugin(tmp_path, "dependent_plugin", relations={"legacy_plugin": "require"})
+    _write_plugin(tmp_path, "transitive_plugin", relations={"dependent_plugin": "require"})
+    state = PluginStateService(_DummySettingsService(), str(tmp_path))
+    state.set_enabled("legacy_plugin", True)
+    state.set_enabled("dependent_plugin", True)
+    state.set_enabled("transitive_plugin", True)
+    runtime = PluginRuntimeService(
+        app_state=Mock(local_config={}), feedback_service=Mock(), settings_service=Mock(),
+        profile_service=Mock(), game_registry_service=Mock(), plugin_state_service=state,
+        plugin_catalog_service=_CatalogSpy(), plugins_dir=str(tmp_path),
+    )
+    runtime.scan_installed_plugins()
+
+    success, error = runtime.enable_plugin("dependent_plugin")
+
+    assert success is False
+    assert error == tr("plugins.error_missing_dependencies", plugin="dependent_plugin")
+    assert "dependent_plugin" not in runtime._instances
+    assert "transitive_plugin" not in runtime._instances
+    for plugin_id in ("dependent_plugin", "transitive_plugin"):
+        record = runtime.get_plugin(plugin_id)
+        assert record.status == "broken"
+        assert not record.enabled
+        assert record.error == tr("plugins.error_missing_dependencies", plugin=plugin_id)
+        runtime.disable_plugin(plugin_id, persist=False)
+        assert record.status == "broken"
+    assert runtime.enable_plugin("transitive_plugin")[0] is False
+
+
+@pytest.mark.parametrize("dependency_fails", [False, True])
+def test_plugin_reload_waits_for_successfully_enabled_dependencies(tmp_path, monkeypatch, dependency_fails):
+    _write_plugin(tmp_path, "a_dependent", relations={"z_required": "require"})
+    _write_plugin(tmp_path, "z_required")
+    state = PluginStateService(_DummySettingsService(), str(tmp_path))
+    for plugin_id in ("a_dependent", "z_required"):
+        state.set_enabled(plugin_id, True)
+    runtime = PluginRuntimeService(
+        app_state=Mock(local_config={}), feedback_service=Mock(), settings_service=Mock(),
+        profile_service=Mock(), game_registry_service=Mock(), plugin_state_service=state,
+        plugin_catalog_service=_CatalogSpy(), plugins_dir=str(tmp_path),
+    )
+    calls = []
+
+    def load_factory(plugin_id, _path):
+        def factory():
+            calls.append(plugin_id)
+            if plugin_id == "z_required" and dependency_fails:
+                raise RuntimeError("required factory failed")
+            if plugin_id == "a_dependent":
+                assert "z_required" in runtime._enabled_instances
+            return object()
+        return factory
+
+    monkeypatch.setattr("services.plugins.runtime_service.load_plugin_factory", load_factory)
+
+    installed = runtime.scan_installed_plugins()
+
+    if dependency_fails:
+        assert calls == ["z_required"]
+        assert not runtime._instances
+        assert not runtime._enabled_instances
+        assert installed["a_dependent"].error == tr("plugins.error_missing_dependencies", plugin="a_dependent")
+    else:
+        assert calls == ["z_required", "a_dependent"]
+        assert runtime._enabled_instances == {"z_required", "a_dependent"}
+
+
+def test_plugin_reload_does_not_enable_cached_instance_after_enable_failure(tmp_path):
+    _write_plugin(tmp_path)
+    state = PluginStateService(_DummySettingsService(), str(tmp_path))
+    state.set_enabled("sample_plugin", True)
+    runtime = PluginRuntimeService(
+        app_state=Mock(local_config={}), feedback_service=Mock(), settings_service=Mock(),
+        profile_service=Mock(), game_registry_service=Mock(), plugin_state_service=state,
+        plugin_catalog_service=_CatalogSpy(), plugins_dir=str(tmp_path),
+    )
+    plugin = Mock()
+    plugin.on_enable.side_effect = OSError("enable failed")
+    runtime._instances["sample_plugin"] = plugin
+
+    installed = runtime.scan_installed_plugins()
+
+    assert installed["sample_plugin"].status == "broken"
+    assert "sample_plugin" not in runtime._enabled_instances
+    assert "sample_plugin" not in runtime._instances
+    assert not installed["sample_plugin"].enabled
+    assert runtime.execute_hook("before_mod_apply") == []
+
+
 def test_plugin_runtime_scan_merges_localizations_without_catalog_load(temp_dir):
     """Checks that plugin runtime scan merges localizations without catalog load."""
     localization_service.clear_plugin_strings()
@@ -227,9 +511,6 @@ def test_plugin_runtime_scan_merges_localizations_without_catalog_load(temp_dir)
         settings_service=Mock(),
         profile_service=Mock(),
         game_registry_service=Mock(),
-        customization_service=Mock(),
-        used_mods_service=Mock(),
-        downloads_manager=Mock(),
         plugin_state_service=state_service,
         plugin_catalog_service=catalog_spy,
         plugins_dir=temp_dir,
@@ -264,9 +545,6 @@ def test_plugin_runtime_update_available_requires_newer_catalog_version(temp_dir
         settings_service=Mock(),
         profile_service=Mock(),
         game_registry_service=Mock(),
-        customization_service=Mock(),
-        used_mods_service=Mock(),
-        downloads_manager=Mock(),
         plugin_state_service=state_service,
         plugin_catalog_service=_CatalogSpy({"sample_plugin": catalog_entry}),
         plugins_dir=temp_dir,
@@ -295,9 +573,6 @@ def test_plugin_runtime_loads_dataclass_plugin(temp_dir):
         settings_service=Mock(),
         profile_service=Mock(),
         game_registry_service=Mock(),
-        customization_service=Mock(),
-        used_mods_service=Mock(),
-        downloads_manager=Mock(),
         plugin_state_service=state_service,
         plugin_catalog_service=_CatalogSpy(),
         plugins_dir=temp_dir,
@@ -309,7 +584,7 @@ def test_plugin_runtime_loads_dataclass_plugin(temp_dir):
     assert installed["dataclass_plugin"].status != "broken"
 
 
-def test_plugin_runtime_scan_formats_validation_errors(temp_dir):
+def test_plugin_runtime_scan_formats_validation_errors(temp_dir, caplog):
     """Checks that broken plugin scan errors are localized for the UI."""
     localization_service.clear_plugin_strings()
     localization_service.load_language("en")
@@ -341,19 +616,95 @@ def test_plugin_runtime_scan_formats_validation_errors(temp_dir):
         settings_service=Mock(),
         profile_service=Mock(),
         game_registry_service=Mock(),
-        customization_service=Mock(),
-        used_mods_service=Mock(),
-        downloads_manager=Mock(),
         plugin_state_service=state_service,
         plugin_catalog_service=_CatalogSpy(),
         plugins_dir=temp_dir,
     )
 
-    installed = runtime.scan_installed_plugins()
+    with caplog.at_level(logging.INFO, logger="services.plugins.runtime_service"):
+        installed = runtime.scan_installed_plugins()
 
     assert installed["broken_plugin"].error == tr(
         "plugins.error_missing_entry", path=plugin_dir
     )
+    record = next(
+        record
+        for record in caplog.records
+        if record.name == "services.plugins.runtime_service"
+    )
+    assert record.levelno == logging.INFO
+    assert record.exc_info is None
+    assert record.getMessage() == "PluginRuntimeService: skipped invalid plugin broken_plugin: missing_entry"
+
+
+def test_plugin_runtime_keeps_display_metadata_for_invalid_plugin(temp_dir):
+    localization_service.clear_plugin_strings()
+    localization_service.load_language("en")
+    _write_plugin(temp_dir, "legacy_plugin", api_version=">=1.1.0")
+    manifest_path = os.path.join(temp_dir, "legacy_plugin", "plugin_config.json")
+    with open(manifest_path, encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    manifest["hooks"] = ["removed_hook"]
+    manifest["icon"] = "icon.png"
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle)
+    settings_service = _DummySettingsService()
+    state_service = PluginStateService(settings_service, temp_dir)
+    state_service.set_enabled("legacy_plugin", True)
+    runtime = PluginRuntimeService(
+        app_state=Mock(local_config={}),
+        feedback_service=Mock(),
+        settings_service=Mock(),
+        profile_service=Mock(),
+        game_registry_service=Mock(),
+        plugin_state_service=state_service,
+        plugin_catalog_service=_CatalogSpy(),
+        plugins_dir=temp_dir,
+    )
+
+    plugin = runtime.scan_installed_plugins()["legacy_plugin"]
+
+    assert plugin.status == "broken"
+    assert plugin.compatible is True
+    assert plugin.manifest is not None
+    assert plugin.manifest.entry == ""
+    assert plugin.manifest.icon == "icon.png"
+    assert plugin.manifest.name == "plugins.legacy_plugin.name"
+    assert localization_service.get_text(plugin.manifest.name) == "Sample Plugin"
+    assert "legacy_plugin" not in runtime._instances
+    assert runtime.get_settings_widget("legacy_plugin") is None
+
+
+def test_plugin_runtime_marks_failed_settings_widget_as_broken(caplog):
+    localization_service.load_language("en")
+    runtime = PluginRuntimeService.__new__(PluginRuntimeService)
+    record = Mock(status="installed", path="C:/plugins/old_plugin")
+    runtime._installed = {"old_plugin": record}
+    runtime._instances = {}
+    runtime._load_instance = Mock(
+        side_effect=ModuleNotFoundError(
+            "No module named 'utils.mod.config_parser'",
+            name="utils.mod.config_parser",
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="services.plugins.runtime_service"):
+        assert runtime.get_settings_widget("old_plugin") is None
+
+    assert record.status == "broken"
+    assert record.error == tr(
+        "plugins.error_missing_module",
+        plugin="old_plugin",
+        module="utils.mod.config_parser",
+    )
+    log_record = next(
+        entry
+        for entry in caplog.records
+        if entry.name == "services.plugins.runtime_service"
+    )
+    assert log_record.levelno == logging.WARNING
+    assert log_record.exc_info is None
+    assert "settings widget unavailable for old_plugin" in log_record.getMessage()
 
 
 def test_plugin_install_accepts_newer_plugin_api_requirement(temp_dir):
@@ -376,8 +727,8 @@ def test_plugin_install_accepts_newer_plugin_api_requirement(temp_dir):
     runtime.scan_installed_plugins.assert_not_called()
 
 
-def test_plugin_runtime_allows_enabling_newer_plugin_api_requirement(temp_dir):
-    """Checks that Plugin API mismatch is not treated as runtime incompatibility."""
+def test_plugin_runtime_does_not_load_newer_plugin_api_requirement(temp_dir):
+    """Checks that an API mismatch remains visible without loading the plugin."""
     localization_service.clear_plugin_strings()
     localization_service.load_language("en")
     settings_service = _DummySettingsService()
@@ -390,9 +741,6 @@ def test_plugin_runtime_allows_enabling_newer_plugin_api_requirement(temp_dir):
         settings_service=Mock(),
         profile_service=Mock(),
         game_registry_service=Mock(),
-        customization_service=Mock(),
-        used_mods_service=Mock(),
-        downloads_manager=Mock(),
         plugin_state_service=state_service,
         plugin_catalog_service=_CatalogSpy(),
         plugins_dir=temp_dir,
@@ -400,10 +748,54 @@ def test_plugin_runtime_allows_enabling_newer_plugin_api_requirement(temp_dir):
 
     installed = runtime.scan_installed_plugins()
 
-    assert installed["future_plugin"].compatible is True
+    assert installed["future_plugin"].compatible is False
     assert installed["future_plugin"].enabled is True
     assert installed["future_plugin"].status == "installed"
-    assert "future_plugin" in runtime._enabled_instances
+    assert "future_plugin" not in runtime._instances
+    assert "future_plugin" not in runtime._enabled_instances
+
+
+def test_plugin_runtime_cannot_enable_incompatible_plugin(temp_dir):
+    localization_service.clear_plugin_strings()
+    localization_service.load_language("en")
+    settings_service = _DummySettingsService()
+    state_service = PluginStateService(settings_service, temp_dir)
+    _write_plugin(temp_dir, "future_plugin", api_version=">=99.0.0")
+    runtime = PluginRuntimeService(
+        app_state=Mock(local_config={}),
+        feedback_service=Mock(),
+        settings_service=Mock(),
+        profile_service=Mock(),
+        game_registry_service=Mock(),
+        plugin_state_service=state_service,
+        plugin_catalog_service=_CatalogSpy(),
+        plugins_dir=temp_dir,
+    )
+    runtime.scan_installed_plugins()
+
+    enabled, error = runtime.enable_plugin("future_plugin")
+
+    assert not enabled
+    assert error == tr("plugins.error_incompatible_api", plugin="future_plugin")
+    assert not state_service.is_enabled("future_plugin")
+    assert "future_plugin" not in runtime._instances
+
+
+def test_plugin_runtime_propagates_critical_hook_errors():
+    runtime = PluginRuntimeService.__new__(PluginRuntimeService)
+    record = Mock(enabled=True, path="plugin", status="installed")
+    plugin = Mock()
+    plugin.on_before_restore_after_exit.side_effect = RuntimeError("restore failed")
+    runtime._installed = {"sample": record}
+    runtime._instances = {"sample": plugin}
+    runtime._build_context = Mock()
+
+    with pytest.raises(RuntimeError, match="restore failed"):
+        runtime.execute_hook_with_runtime(
+            "before_restore_after_exit", None, raise_errors=True
+        )
+
+    assert record.status == "broken"
 
 
 def test_plugin_runtime_reports_enabled_hook_and_passes_task_runtime(temp_dir):
@@ -419,9 +811,6 @@ def test_plugin_runtime_reports_enabled_hook_and_passes_task_runtime(temp_dir):
         settings_service=Mock(),
         profile_service=Mock(),
         game_registry_service=Mock(),
-        customization_service=Mock(),
-        used_mods_service=Mock(),
-        downloads_manager=Mock(),
         plugin_state_service=state_service,
         plugin_catalog_service=_CatalogSpy(),
         plugins_dir=temp_dir,
@@ -486,9 +875,6 @@ def test_plugin_runtime_reports_enabled_shortcut_hook_and_passes_shortcut_contex
         settings_service=Mock(),
         profile_service=Mock(),
         game_registry_service=Mock(),
-        customization_service=Mock(),
-        used_mods_service=Mock(),
-        downloads_manager=Mock(),
         plugin_state_service=state_service,
         plugin_catalog_service=_CatalogSpy(),
         plugins_dir=temp_dir,
@@ -560,9 +946,6 @@ def test_plugin_runtime_context_uses_plugin_scoped_feedback(temp_dir, monkeypatc
         settings_service=Mock(),
         profile_service=Mock(),
         game_registry_service=Mock(),
-        customization_service=Mock(),
-        used_mods_service=Mock(),
-        downloads_manager=Mock(),
         plugin_state_service=state_service,
         plugin_catalog_service=_CatalogSpy(),
         plugins_dir=temp_dir,
@@ -590,22 +973,18 @@ def test_plugin_runtime_context_uses_plugin_scoped_feedback(temp_dir, monkeypatc
     assert "Sample description" in box.setText.call_args.args[0]
 
 
-def test_plugin_runtime_context_exposes_used_mods_service(temp_dir):
+def test_plugin_runtime_context_hides_unrelated_services(temp_dir):
     localization_service.clear_plugin_strings()
     localization_service.load_language("en")
     settings_service = _DummySettingsService()
     state_service = PluginStateService(settings_service, temp_dir)
     _write_plugin(temp_dir, "sample_plugin")
-    used_mods_service = Mock()
     runtime = PluginRuntimeService(
         app_state=Mock(local_config={}),
         feedback_service=Mock(),
         settings_service=Mock(),
         profile_service=Mock(),
         game_registry_service=Mock(),
-        customization_service=Mock(),
-        used_mods_service=used_mods_service,
-        downloads_manager=Mock(),
         plugin_state_service=state_service,
         plugin_catalog_service=_CatalogSpy(),
         plugins_dir=temp_dir,
@@ -614,7 +993,8 @@ def test_plugin_runtime_context_exposes_used_mods_service(temp_dir):
     runtime.scan_installed_plugins()
     context = runtime._build_context("sample_plugin")
 
-    assert context.used_mods_service is used_mods_service
+    assert not hasattr(context, "used_mods_service")
+    assert not hasattr(context, "downloads_manager")
 
 
 def test_plugin_install_service_accepts_plugin_folder(temp_dir):

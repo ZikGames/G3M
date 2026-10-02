@@ -22,7 +22,7 @@ from config.config import (
     META_TOML_FILENAME,
     MOD_CONFIG_FILENAME,
 )
-from services.migration_service import LEGACY_MOD_ID_KEYS, migrate_legacy_chapter_id
+from services.migration_service import migrate_legacy_chapter_id
 from utils.network_utils import download_file, get_filename_from_url, get_session
 
 logger = logging.getLogger(__name__)
@@ -159,7 +159,7 @@ def normalize_mod_package(
 ) -> dict[str, str | None]:
     if not os.path.isdir(mod_root):
         raise ValueError("mod_root_not_directory")
-    _flatten_single_child_directories(mod_root)
+    flatten_single_child_directories(mod_root)
     meta_path, mod_config_path, icon_path = (
         find_deltamod_info_file(mod_root),
         _find_file_recursive(mod_root, MOD_CONFIG_FILENAME),
@@ -178,7 +178,7 @@ def normalize_mod_package(
     }
 
 
-def _flatten_single_child_directories(root: str):
+def flatten_single_child_directories(root: str):
     while True:
         try:
             entries = [
@@ -195,15 +195,22 @@ def _flatten_single_child_directories(root: str):
         if files or len(dirs) != 1:
             return
         child = os.path.join(root, dirs[0])
-        try:
-            for item in os.listdir(child):
-                src, dst = os.path.join(child, item), os.path.join(root, item)
-                if os.path.exists(dst):
-                    safe_rmtree(dst) if os.path.isdir(dst) else safe_remove(dst)
-                safe_move(src, dst)
-            os.rmdir(child)
-        except OSError:
+        if os.path.islink(child) or os.path.isjunction(child):
             return
+        staging = tempfile.mkdtemp(prefix=".g3m-flatten-", dir=root)
+        detached = os.path.join(staging, "content")
+        try:
+            os.replace(child, detached)
+            for item in os.listdir(detached):
+                src, dst = os.path.join(detached, item), os.path.join(root, item)
+                if os.path.lexists(dst):
+                    raise FileExistsError(dst)
+                shutil.move(src, dst)
+            os.rmdir(detached)
+            os.rmdir(staging)
+        except OSError:
+            logger.warning("Cannot flatten package; remaining contents retained at %s", staging)
+            raise
 
 
 def _find_file_recursive(root: str, filename: str) -> str | None:
@@ -243,22 +250,6 @@ def save_json(
     if dir_path:
         os.makedirs(dir_path, exist_ok=True)
     to_save = data.copy() if isinstance(data, dict) else data
-    if (
-        isinstance(to_save, dict)
-        and os.path.basename(path).lower() == MOD_CONFIG_FILENAME.lower()
-    ):
-        mod_id = next(
-            (
-                str(to_save[field]).strip()
-                for field in ("id", *LEGACY_MOD_ID_KEYS)
-                if isinstance(to_save.get(field), str) and to_save.get(field).strip()
-            ),
-            "",
-        )
-        if mod_id:
-            to_save["id"] = mod_id
-        for legacy_field in LEGACY_MOD_ID_KEYS:
-            to_save.pop(legacy_field, None)
     tmp = os.path.join(
         dir_path or ".",
         f"{os.path.basename(path)}.{os.getpid()}.{threading.get_ident()}.tmp",
@@ -286,39 +277,13 @@ def save_json(
             raise ValueError(f"Data is not JSON-serializable: {e}") from e
 
 
-def load_json(path: str, *, persist_normalized: bool = True) -> dict:
+def load_json(path: str) -> dict:
     """Load JSON file."""
     try:
         if not os.path.exists(path):
             return {}
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        if (
-            isinstance(data, dict)
-            and os.path.basename(path).lower() == MOD_CONFIG_FILENAME.lower()
-        ):
-            mod_id = next(
-                (
-                    str(data[field]).strip()
-                    for field in ("id", *LEGACY_MOD_ID_KEYS)
-                    if isinstance(data.get(field), str) and data.get(field).strip()
-                ),
-                "",
-            )
-            changed = False
-            if data.get("id") != mod_id:
-                if mod_id:
-                    data["id"] = mod_id
-                    changed = True
-                elif "id" in data:
-                    data.pop("id", None)
-                    changed = True
-            for legacy_field in LEGACY_MOD_ID_KEYS:
-                if legacy_field in data:
-                    data.pop(legacy_field, None)
-                    changed = True
-            if changed and persist_normalized:
-                save_json(path, data)
         return data
     except (FileNotFoundError, json.JSONDecodeError, PermissionError, OSError) as e:
         if isinstance(e, json.JSONDecodeError):
@@ -474,30 +439,6 @@ def _ensure_dst_dir(dst: str, op_name: str) -> bool:
             logger.warning(f"{op_name}: Failed to create dest dir {dst_dir}: {e}")
             return False
     return True
-
-
-def safe_copy(src: str, dst: str, max_retries: int = 5, delay: float = 0.1) -> bool:
-    try:
-        if os.path.abspath(src) == os.path.abspath(dst):
-            return True
-    except Exception as e:
-        logger.debug(
-            f"safe_copy: failed to compare source/destination paths {src} -> {dst}: {e}",
-            exc_info=True,
-        )
-    if not _ensure_dst_dir(dst, "safe_copy"):
-        return False
-    try:
-        _retry_operation(
-            lambda: shutil.copy2(src, dst),
-            max_retries,
-            delay,
-            "safe_copy",
-            f"{src} -> {dst}",
-        )
-        return True
-    except Exception:
-        return False
 
 
 def safe_remove(path: str, max_retries: int = 5, delay: float = 0.1) -> bool:

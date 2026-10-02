@@ -10,6 +10,7 @@ from pathlib import Path
 LANG_DIR = Path(__file__).resolve().parents[2] / "src" / "assets" / "lang"
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "catalog" / "plugins"
 UI_DIR = Path(__file__).resolve().parents[2] / "src" / "ui"
+_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def test_localized_dialogs_expose_live_relocalization() -> None:
@@ -47,6 +48,30 @@ def _flatten_keys(data: dict, prefix: str = "") -> dict[str, str]:
         else:
             keys[full_key] = value
     return keys
+
+
+def _ordered_sections(data: dict, prefix: str = "") -> dict[str, tuple[str, ...]]:
+    sections = {prefix: tuple(data)}
+    for key, value in data.items():
+        if isinstance(value, dict):
+            full_key = f"{prefix}.{key}" if prefix else key
+            sections.update(_ordered_sections(value, full_key))
+    return sections
+
+
+def _duplicate_json_keys(path: Path) -> list[str]:
+    duplicates: list[str] = []
+
+    def reject_duplicates(pairs):
+        data = {}
+        for key, value in pairs:
+            if key in data:
+                duplicates.append(key)
+            data[key] = value
+        return data
+
+    json.loads(path.read_text("utf-8"), object_pairs_hook=reject_duplicates)
+    return duplicates
 
 
 def _normalized_text_bytes(data: bytes) -> bytes:
@@ -206,6 +231,46 @@ def test_plugin_archives_match_source_folders_without_python_cache():
             f"Extra: {sorted(archived_names - source_names)}. "
             f"Changed: {sorted(k for k in source_files.keys() & archived_files.keys() if source_files[k] != archived_files[k])}"
         )
+
+
+def test_language_files_start_with_metadata():
+    """Keep the language identity first for quick inspection and tooling."""
+    for lang_path in LANG_DIR.glob("lang_*.json"):
+        data = json.loads(lang_path.read_text("utf-8"))
+        assert next(iter(data), None) == "metadata", (
+            f"{lang_path.name} must start with metadata"
+        )
+
+
+def test_all_language_files_keep_nested_order_and_placeholders():
+    """Prevent structurally valid translations from drifting from English."""
+    english = json.loads((LANG_DIR / "lang_en.json").read_text("utf-8"))
+    english_order = _ordered_sections(english)
+    english_values = _flatten_keys(english)
+
+    for lang_path in LANG_DIR.glob("lang_*.json"):
+        localized = json.loads(lang_path.read_text("utf-8"))
+        assert _ordered_sections(localized) == english_order, (
+            f"{lang_path.name} nested key order differs from English"
+        )
+        localized_values = _flatten_keys(localized)
+        mismatched = [
+            key
+            for key, english_value in english_values.items()
+            if isinstance(english_value, str)
+            and sorted(_PLACEHOLDER_RE.findall(english_value))
+            != sorted(_PLACEHOLDER_RE.findall(localized_values[key]))
+        ]
+        assert not mismatched, (
+            f"{lang_path.name} placeholders differ from English: {mismatched}"
+        )
+
+
+def test_language_files_have_no_duplicate_keys():
+    """Reject duplicate JSON keys, which normal JSON loading would silently overwrite."""
+    for lang_path in LANG_DIR.glob("lang_*.json"):
+        duplicates = _duplicate_json_keys(lang_path)
+        assert not duplicates, f"{lang_path.name} has duplicate keys: {duplicates}"
 
 
 def test_plugin_language_files_do_not_ship_raw_localization_keys_as_text():

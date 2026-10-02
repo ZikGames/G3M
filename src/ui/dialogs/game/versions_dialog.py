@@ -466,12 +466,13 @@ class GameVersionsDialog(QDialog):
         app_state = None
         mod_service = None
         if profile_name and profile_service:
-            chapter_mods = self._resolve_profile_mods(
-                profile_name, game_id, profile_service
-            )
-            if chapter_mods:
-                app_state = self._app_state
-                mod_service = getattr(parent_window, "mod_service", None)
+            try:
+                chapter_mods, app_state, mod_service = self._resolve_profile_mods(
+                    profile_name, game_id, profile_service
+                )
+            except ValueError as error:
+                self._safe_warning(tr("errors.error"), str(error))
+                return
         self._manager.create_version(
             game_id,
             dialog.version_name,
@@ -479,43 +480,62 @@ class GameVersionsDialog(QDialog):
             chapter_mods=chapter_mods,
             app_state=app_state,
             mod_service=mod_service,
+            feedback_service=getattr(parent_window, "feedback_service", None),
         )
 
     def _resolve_profile_mods(self, profile_name, game_id, profile_service):
-        """Read profile JSON and resolve mod ids to mod objects for the given game.
+        """Capture the selected profile's library, game, and persisted patch steps."""
+        from models.app_state import AppState
+        from models.game_modes import get_game
+        from services.migration_service import migrate_legacy_chapter_id
+        from services.mod.service import ModManager
+        from services.profile_service import is_profile_key
+        from services.used_mods_service import UsedModsManager
 
-        NOTE: This method depends on private APIs:
-        - profile_service._read_profile()
-        - used_mods_service._find_mod_by_id()
-        These private methods can break on service refactors.
-        """
         data = profile_service._read_profile(profile_name)
-        if not data:
-            return None
+        game = get_game(game_id)
+        if not isinstance(data, dict) or not data or game is None:
+            raise ValueError(f"Profile is unavailable: {profile_name}")
+        state = AppState()
+        state.local_config = {
+            key: value for key, value in self._app_state.local_config.items()
+            if not is_profile_key(key)
+        }
+        state.local_config.update(data)
+        state.local_config["active_profile"] = profile_name
+        state.game_mode = game
+        state.current_mode = "chapter" if data.get("chapter_mode_enabled") else "normal"
+        state.mods_dir = str(profile_service._profile_dir(profile_name))
         parent_window = self.parent()
-        used_mods_service = getattr(parent_window, "used_mods_service", None)
-        if not used_mods_service:
-            return None
-        chapter_mods = {}
-        for key, value in data.items():
-            if not key.startswith(f"used_mods_{game_id}") or not isinstance(
-                value, dict
-            ):
-                continue
-            for chapter_id_str, mod_data_raw in value.items():
-                mod_ids = (
-                    [mod_data_raw]
-                    if isinstance(mod_data_raw, str)
-                    else (mod_data_raw if isinstance(mod_data_raw, list) else [])
-                )
-                mods_list = [
-                    m
-                    for mod_id in mod_ids
-                    if mod_id and (m := used_mods_service._find_mod_by_id(mod_id))
-                ]
-                if mods_list and chapter_id_str not in chapter_mods:
-                    chapter_mods[chapter_id_str] = mods_list
-        return chapter_mods or None
+        feedback = getattr(parent_window, "feedback_service", None)
+        settings_service = getattr(parent_window, "settings_service", None)
+        if feedback is None or settings_service is None:
+            raise ValueError("Profile services are unavailable")
+        mod_service = ModManager(state, feedback)
+        mod_service._migrate_owned_mods()
+        used_mods = UsedModsManager(state, mod_service, feedback, settings_service)
+        selected = data.get(used_mods.get_used_mods_config_key(), {})
+        if not isinstance(selected, dict):
+            raise ValueError(f"Invalid mod selections in profile: {profile_name}")
+        for section, raw in selected.items():
+            mod_ids = [raw] if isinstance(raw, str) else raw
+            if not isinstance(mod_ids, list):
+                raise ValueError(f"Invalid mod selections in profile: {profile_name}")
+            mods = []
+            if any(not isinstance(mod_id, str) for mod_id in mod_ids):
+                raise ValueError(f"Invalid mod selections in profile: {profile_name}")
+            for mod_id in dict.fromkeys(mod_ids):
+                if not isinstance(mod_id, str) or not (config := mod_service.get_mod_config(mod_id)):
+                    raise ValueError(f"Selected mod is unavailable in {profile_name}: {mod_id}")
+                if config.get("game") != game_id:
+                    raise ValueError(f"Selected mod belongs to a different game: {mod_id}")
+                mods.append(config)
+            used_mods.used_mods[migrate_legacy_chapter_id(str(section))] = mods
+        chapter_mods = {
+            section: used_mods.get_mod_steps(section)
+            for section, mods in used_mods.used_mods.items() if mods
+        }
+        return chapter_mods or None, state, mod_service
 
     def _do_import(self, game_id: str):
         from ui.common.feedback import FeedbackManager

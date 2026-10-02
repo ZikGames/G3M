@@ -15,7 +15,11 @@ from services.localization_service import (
     localization_service,
     tr,
 )
-from ui.common.styling import get_border_radius, rgba_from_color
+from ui.common.styling import (
+    get_border_radius,
+    rgba_from_color,
+    sync_scroll_area_height,
+)
 from ui.utils.ui_utils import DebounceTimer
 from utils.path_utils import resource_path
 from workers.background_loader_worker import BgLoader
@@ -162,13 +166,11 @@ class ThemeController:
             if background_disabled or new_background_path != current_bg_path:
                 self.app.background_pixmap = None
             if not background_disabled and new_background_path:
-                self.app._bg_loader = BgLoader(new_background_path, self.app.size())
+                self.app._bg_loader = BgLoader(new_background_path)
                 self.app._bg_loader.loaded.connect(self.on_background_ready)
                 self.app._bg_loader.start()
             self.app._current_background_path = new_background_path
             self.app._background_was_disabled = background_disabled
-
-        self._current_zoom = zoom_factor
 
         def scale(x):
             return max(1, int(x * zoom_factor))
@@ -215,6 +217,7 @@ class ThemeController:
             custom_border_radius=custom_border_radius,
         )
         for fs in self._iter_filter_scrolls():
+            fs.setMinimumHeight(0)
             fs.setMaximumHeight(QWIDGETSIZE_MAX)
         app_inst = QApplication.instance()
         (app_inst if isinstance(app_inst, QApplication) else self.app).setStyleSheet(
@@ -410,7 +413,7 @@ class ThemeController:
                     w.adjustSize()
                     w.updateGeometry()
                     fs.updateGeometry()
-                    fs.setMaximumHeight(w.sizeHint().height())
+                    sync_scroll_area_height(w, fs)
 
     def on_background_ready(self, obj):
 
@@ -469,9 +472,9 @@ class ThemeController:
 
     def init_theme_list(self):
         import os
-        import zipfile
 
-        from utils.path_utils import get_user_themes_dir, resource_path
+        from utils.mod.archive import list_archive_members
+        from utils.path_utils import get_user_themes_dir
 
         user_dir = get_user_themes_dir()
         os.makedirs(user_dir, exist_ok=True)
@@ -486,10 +489,10 @@ class ThemeController:
                 return False
             archive_path = os.path.join(dir_path, filename)
             try:
-                with zipfile.ZipFile(archive_path, "r") as zipf:
-                    names = {
-                        name.replace("\\", "/").strip("/") for name in zipf.namelist()
-                    }
+                names = {
+                    member.name.replace("\\", "/").strip("/")
+                    for member in list_archive_members(archive_path)
+                }
                 return any(
                     name.endswith("/theme.json") or name == "theme.json"
                     for name in names
@@ -499,7 +502,7 @@ class ThemeController:
 
         themes = {
             f[:-4]
-            for d in (resource_path("assets/themes"), user_dir)
+            for d in (user_dir,)
             if os.path.exists(d)
             for f in os.listdir(d)
             if f.lower().endswith(".zip") and not _is_hidden_legacy_theme(d, f)
@@ -518,11 +521,9 @@ class ThemeController:
         if hasattr(self.app, "theme_delete_btn") and theme_name:
             import os
 
-            from utils.path_utils import resource_path
+            from utils.path_utils import get_user_themes_dir
 
-            self.app.theme_delete_btn.setEnabled(
-                not os.path.exists(resource_path(f"assets/themes/{theme_name}.zip"))
-            )
+            self.app.theme_delete_btn.setEnabled(os.path.exists(os.path.join(get_user_themes_dir(), f"{theme_name}.zip")))
 
     def on_theme_apply_clicked(self):
         theme_name = self.app.themes_list_widget.currentText()
@@ -530,11 +531,10 @@ class ThemeController:
             return
         import os
 
-        from utils.path_utils import get_user_themes_dir, resource_path
+        from utils.path_utils import get_user_themes_dir
 
         for p in (
             os.path.join(get_user_themes_dir(), f"{theme_name}.zip"),
-            resource_path(f"assets/themes/{theme_name}.zip"),
         ):
             if os.path.exists(p):
                 return self.settings_service._install_theme_from_file(p)
@@ -573,15 +573,7 @@ class ThemeController:
             return
         import os
 
-        from utils.path_utils import get_user_themes_dir, resource_path
-
-        if os.path.exists(resource_path(f"assets/themes/{theme_name}.zip")):
-            return self._safe_show_message(
-                "warning",
-                "dialogs.error",
-                tr("errors.cannot_delete_builtin_theme"),
-            )
-
+        from utils.path_utils import get_user_themes_dir
         theme_path = os.path.join(get_user_themes_dir(), f"{theme_name}.zip")
         if os.path.exists(theme_path) and self.feedback_service.ask_question(
             "dialogs.theme_delete_title",
@@ -592,6 +584,9 @@ class ThemeController:
                 self.init_theme_list()
             except Exception as e:
                 logger.error(f"Failed to delete theme: {e}")
+                from utils.process_utils import format_filesystem_error
+
+                self._safe_show_message("error", "dialogs.error", format_filesystem_error(e))
 
     def on_theme_changed_by_service(self):
         self._debounce_timer.call(self._apply_theme_change)

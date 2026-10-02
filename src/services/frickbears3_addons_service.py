@@ -9,14 +9,16 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from services.migration_service import build_extra_file_entry
 from utils.file_utils import (
     get_unique_mod_dir,
     remove_archive_extension,
     sanitize_filename,
-    save_json,
 )
-from utils.mod.config_parser import build_mod_config_data
+from utils.mod.config import (
+    MOD_CONFIG_VERSION,
+    parse_mod_config,
+    write_mod_config,
+)
 
 _SIGNATURE_FILES = (
     "opening_dialogue.txt",
@@ -85,6 +87,8 @@ class Frickbears3AddonsService:
             source_file_path=source_file_path,
             metadata=metadata,
         )
+        config_data = self._build_config_data(mod_name, metadata)
+        parse_mod_config(config_data)
         target_mod_dir = os.path.join(mods_dir, get_unique_mod_dir(mods_dir, mod_name))
         os.makedirs(target_mod_dir, exist_ok=True)
 
@@ -94,11 +98,7 @@ class Frickbears3AddonsService:
             guard_name = self._resolve_guard_folder_name(root_dir)
             shutil.copytree(root_dir, os.path.join(addons_root, guard_name), dirs_exist_ok=True)
 
-        save_json(
-            os.path.join(target_mod_dir, "mod_config.json"),
-            build_mod_config_data(self._build_config_data(mod_name, metadata)),
-            indent=2,
-        )
+        write_mod_config(os.path.join(target_mod_dir, "mod_config.json"), config_data)
         return target_mod_dir
 
     @staticmethod
@@ -152,18 +152,25 @@ class Frickbears3AddonsService:
         gb_mod_id = str(metadata.get("mod_id") or "").strip()
         mod_id = f"gb_{item_type}_{gb_mod_id}" if gb_mod_id else f"local_frickbears3_addon_{uuid.uuid4().hex[:8]}"
         config_data: dict[str, Any] = {
+            "config_version": MOD_CONFIG_VERSION,
             "id": mod_id,
             "name": mod_name,
             "game": "frickbears3",
-            "author": str(metadata.get("author") or "Unknown"),
             "version": str(metadata.get("version") or "1.0.0"),
-            "files": {
-                "frickbears3": {
-                    "extra_files": [
-                        build_extra_file_entry("addons/", "game_data_folder")
-                    ]
+            "authors": [
+                str(name).strip()
+                for name in metadata.get("authors", [])
+                if isinstance(metadata.get("authors"), list)
+                if str(name).strip()
+            ]
+            or ["Unknown"],
+            "files": [
+                {
+                    "source": "${mod_path}/addons/",
+                    "target": "${game_data_path}/addons/",
+                    "type": "extract",
                 }
-            },
+            ],
         }
         for field_name in ("description", "icon", "homepage"):
             value = metadata.get(field_name)

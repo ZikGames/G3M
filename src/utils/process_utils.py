@@ -257,6 +257,12 @@ def format_plugin_error(
     }
     if error_code in error_map:
         return error_map[error_code]
+    if isinstance(error, ModuleNotFoundError):
+        return tr(
+            "plugins.error_missing_module",
+            plugin=plugin_label,
+            module=error.name or error_code,
+        )
     if isinstance(error, FileNotFoundError):
         return tr("plugins.error_file_not_found", path=getattr(error, "filename", "") or plugin_path)
     if isinstance(error, PermissionError):

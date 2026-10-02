@@ -1,81 +1,40 @@
-"""Dialog for manually installing local mods."""
+"""Create one current-format local mod from otherwise unrecognised files."""
+
+from __future__ import annotations
 
 import logging
 import os
 import shutil
-from pathlib import PureWindowsPath
+import uuid
+from pathlib import Path, PurePosixPath
 from typing import override
 
-from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QHBoxLayout,
+    QFormLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
-    QWidget,
 )
 
-from config.config import (
-    DATA_FILE_EXTENSIONS,
-    MANUAL_INSTALL_OPENABLE_DOC_EXTENSIONS,
-    MOD_CONFIG_FILENAME,
-)
-from models.game_modes import get_all_game_entries, get_game
+from config.config import MOD_DOCUMENTATION_EXTENSIONS
+from models.game_modes import get_visible_game_entries
 from services.localization_service import tr
-from services.migration_service import (
-    EXTRA_FILE_TARGET_CUSTOM,
-    EXTRA_FILE_TARGET_GAME_DATA_FOLDER,
-    EXTRA_FILE_TARGET_GAME_FOLDER,
-    EXTRA_FILE_TARGET_NONE,
-    build_extra_file_entry,
-)
-from ui.common.dialog_theme import get_dialog_theme_values
-from ui.common.styling import clamp_border_radius, get_ui_scale_factor
-from ui.dialogs.manual_install.paths import (
-    default_extra_target_path,
-    extract_chapter_prefixed_path,
-    is_safe_relative_path,
-    normalize_path,
-    normalize_relative_target_path,
-)
-from ui.dialogs.manual_install.storage import (
-    build_manual_mod_identity,
-    copy_file_to_relative_path,
-    copy_root_docs_to_mod,
-    create_manual_mod_dir,
-    join_storage_path,
-)
-from ui.dialogs.manual_install.targets import (
-    get_or_prompt_game_folder,
-    is_path_within_target_root,
-    read_configured_game_root,
-    resolve_target_root_for_chapter,
-)
-from utils.file_utils import (
-    get_chapter_folder_name,
-    save_json,
-)
-from utils.mod.config_parser import build_mod_config_data
-from utils.native_integration import (
-    get_existing_directory,
-    get_open_file_name,
-    open_path_native,
-)
-from utils.path_utils import colored_icon
+from utils.file_utils import get_unique_mod_dir, remove_archive_extension
+from utils.mod.config import MOD_CONFIG_TAGS, MOD_CONFIG_VERSION, write_mod_config
 from utils.process_utils import format_filesystem_error
 
 logger = logging.getLogger(__name__)
 
 
 class ManualModInstallDialog(QDialog):
+    """Copy source files first, then configure their explicit operations."""
+
     def __init__(
         self,
         parent,
@@ -83,1487 +42,229 @@ class ManualModInstallDialog(QDialog):
         gamebanana_metadata: dict | None = None,
         source_file_path: str | None = None,
         initial_game_type: str | None = None,
+        *, target_mods_dir: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.prepared_files_path = prepared_files_path
         self.gamebanana_metadata = gamebanana_metadata or {}
         self.source_file_path = source_file_path
-        self.app_state = None
-        self.mod_service = None
-        p = parent
-        while p:
-            if hasattr(p, "app_state") and hasattr(p, "mod_service"):
-                self.app_state = p.app_state
-                self.mod_service = p.mod_service
-                break
-            p = p.parent() if hasattr(p, "parent") and callable(p.parent) else None
-        if self.app_state is None:
-            self.app_state = self._resolve_app_state(parent)
-        self.temp_dir_to_cleanup = None
         self.initial_game_type = initial_game_type
-        self.data_file_selections = {}
-        self.extra_files_mappings = {}
-        self.extra_files_chapters = {}
-        self.extra_file_targets = {}
-        self.all_files = []
-        self.extra_file_widgets = {}
-        self.unused_files = set()
-        self.additional_patches_mappings = {}
-        self.additional_patch_widgets = {}
-        self.setWindowTitle(tr("dialogs.manual_install_title"))
+        self.target_mods_dir = target_mods_dir
+        self.temp_dir_to_cleanup: str | None = None
+        self.app_state, self.mod_service = self._find_services(parent)
+        self.all_files = self._scan_files()
+        self.resize(760, 560)
+        self.setMinimumSize(620, 440)
         self.setModal(True)
-        self.resize(900, 700)
-        self.setMinimumSize(800, 600)
-        self._scan_files()
-        self.init_ui()
-
-    @override
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        self._center_on_screen()
-
-    def _center_on_screen(self):
-        screen = (
-            self.screen() or self.windowHandle().screen()
-            if self.windowHandle()
-            else None
-        )
-        if screen is None and self.parentWidget():
-            screen = self.parentWidget().screen()
-        if screen is None:
-            return
-        frame = self.frameGeometry()
-        frame.moveCenter(screen.availableGeometry().center())
-        self.move(frame.topLeft())
-
-    def _icon(self, icon_name: str):
-        icon_key = {
-            "folder_icon.svg": "folder",
-            "delete_icon.svg": "delete",
-            "cross_icon.svg": "cross",
-            "add_icon.svg": "add",
-        }.get(icon_name, "folder")
-        return colored_icon(icon_key, self._theme_value("main_text", "#e8e9eb"))
-
-    def _mix_color(self, color_value: str, factor=0.18):
-        color = QColor(color_value)
-        if not color.isValid():
-            return color_value
-        base = QColor(0, 0, 0)
-        mixed = QColor(
-            round(color.red() * (1 - factor) + base.red() * factor),
-            round(color.green() * (1 - factor) + base.green() * factor),
-            round(color.blue() * (1 - factor) + base.blue() * factor),
-            235,
-        )
-        return mixed.name(QColor.NameFormat.HexArgb)
-
-    def _theme_value(self, key: str, fallback: str) -> str:
-        app_state = self.app_state
-        theme = get_dialog_theme_values(app_state) if app_state else {}
-        return theme.get(key, fallback)
+        self._build_ui()
+        self._populate()
+        self.relocalize_ui()
 
     @staticmethod
-    def _resolve_app_state(start_obj) -> object | None:
-        current = start_obj
-        visited = set()
+    def _find_services(parent) -> tuple[object | None, object | None]:
+        current, visited = parent, set()
         while current is not None and id(current) not in visited:
             visited.add(id(current))
-            app_state = getattr(current, "app_state", None)
-            if (
-                app_state is not None
-                and getattr(app_state, "local_config", None) is not None
-            ):
-                return app_state
-            parent_getter = getattr(current, "parent", None)
-            if callable(parent_getter):
-                current = parent_getter()
-            else:
-                current = None
-        return None
+            state = getattr(current, "app_state", None)
+            if state is not None:
+                return state, getattr(current, "mod_service", None)
+            getter = getattr(current, "parent", None)
+            current = getter() if callable(getter) else None
+        return None, None
 
-    def _ui_scale(self) -> float:
-        config = getattr(self.app_state, "local_config", None)
-        return get_ui_scale_factor(config, default=1.0) if config else 1.0
-
-    def _icon_size(self, base: int) -> QSize:
-        size = max(14, round(base * self._ui_scale()))
-        return QSize(size, size)
-
-    def closeEvent(self, event):
-        if self.temp_dir_to_cleanup and os.path.exists(self.temp_dir_to_cleanup):
-            try:
-                shutil.rmtree(self.temp_dir_to_cleanup, ignore_errors=True)
-            except Exception as e:
-                logger.warning(f"Failed to cleanup temp directory: {e}")
-        super().closeEvent(event)
-
-    def _scan_files(self):
-        self.all_files = []
-        if not os.path.exists(self.prepared_files_path):
-            return
-        for root, _dirs, files in os.walk(self.prepared_files_path):
-            for file in files:
-                file_path = os.path.join(root, file)
-                rel_path = os.path.relpath(file_path, self.prepared_files_path)
-                self.all_files.append((file_path, rel_path))
-
-    def init_ui(self):
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(18, 18, 18, 18)
-        main_layout.setSpacing(14)
-
-        game_layout = QHBoxLayout()
-        game_layout.addStretch()
-        self.game_label = QLabel(tr("ui.mod_type_label"))
-        game_layout.addWidget(self.game_label)
-        self.game_combo = QComboBox()
-        self.game_combo.setMinimumWidth(240)
-        self.game_combo.setToolTip(tr("tooltips.manual_install_game"))
-        self.game_label.setBuddy(self.game_combo)
-        for entry in get_all_game_entries():
-            self.game_combo.addItem(entry.display_name, entry.id)
-        game_value = self.initial_game_type
-        if not game_value and self.app_state and hasattr(self.app_state, "game_mode"):
-            from services.game_detection_service import get_game_type_string
-
-            game_value = get_game_type_string(self.app_state.game_mode)
-        if game_value:
-            for i in range(self.game_combo.count()):
-                if self.game_combo.itemData(i) == game_value:
-                    self.game_combo.setCurrentIndex(i)
-                    break
-        self.game_combo.currentIndexChanged.connect(self._update_file_tabs)
-        game_layout.addWidget(self.game_combo)
-        game_layout.addStretch()
-        main_layout.addLayout(game_layout)
-        main_layout.addWidget(self._build_summary_card())
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setStyleSheet("QTabWidget::tab-bar { alignment: center; }")
-        self._create_data_tab()
-        self._create_extra_files_tab()
-        main_layout.addWidget(self.tab_widget)
-        self.button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+    def _scan_files(self) -> list[tuple[str, str]]:
+        root = Path(self.prepared_files_path)
+        if not root.is_dir():
+            return []
+        return sorted(
+            (
+                (str(path), path.relative_to(root).as_posix())
+                for path in root.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            ),
+            key=lambda item: item[1].casefold(),
         )
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText(
-            tr("dialogs.finish_creating_mod")
-        )
-        self.button_box.accepted.connect(self._on_finish)
-        self.button_box.rejected.connect(self.reject)
-        main_layout.addWidget(self.button_box)
-        self._apply_theme_styles()
 
-    def _build_summary_card(self) -> QWidget:
-        frame = QWidget()
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(4)
-        self.files_summary_label = QLabel()
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(12)
+        form = QFormLayout()
+        self.game_combo = QComboBox(self)
+        for game in get_visible_game_entries():
+            self.game_combo.addItem(game.display_name, game.id)
+        form.addRow(QLabel(tr("ui.mod_type_label"), self), self.game_combo)
+        self.name_edit = QLineEdit(self)
+        form.addRow(QLabel(tr("ui.mod_name_label"), self), self.name_edit)
+        self.authors_edit = QLineEdit(self)
+        form.addRow(QLabel(tr("ui.mod_authors"), self), self.authors_edit)
+        root.addLayout(form)
+        self.files_summary_label = QLabel(self)
+        self.files_summary_label.setObjectName("manualInstallHint")
         self.files_summary_label.setWordWrap(True)
-        self.files_summary_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.files_summary_label.setToolTip(tr("tooltips.manual_install_summary"))
-        layout.addWidget(self.files_summary_label)
-        self._refresh_summary_text()
-        return frame
-
-    def _refresh_summary_text(self):
-        total = len(self.all_files)
-        docs = sum(1 for fp, _ in self.all_files if self._is_openable_doc(fp))
-        possible_data = sum(
-            1
-            for fp, _ in self.all_files
-            if os.path.splitext(fp)[1].lower() in DATA_FILE_EXTENSIONS
+        root.addWidget(self.files_summary_label)
+        self.sources = QTreeWidget(self)
+        self.sources.setHeaderHidden(True)
+        root.addWidget(self.sources, 1)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,
+            parent=self,
         )
-        assigned_data_paths = set(self.data_file_selections.values())
-        for patch_map in self.additional_patches_mappings.values():
-            assigned_data_paths.update(patch_map.keys())
-        data_count = max(0, possible_data - len(assigned_data_paths))
-        text = tr(
-            "ui.manual_install_summary",
-            total=total,
-            docs=docs,
-            data=data_count,
-        )
-        if hasattr(self, "files_summary_label"):
-            self.files_summary_label.setText(text)
+        self.buttons.accepted.connect(self._on_finish)
+        self.buttons.rejected.connect(self.reject)
+        root.addWidget(self.buttons)
 
-    def _create_data_tab(self):
-        data_widget = QWidget()
-        data_layout = QVBoxLayout(data_widget)
-        data_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        info_label = QLabel(tr("dialogs.data_tab_info"))
-        self.data_tab_info_label = info_label
-        info_label.setWordWrap(True)
-        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info_label.setProperty("hintText", True)
-        info_label.setToolTip(tr("tooltips.manual_install_data_tab"))
-        data_layout.addWidget(info_label)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout(scroll_content)
-        self.data_tabs = QTabWidget()
-        self.data_tabs.setStyleSheet("QTabWidget::tab-bar { alignment: center; }")
-        scroll_layout.addWidget(self.data_tabs)
-        scroll.setWidget(scroll_content)
-        data_layout.addWidget(scroll)
-        self.tab_widget.addTab(data_widget, tr("dialogs.data_tab"))
-        self._update_file_tabs()
-
-    def _create_extra_files_tab(self):
-        extra_widget = QWidget()
-        extra_layout = QVBoxLayout(extra_widget)
-        extra_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.extra_instructions_label = QLabel(self._extra_files_instructions_text())
-        self.extra_instructions_label.setWordWrap(True)
-        self.extra_instructions_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.extra_instructions_label.setProperty("hintText", True)
-        self.extra_instructions_label.setToolTip(
-            tr("tooltips.manual_install_extra_tab")
+    def _populate(self) -> None:
+        source_name = (
+            remove_archive_extension(os.path.basename(self.source_file_path))
+            if self.source_file_path
+            else Path(self.prepared_files_path).name
         )
-        self.extra_instructions_label.setStyleSheet("font-size: 11px; padding: 10px;")
-        extra_layout.addWidget(self.extra_instructions_label)
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setMaximumHeight(400)
-        scroll_area.setMinimumHeight(200)
-        scroll_content = QWidget()
-        self.extra_files_list_layout = QVBoxLayout(scroll_content)
-        self.extra_files_list_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.extra_files_list_layout.setSpacing(10)
-        scroll_area.setWidget(scroll_content)
-        extra_layout.addWidget(scroll_area, 1)
-        self.tab_widget.addTab(extra_widget, tr("dialogs.extra_files_tab"))
-        self._populate_extra_files_list()
+        self.name_edit.setText(str(self.gamebanana_metadata.get("name") or source_name or "Manual Mod"))
+        authors = self.gamebanana_metadata.get("authors")
+        self.authors_edit.setText(
+            ", ".join(str(name).strip() for name in authors if str(name).strip())
+            if isinstance(authors, list)
+            else "Unknown"
+        )
+        wanted = self.initial_game_type or ""
+        for index in range(self.game_combo.count()):
+            if self.game_combo.itemData(index) == wanted:
+                self.game_combo.setCurrentIndex(index)
+                break
+        for _source, relative in self.all_files:
+            self.sources.addTopLevelItem(QTreeWidgetItem([relative]))
+        self.files_summary_label.setText(
+            tr("ui.manual_install_hint", count=len(self.all_files))
+        )
 
     def relocalize_ui(self) -> None:
-        """Refresh persistent G3M-owned text without changing user selections."""
         self.setWindowTitle(tr("dialogs.manual_install_title"))
-        self.game_label.setText(tr("ui.mod_type_label"))
-        self.game_combo.setAccessibleName(self.game_label.text().replace("&", ""))
-        self.game_combo.setToolTip(tr("tooltips.manual_install_game"))
-        self.files_summary_label.setToolTip(tr("tooltips.manual_install_summary"))
-        self._refresh_summary_text()
-        self.data_tab_info_label.setText(tr("dialogs.data_tab_info"))
-        self.data_tab_info_label.setToolTip(tr("tooltips.manual_install_data_tab"))
-        self.extra_instructions_label.setToolTip(
-            tr("tooltips.manual_install_extra_tab")
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+            tr("ui.manual_install_configure")
         )
-        self.tab_widget.setTabText(0, tr("dialogs.data_tab"))
-        self.tab_widget.setTabText(1, tr("dialogs.extra_files_tab"))
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText(
-            tr("dialogs.finish_creating_mod")
-        )
-        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText(
-            tr("dialogs.cancel")
-        )
-        self._update_file_tabs()
-
-    def _update_file_tabs(self):
-        self.data_tabs.clear()
-        self.data_file_edits = {}
-        game = self.game_combo.currentData()
-        game_def = get_game(game)
-        if game_def and game_def.is_multi_tab:
-            for tab in game_def.tabs:
-                name = tr(tab.name_key)
-                widget = self._create_chapter_data_widget(tab.tab_id, display_name=name)
-                self.data_tabs.addTab(widget, name)
-        else:
-            game_display = self.game_combo.currentText()
-            single_widget = self._create_chapter_data_widget(
-                game, display_name=game_display
-            )
-            self.data_tabs.addTab(single_widget, tr("dialogs.data_file"))
-        self._update_extra_files_instructions()
-        self._populate_extra_files_list()
-
-    def _chapter_entries(self) -> list[tuple[str, str]]:
-        game = self.game_combo.currentData()
-        game_def = get_game(game)
-        if game_def and game_def.is_multi_tab:
-            return [(tab.tab_id, tr(tab.name_key)) for tab in game_def.tabs]
-        return [(game, self.game_combo.currentText())]
-
-    def _extra_files_instructions_text(self) -> str:
-        if self.game_combo.currentData() == "deltarune":
-            return tr("dialogs.extra_files_path_instructions_deltarune")
-        return tr("dialogs.extra_files_path_instructions")
-
-    def _update_extra_files_instructions(self) -> None:
-        label = getattr(self, "extra_instructions_label", None)
-        if label is not None:
-            label.setText(self._extra_files_instructions_text())
-
-    def _create_chapter_data_widget(
-        self, chapter_id: str, display_name: str = ""
-    ) -> QWidget:
-        widget = QWidget()
-        widget._chapter_id = chapter_id
-        layout = QVBoxLayout(widget)
-        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        label = display_name or self._chapter_display_name(chapter_id)
-        info_text = tr("dialogs.select_data_file_for_section", section=label)
-        info_label = QLabel(info_text)
-        info_label.setWordWrap(True)
-        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info_label.setProperty("hintText", True)
-        layout.addWidget(info_label)
-        file_path_layout = QHBoxLayout()
-        self.data_file_edits = getattr(self, "data_file_edits", {})
-        file_edit = QLineEdit()
-        file_edit.setReadOnly(True)
-        file_edit.setPlaceholderText(tr("dialogs.no_file_selected"))
-        file_edit.setToolTip(tr("tooltips.manual_install_data_file"))
-        if chapter_id in self.data_file_selections:
-            file_edit.setText(self.data_file_selections[chapter_id])
-        self.data_file_edits[chapter_id] = file_edit
-        file_path_layout.addWidget(file_edit)
-        browse_btn = self._make_tool_button(
-            "folder_icon.svg", tr("ui.browse_button"), tr("ui.browse_button")
-        )
-        browse_btn.clicked.connect(
-            lambda checked, cid=chapter_id: self._browse_data_file(cid)
-        )
-        file_path_layout.addWidget(browse_btn)
-        clear_btn = self._make_tool_button("cross_icon.svg", tr("ui.clear_button"), "")
-        clear_btn.setToolTip(tr("tooltips.clear_selection"))
-        clear_btn.clicked.connect(
-            lambda checked, cid=chapter_id: self._clear_data_file(cid)
-        )
-        file_path_layout.addWidget(clear_btn)
-        layout.addLayout(file_path_layout)
-        add_patch_btn = QPushButton(tr("dialogs.add_additional_patch"))
-        add_patch_btn.setIcon(self._icon("add_icon.svg"))
-        add_patch_btn.setToolTip(tr("tooltips.manual_install_additional_patch"))
-        add_patch_btn.clicked.connect(
-            lambda checked, cid=chapter_id: self._add_additional_patch(cid)
-        )
-        layout.addWidget(add_patch_btn, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addSpacing(10)
-        additional_patches_section = self._create_additional_patches_section(chapter_id)
-        if additional_patches_section:
-            layout.addWidget(additional_patches_section)
-        layout.addStretch()
-        return widget
-
-    def _show_file_picker_dialog(
-        self, files: list, title: str, label_text: str
-    ) -> str | None:
-        file_dialog = QDialog(self)
-        file_dialog.setWindowTitle(title)
-        file_dialog.resize(600, 400)
-        layout = QVBoxLayout(file_dialog)
-        layout.addWidget(QLabel(label_text))
-        from PyQt6.QtWidgets import QListWidget
-
-        list_widget = QListWidget()
-        for file_path, rel_path in files:
-            item_text = f"{os.path.basename(file_path)} ({rel_path})"
-            list_widget.addItem(item_text)
-            list_widget.item(list_widget.count() - 1).setData(
-                Qt.ItemDataRole.UserRole, file_path
-            )
-        list_widget.itemDoubleClicked.connect(self._on_picker_item_double_clicked)
-        if list_widget.count() > 0:
-            list_widget.setCurrentRow(0)
-        layout.addWidget(list_widget)
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        button_box.accepted.connect(file_dialog.accept)
-        button_box.rejected.connect(file_dialog.reject)
-        layout.addWidget(button_box)
-        if file_dialog.exec() == QDialog.DialogCode.Accepted:
-            current_item = list_widget.currentItem()
-            if current_item:
-                return current_item.data(Qt.ItemDataRole.UserRole)
-        return None
-
-    def _on_picker_item_double_clicked(self, item):
-        file_path = item.data(Qt.ItemDataRole.UserRole) if item else ""
-        if self._is_openable_doc(file_path):
-            self._open_local_file(file_path)
 
     @staticmethod
-    def _is_openable_doc(file_path: str) -> bool:
-        return (
-            os.path.splitext(file_path)[1].lower()
-            in MANUAL_INSTALL_OPENABLE_DOC_EXTENSIONS
-        )
+    def _safe_relative_path(value: str) -> PurePosixPath:
+        relative = PurePosixPath(value.replace("\\", "/"))
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise ValueError("source path must remain inside the selected import")
+        return relative
 
-    def _create_file_name_widget(self, file_path: str, rel_path: str) -> QWidget:
-        file_name = os.path.basename(file_path)
-        if not self._is_openable_doc(file_path):
-            label = QLabel(file_name)
-            label.setToolTip(rel_path)
-            label.setMinimumWidth(120)
-            label.setMaximumWidth(200)
-            return label
-        button = QPushButton(file_name)
-        theme = get_dialog_theme_values(self.app_state) if self.app_state else {}
-        theme_color = theme.get("secondary_text", "#6de985")
-        button.setFlat(True)
-        button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setToolTip(f"{rel_path}\n{tr('ui.open_instructions')}")
-        button.setMinimumWidth(120)
-        button.setMaximumWidth(200)
-        button.setStyleSheet(
-            f"QPushButton {{ text-align: left; color: {theme_color}; border: none; padding: 0px; }}"
-            "QPushButton:hover { text-decoration: underline; }"
-        )
-        button.clicked.connect(lambda _=False, p=file_path: self._open_local_file(p))
-        return button
-
-    def _make_tool_button(self, icon_name, tooltip: str, text: str = "") -> QPushButton:
-        button = QPushButton(text)
-        button.setIcon(self._icon(icon_name))
-        button.setIconSize(self._icon_size(18))
-        button.setToolTip(tooltip)
-        return button
-
-    def _open_local_file(self, file_path: str):
-        if not self._is_openable_doc(file_path):
-            return
-        if not file_path or not os.path.exists(file_path):
-            self._safe_warning(
-                tr("errors.error"),
-                tr("errors.file_not_found", path=file_path or "?"),
-            )
-            return
-        if not open_path_native(file_path):
-            self._safe_warning(tr("errors.error"), file_path)
-
-    def _browse_data_file(self, chapter_id: str):
-        selected_data, used_patches = self._get_excluded_files()
-        excluded = selected_data | used_patches
-        found_files = [
-            (fp, rp)
-            for fp, rp in self.all_files
-            if fp not in excluded
-            and os.path.splitext(fp)[1].lower() in DATA_FILE_EXTENSIONS
-        ]
-        if not found_files:
-            self._safe_information(
-                tr("dialogs.no_data_files"),
-                tr("dialogs.no_data_files_in_directory"),
-            )
-            return
-        chapter_label = self._chapter_display_name(chapter_id)
-        file_path = self._show_file_picker_dialog(
-            found_files,
-            tr("dialogs.select_data_file", file_type="DATA"),
-            tr("dialogs.select_data_file_for_section", section=chapter_label),
-        )
-        if file_path:
-            self.data_file_selections[chapter_id] = file_path
-            if chapter_id in self.data_file_edits:
-                self.data_file_edits[chapter_id].setText(os.path.basename(file_path))
-            self._update_data_file_visibility()
-            self._populate_extra_files_list()
-            self._update_additional_patches_section(chapter_id)
-            self._refresh_summary_text()
-
-    def _clear_data_file(self, chapter_id: str):
-        if chapter_id in self.data_file_selections:
-            del self.data_file_selections[chapter_id]
-        if chapter_id in self.data_file_edits:
-            self.data_file_edits[chapter_id].clear()
-        self._update_data_file_visibility()
-        self._populate_extra_files_list()
-        self._update_additional_patches_section(chapter_id)
-        self._refresh_summary_text()
-
-    def _update_data_file_visibility(self):
-        for chapter_id in list(self.additional_patch_widgets.keys()):
-            self._update_additional_patches_section(chapter_id)
-
-    def _get_excluded_files(self):
-        selected = set(self.data_file_selections.values())
-        patches = set()
-        for p in self.additional_patches_mappings.values():
-            patches.update(p.keys())
-        return selected, patches
-
-    def _get_available_patch_files(self, chapter_id: str) -> list[tuple]:
-        selected_data, used_patches = self._get_excluded_files()
-        excluded = selected_data | self.unused_files | used_patches
-        return [
-            (fp, rp)
-            for fp, rp in self.all_files
-            if fp not in excluded
-            and os.path.splitext(fp)[1].lower()
-            in (".xdelta", ".vcdiff", ".g3mpatch", ".csx")
-        ]
-
-    def _create_additional_patches_section(self, chapter_id: str) -> QWidget | None:
-        if (
-            chapter_id not in self.additional_patches_mappings
-            or not self.additional_patches_mappings[chapter_id]
-        ):
-            return None
-        section_widget = QWidget()
-        section_layout = QVBoxLayout(section_widget)
-        section_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        section_layout.setSpacing(10)
-        info_label = QLabel(tr("dialogs.additional_patches_info"))
-        info_label.setWordWrap(True)
-        info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info_label.setProperty("hintText", True)
-        info_label.setStyleSheet("font-size: 11px; padding: 10px;")
-        section_layout.addWidget(info_label)
-        section_title = QLabel(tr("dialogs.additional_patches_section"))
-        section_title.setStyleSheet("font-weight: bold; font-size: 12px;")
-        section_layout.addWidget(section_title)
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setMaximumHeight(300)
-        scroll_area.setMinimumHeight(150)
-        scroll_content = QWidget()
-        patches_layout = QVBoxLayout(scroll_content)
-        patches_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        patches_layout.setSpacing(10)
-        if chapter_id not in self.additional_patch_widgets:
-            self.additional_patch_widgets[chapter_id] = {}
-        for file_path in self.additional_patches_mappings[chapter_id]:
-            rel_path = next((rp for fp, rp in self.all_files if fp == file_path), "")
-            patch_widget = self._create_additional_patch_widget(
-                file_path, rel_path, chapter_id
-            )
-            patches_layout.addWidget(patch_widget)
-            self.additional_patch_widgets[chapter_id][file_path] = patch_widget
-        patches_layout.addStretch()
-        scroll_area.setWidget(scroll_content)
-        section_layout.addWidget(scroll_area)
-        return section_widget
-
-    def _create_additional_patch_widget(
-        self, file_path: str, rel_path: str, chapter_id: str
-    ) -> QWidget:
-        widget = QWidget()
-        widget.setProperty("fileCard", True)
-        layout = QHBoxLayout(widget)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(10)
-        layout.addWidget(self._create_file_name_widget(file_path, rel_path))
-        path_input = QLineEdit()
-        path_input.setObjectName(f"additional_patch_path_input_{file_path}")
-        path_input.setMinimumWidth(200)
-        if (
-            chapter_id in self.additional_patches_mappings
-            and file_path in self.additional_patches_mappings[chapter_id]
-        ):
-            path_input.setText(
-                self.additional_patches_mappings[chapter_id][file_path]["path"]
-            )
-        path_input.setPlaceholderText(tr("dialogs.additional_patch_target_path"))
-        path_input.setToolTip(tr("tooltips.manual_install_additional_patch_target"))
-        path_input.textChanged.connect(
-            lambda text, fp=file_path, cid=chapter_id: (
-                self._on_additional_patch_target_path_changed(fp, text, cid)
-            )
-        )
-        layout.addWidget(path_input, 1)
-        browse_btn = self._make_tool_button(
-            "folder_icon.svg", tr("ui.browse_button"), tr("ui.browse_button")
-        )
-        browse_btn.clicked.connect(
-            lambda checked, fp=file_path, cid=chapter_id: (
-                self._browse_additional_patch_target_file(fp, cid)
-            )
-        )
-        layout.addWidget(browse_btn)
-        target_combo = QComboBox()
-        target_combo.setObjectName(f"additional_patch_target_combo_{file_path}")
-        for label_key, target in (
-            ("files.game_folder_target", EXTRA_FILE_TARGET_GAME_FOLDER),
-            ("files.data_folder_target", EXTRA_FILE_TARGET_GAME_DATA_FOLDER),
-            ("files.custom_target", EXTRA_FILE_TARGET_CUSTOM),
-        ):
-            target_combo.addItem(tr(label_key), target)
-        target_combo.setCurrentIndex(
-            max(
-                0,
-                target_combo.findData(
-                    self.additional_patches_mappings[chapter_id][file_path].get(
-                        "target", EXTRA_FILE_TARGET_GAME_FOLDER
-                    )
-                ),
-            )
-        )
-        target_combo.currentIndexChanged.connect(
-            lambda _index, fp=file_path, cid=chapter_id, combo=target_combo: self._on_additional_patch_target_changed(
-                fp, cid, str(combo.currentData() or EXTRA_FILE_TARGET_GAME_FOLDER)
-            )
-        )
-        layout.addWidget(target_combo)
-        clear_btn = self._make_tool_button("cross_icon.svg", tr("ui.clear_button"), "")
-        clear_btn.setObjectName(f"additional_patch_clear_btn_{file_path}")
-        clear_btn.setToolTip(tr("tooltips.clear_selection"))
-        clear_btn.clicked.connect(
-            lambda checked, fp=file_path, cid=chapter_id: self._clear_additional_patch(
-                fp, cid
-            )
-        )
-        layout.addWidget(clear_btn)
-        return widget
-
-    def _on_additional_patch_target_path_changed(
-        self, file_path: str, text: str, chapter_id: str
-    ):
-        target = self.additional_patches_mappings.get(chapter_id, {}).get(
-            file_path, {}
-        ).get("target", EXTRA_FILE_TARGET_GAME_FOLDER)
-        normalized = self._normalize_patch_target_path(text, chapter_id, target)
-        if (
-            normalized != text
-            and chapter_id in self.additional_patch_widgets
-            and file_path in self.additional_patch_widgets[chapter_id]
-        ):
-            widget = self.additional_patch_widgets[chapter_id][file_path]
-            path_input = widget.findChild(QLineEdit, f"additional_patch_path_input_{file_path}")
-            if path_input:
-                path_input.setText(normalized)
-        if chapter_id not in self.additional_patches_mappings:
-            self.additional_patches_mappings[chapter_id] = {}
-        if normalized:
-            self.additional_patches_mappings[chapter_id][file_path]["path"] = normalized
-        elif file_path in self.additional_patches_mappings[chapter_id]:
-            self.additional_patches_mappings[chapter_id][file_path]["path"] = ""
-
-    def _on_additional_patch_target_changed(
-        self, file_path: str, chapter_id: str, target: str
-    ) -> None:
-        patch = self.additional_patches_mappings[chapter_id][file_path]
-        patch["target"] = target
-        if target == EXTRA_FILE_TARGET_CUSTOM:
-            self._safe_warning(
-                tr("dialogs.custom_target_warning_title"),
-                tr("dialogs.custom_target_warning"),
-            )
+    def _identity(self) -> tuple[str, str]:
+        metadata = self.gamebanana_metadata
+        if metadata.get("mod_id"):
+            item_type = str(metadata.get("item_type") or "mod").lower()
+            mod_id = f"gb_{item_type}_{metadata['mod_id']}"
         else:
-            patch.pop("target_path", None)
+            mod_id = f"local_manual_{uuid.uuid4().hex[:12]}"
+        return mod_id, self.name_edit.text().strip() or "Manual Mod"
 
-    def _browse_additional_patch_target_file(self, file_path: str, chapter_id: str):
-        patch = self.additional_patches_mappings[chapter_id][file_path]
-        target = patch.get("target", EXTRA_FILE_TARGET_GAME_FOLDER)
-        target_root = (
-            os.path.expanduser("~")
-            if target == EXTRA_FILE_TARGET_CUSTOM
-            else self._get_patch_target_root(chapter_id, target)
-        )
-        if not target_root:
-            return
-        target_file, _ = get_open_file_name(
-            self, tr("dialogs.select_target_folder"), target_root
-        )
-        if target_file:
-            if target == EXTRA_FILE_TARGET_CUSTOM:
-                rel_file = os.path.basename(target_file)
-                patch["target_path"] = os.path.dirname(target_file)
-            elif is_path_within_target_root(target_root, target_file):
-                rel_file = os.path.relpath(target_file, target_root)
-                rel_file = self._normalize_patch_target_path(
-                    rel_file, chapter_id, target
-                )
-            else:
-                self._safe_warning(
-                    tr("dialogs.custom_target_warning_title"),
-                    tr("dialogs.custom_target_warning"),
-                )
-                patch["target"] = EXTRA_FILE_TARGET_CUSTOM
-                patch["target_path"] = os.path.dirname(target_file)
-                rel_file = os.path.basename(target_file)
-            if (
-                chapter_id in self.additional_patch_widgets
-                and file_path in self.additional_patch_widgets[chapter_id]
-            ):
-                widget = self.additional_patch_widgets[chapter_id][file_path]
-                path_input = widget.findChild(
-                    QLineEdit, f"additional_patch_path_input_{file_path}"
-                )
-                if path_input:
-                    path_input.setText(rel_file)
-                    patch["path"] = rel_file
-                target_combo = widget.findChild(
-                    QComboBox, f"additional_patch_target_combo_{file_path}"
-                )
-                if target_combo:
-                    target_combo.blockSignals(True)
-                    target_combo.setCurrentIndex(
-                        target_combo.findData(EXTRA_FILE_TARGET_CUSTOM)
-                    )
-                    target_combo.blockSignals(False)
+    def _copy_sources(self, destination: Path) -> tuple[list[str], list[str]]:
+        copied, docs = [], []
+        for source, raw_relative in self.all_files:
+            relative = self._safe_relative_path(raw_relative)
+            stored = PurePosixPath("files") / relative
+            target = destination.joinpath(*stored.parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            stored_path = stored.as_posix()
+            copied.append(stored_path)
+            if target.suffix.lower() in MOD_DOCUMENTATION_EXTENSIONS:
+                docs.append(stored_path)
+        return copied, docs
 
-    def _add_additional_patch(self, chapter_id: str):
-        available_patches = self._get_available_patch_files(chapter_id)
-        if not available_patches:
-            self._safe_information(
-                tr("dialogs.no_data_files"),
-                tr("dialogs.no_patch_files_available"),
-            )
-            return
-        file_path = self._show_file_picker_dialog(
-            available_patches,
-            tr("dialogs.select_additional_patch"),
-            tr("dialogs.select_additional_patch_info"),
-        )
-        if file_path:
-            if chapter_id not in self.additional_patches_mappings:
-                self.additional_patches_mappings[chapter_id] = {}
-            self.additional_patches_mappings[chapter_id][file_path] = {
-                "path": "",
-                "target": EXTRA_FILE_TARGET_GAME_FOLDER,
-            }
-            self._update_additional_patches_section(chapter_id)
-            self._populate_extra_files_list()
-            self._refresh_summary_text()
-
-    def _clear_additional_patch(self, file_path: str, chapter_id: str):
-        if (
-            chapter_id in self.additional_patches_mappings
-            and file_path in self.additional_patches_mappings[chapter_id]
-        ):
-            del self.additional_patches_mappings[chapter_id][file_path]
-        self._update_additional_patches_section(chapter_id)
-        self._populate_extra_files_list()
-        self._refresh_summary_text()
-
-    def _update_additional_patches_section(self, chapter_id: str):
-        current_tab_index = self.data_tabs.currentIndex()
-        if self.data_tabs.count() > current_tab_index:
-            current_widget = self.data_tabs.widget(current_tab_index)
-            if current_widget:
-                layout = current_widget.layout()
-                if layout:
-                    for i in range(layout.count()):
-                        item = layout.itemAt(i)
-                        if item and item.widget():
-                            widget = item.widget()
-                            if (
-                                hasattr(widget, "objectName")
-                                and widget.objectName() == "additional_patches_section"
-                            ):
-                                layout.removeWidget(widget)
-                                widget.deleteLater()
-                                break
-                    if self.additional_patches_mappings.get(chapter_id):
-                        patches_section = self._create_additional_patches_section(chapter_id)
-                        if patches_section:
-                            patches_section.setObjectName("additional_patches_section")
-                            layout.insertWidget(layout.count() - 1, patches_section)
-
-    def _populate_extra_files_list(self):
-        if not hasattr(self, "extra_files_list_layout"):
-            return
-        while self.extra_files_list_layout.count():
-            item = self.extra_files_list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        selected_data, used_patches = self._get_excluded_files()
-        extra_files = [
-            (fp, rp)
-            for fp, rp in self.all_files
-            if fp not in selected_data and fp not in used_patches
-        ]
-        if not extra_files:
-            no_files_label = QLabel(tr("dialogs.no_data_files"))
-            no_files_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.extra_files_list_layout.addWidget(no_files_label)
-            return
-        self.extra_file_widgets.clear()
-        for file_path, rel_path in extra_files:
-            file_widget = self._create_extra_file_widget(file_path, rel_path)
-            self.extra_files_list_layout.addWidget(file_widget)
-            self.extra_file_widgets[file_path] = file_widget
-            self._set_extra_file_target_controls(file_path)
-        self.extra_files_list_layout.addStretch()
-
-    def _chapter_alias_map(self) -> dict[str, str]:
-        folder_to_chapter = {}
-        for chapter_entry in self._chapter_entries():
-            chapter_id = chapter_entry[0]
-            for alias in self._chapter_path_aliases(chapter_id):
-                folder_to_chapter[alias] = chapter_id
-        return folder_to_chapter
-
-    def _extract_chapter_prefixed_path(
-        self, path: str, *, trailing_slash: bool | None = None
-    ) -> tuple[str | None, str]:
-        return extract_chapter_prefixed_path(
-            path,
-            chapter_alias_map=self._chapter_alias_map(),
-            trailing_slash=trailing_slash,
-        )
-
-    def _default_extra_target_path(self, file_path: str, rel_path: str) -> str:
-        path_value, chapter_id = default_extra_target_path(
-            file_path=file_path,
-            rel_path=rel_path,
-            chapter_alias_map=self._chapter_alias_map(),
-        )
-        if chapter_id:
-            self.extra_files_chapters.setdefault(file_path, chapter_id)
-        return path_value
-
-    def _chapter_path_aliases(self, chapter_id: str) -> set[str]:
-        aliases: set[str] = set()
-        game = self.game_combo.currentData()
-        storage_name = get_chapter_folder_name(chapter_id, game=game)
-        if storage_name:
-            aliases.add(storage_name.replace("\\", "/").strip("/").lower())
-        if "_" in chapter_id:
-            suffix = chapter_id.rsplit("_", 1)[1]
-            if suffix.isdigit():
-                aliases.add(f"chapter{suffix}")
-                aliases.add(f"chapter_{suffix}")
-                aliases.add(f"chapter{suffix}_")
-                aliases.add(f"chapter{suffix}_windows")
-        target_root = self._peek_target_root_for_chapter(chapter_id)
-        if target_root:
-            target_name = os.path.basename(os.path.normpath(target_root))
-            if target_name:
-                aliases.add(target_name.replace("\\", "/").strip("/").lower())
-        return {alias for alias in aliases if alias}
-
-    def _normalize_relative_target_path(
-        self,
-        path: str,
-        chapter_id: str,
-        *,
-        trailing_slash: bool = False,
-    ) -> str:
-        return normalize_relative_target_path(
-            path,
-            chapter_id,
-            chapter_aliases=self._chapter_path_aliases(chapter_id),
-            trailing_slash=trailing_slash,
-        )
-
-    def _create_extra_file_widget(self, file_path: str, rel_path: str) -> QWidget:
-        widget = QWidget()
-        widget.setProperty("fileCard", True)
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(6)
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        row.addWidget(self._create_file_name_widget(file_path, rel_path))
-        auto_path = self._default_extra_target_path(file_path, rel_path)
-        path_input = QLineEdit()
-        path_input.setObjectName("path_input")
-        path_input.setMinimumWidth(200)
-        if file_path in self.extra_files_mappings:
-            path_input.setText(self.extra_files_mappings[file_path])
-        elif auto_path:
-            path_input.setText(auto_path)
-            self.extra_files_mappings[file_path] = auto_path
-        path_input.setPlaceholderText(tr("dialogs.enter_relative_path"))
-        path_input.textChanged.connect(
-            lambda text, fp=file_path: self._on_path_changed(fp, text)
-        )
-        if file_path in self.unused_files:
-            path_input.setEnabled(False)
-        row.addWidget(path_input, 1)
-        browse_btn = self._make_tool_button(
-            "folder_icon.svg", tr("ui.browse_button"), tr("ui.browse_button")
-        )
-        browse_btn.setObjectName("browse_target_button")
-        browse_btn.clicked.connect(
-            lambda checked, fp=file_path: self._browse_target_folder(fp)
-        )
-        if file_path in self.unused_files:
-            browse_btn.setEnabled(False)
-        row.addWidget(browse_btn)
-        target_combo = QComboBox()
-        target_combo.setObjectName("extra_file_target_combo")
-        for label_key, target in (
-            ("files.game_folder_target", EXTRA_FILE_TARGET_GAME_FOLDER),
-            ("files.data_folder_target", EXTRA_FILE_TARGET_GAME_DATA_FOLDER),
-            ("files.dependency_only", EXTRA_FILE_TARGET_NONE),
-            ("files.custom_target", EXTRA_FILE_TARGET_CUSTOM),
-        ):
-            target_combo.addItem(tr(label_key), target)
-        target_combo.setCurrentIndex(
-            max(0, target_combo.findData(self._extra_file_target(file_path)))
-        )
-        target_combo.currentIndexChanged.connect(
-            lambda _index, fp=file_path, combo=target_combo: self._on_extra_file_target_changed(
-                fp, str(combo.currentData() or EXTRA_FILE_TARGET_GAME_FOLDER)
-            )
-        )
-        if file_path in self.unused_files:
-            target_combo.setEnabled(False)
-        row.addWidget(target_combo)
-        toggle_btn = QPushButton()
-        toggle_btn.setObjectName(f"toggle_btn_{file_path}")
-        if file_path in self.unused_files:
-            toggle_btn.setText(tr("ui.use_button"))
-        else:
-            toggle_btn.setText(tr("ui.remove_button"))
-        toggle_btn.clicked.connect(
-            lambda checked, fp=file_path: self._toggle_file_usage(fp)
-        )
-        row.addWidget(toggle_btn)
-        layout.addLayout(row)
-        custom_row = QWidget(widget)
-        custom_row.setObjectName("custom_target_row")
-        custom_layout = QHBoxLayout(custom_row)
-        custom_layout.setContentsMargins(0, 0, 0, 0)
-        custom_layout.setSpacing(8)
-        custom_layout.addWidget(QLabel(tr("files.custom_target_folder")))
-        custom_target_input = QLineEdit(self._extra_file_target_path(file_path))
-        custom_target_input.setObjectName("custom_target_path_input")
-        custom_target_input.setPlaceholderText(tr("dialogs.custom_target_folder_path"))
-        custom_target_input.textChanged.connect(
-            lambda text, fp=file_path: self._set_extra_file_target_path(fp, text)
-        )
-        custom_layout.addWidget(custom_target_input, 1)
-        custom_browse = self._make_tool_button(
-            "folder_icon.svg", tr("ui.browse_button"), tr("ui.browse_button")
-        )
-        custom_browse.clicked.connect(
-            lambda checked, fp=file_path: self._browse_custom_target_folder(fp)
-        )
-        custom_layout.addWidget(custom_browse)
-        custom_row.setVisible(self._extra_file_target(file_path) == EXTRA_FILE_TARGET_CUSTOM)
-        if file_path in self.unused_files:
-            custom_target_input.setEnabled(False)
-            custom_browse.setEnabled(False)
-        layout.addWidget(custom_row)
-        self._set_extra_file_target_controls(file_path)
-        return widget
-
-    def _on_path_changed(self, file_path: str, text: str):
-        normalized = normalize_path(text, trailing_slash=True)
-        if normalized != text and file_path in self.extra_file_widgets:
-            widget = self.extra_file_widgets[file_path]
-            path_input = widget.findChild(QLineEdit, "path_input")
-            if path_input:
-                path_input.setText(normalized)
-        if file_path not in self.unused_files:
-            chapter_id = self._extract_chapter_prefixed_path(normalized)[0]
-            if chapter_id:
-                self.extra_files_chapters[file_path] = chapter_id
-            self.extra_files_mappings[file_path] = normalized
-        elif file_path in self.extra_files_mappings:
-            del self.extra_files_mappings[file_path]
-
-    def _extra_file_target(self, file_path: str) -> str:
-        return self.extra_file_targets.get(file_path, {}).get(
-            "target", EXTRA_FILE_TARGET_GAME_FOLDER
-        )
-
-    def _extra_file_target_path(self, file_path: str) -> str:
-        return self.extra_file_targets.get(file_path, {}).get("target_path", "")
-
-    def _set_extra_file_target_path(self, file_path: str, target_path: str) -> None:
-        if self._extra_file_target(file_path) != EXTRA_FILE_TARGET_CUSTOM:
-            return
-        self.extra_file_targets.setdefault(file_path, {})["target_path"] = target_path.strip()
-
-    def _on_extra_file_target_changed(self, file_path: str, target: str) -> None:
-        target_data = self.extra_file_targets.setdefault(file_path, {})
-        target_data["target"] = target
-        if target == EXTRA_FILE_TARGET_CUSTOM:
-            self._safe_warning(
-                tr("dialogs.custom_target_warning_title"),
-                tr("dialogs.custom_target_warning"),
-            )
-        else:
-            target_data.pop("target_path", None)
-        self._set_extra_file_target_controls(file_path)
-
-    def _set_extra_file_target_controls(self, file_path: str) -> None:
-        widget = self.extra_file_widgets.get(file_path)
-        if not widget:
-            return
-        target = self._extra_file_target(file_path)
-        enabled = file_path not in self.unused_files and target != EXTRA_FILE_TARGET_NONE
-        for name in ("path_input", "browse_target_button"):
-            control = widget.findChild(QWidget, name)
-            if control:
-                control.setEnabled(enabled)
-        custom_row = widget.findChild(QWidget, "custom_target_row")
-        if custom_row:
-            custom_row.setVisible(target == EXTRA_FILE_TARGET_CUSTOM)
-            for control in custom_row.findChildren(QWidget):
-                control.setEnabled(enabled)
-
-    def _browse_target_folder(self, file_path: str):
-        target = self._extra_file_target(file_path)
-        target_root = (
-            os.path.expanduser("~")
-            if target == EXTRA_FILE_TARGET_CUSTOM
-            else self._get_patch_target_root("", target)
-        )
-        if not target_root:
-            return
-        folder = get_existing_directory(
-            self, tr("dialogs.select_target_folder"), target_root
-        )
-        if folder:
-            if target == EXTRA_FILE_TARGET_CUSTOM:
-                self._set_extra_file_target_path(file_path, folder)
-                widget = self.extra_file_widgets.get(file_path)
-                if widget:
-                    path_input = widget.findChild(QLineEdit, "custom_target_path_input")
-                    if path_input:
-                        path_input.setText(folder)
-                return
-            if is_path_within_target_root(target_root, folder):
-                rel_folder = os.path.relpath(folder, target_root)
-                rel_folder = rel_folder.replace("\\", "/").strip("/")
-                if rel_folder:
-                    rel_folder += "/"
-                if file_path in self.extra_file_widgets:
-                    widget = self.extra_file_widgets[file_path]
-                    path_input = widget.findChild(QLineEdit, "path_input")
-                    if path_input:
-                        path_input.setText(rel_folder)
-                        if target == EXTRA_FILE_TARGET_GAME_FOLDER:
-                            chapter_id = self._extract_chapter_prefixed_path(
-                                rel_folder, trailing_slash=True
-                            )[0]
-                            if chapter_id:
-                                self.extra_files_chapters[file_path] = chapter_id
-                        self.extra_files_mappings[file_path] = rel_folder
-            else:
-                self._on_extra_file_target_changed(file_path, EXTRA_FILE_TARGET_CUSTOM)
-                self._set_extra_file_target_path(file_path, folder)
-                widget = self.extra_file_widgets.get(file_path)
-                if widget:
-                    combo = widget.findChild(QComboBox, "extra_file_target_combo")
-                    if combo:
-                        combo.blockSignals(True)
-                        combo.setCurrentIndex(combo.findData(EXTRA_FILE_TARGET_CUSTOM))
-                        combo.blockSignals(False)
-                    custom_target_input = widget.findChild(
-                        QLineEdit, "custom_target_path_input"
-                    )
-                    if custom_target_input:
-                        custom_target_input.setText(folder)
-
-    def _browse_custom_target_folder(self, file_path: str) -> None:
-        folder = get_existing_directory(
-            self,
-            tr("dialogs.select_custom_target_folder"),
-            self._extra_file_target_path(file_path) or os.path.expanduser("~"),
-        )
-        if folder:
-            self._set_extra_file_target_path(file_path, folder)
-            widget = self.extra_file_widgets.get(file_path)
-            if widget:
-                path_input = widget.findChild(QLineEdit, "custom_target_path_input")
-                if path_input:
-                    path_input.setText(folder)
-
-    def _get_target_root_for_chapter(self, chapter_id: str) -> str | None:
-        game_root = self._get_or_prompt_game_folder()
-        if not game_root:
-            return None
-        return self._resolve_target_root_for_chapter(game_root, chapter_id)
-
-    def _get_patch_target_root(self, chapter_id: str, target: str) -> str | None:
-        if target == EXTRA_FILE_TARGET_GAME_FOLDER:
-            return self._get_target_root_for_chapter(chapter_id)
-        game_def = get_game(self.game_combo.currentData() or "")
-        data_root = (
-            game_def.get_data_path(self.app_state.local_config)
-            if game_def and self.app_state
-            else ""
-        )
-        if not data_root or not os.path.isdir(data_root):
-            self._safe_warning(
-                tr("errors.error"), tr("dialogs.game_data_folder_not_set")
-            )
-            return None
-        return data_root
-
-    def _normalize_patch_target_path(
-        self, path: str, chapter_id: str, target: str
-    ) -> str:
-        return (
-            normalize_path(path)
-            if target in {EXTRA_FILE_TARGET_GAME_DATA_FOLDER, EXTRA_FILE_TARGET_CUSTOM}
-            else self._normalize_relative_target_path(path, chapter_id)
-        )
-
-    def _peek_target_root_for_chapter(self, chapter_id: str) -> str | None:
-        game_def = get_game(self.game_combo.currentData() or "")
-        if (
-            not game_def
-            or not self.app_state
-            or not getattr(self.app_state, "local_config", None)
-        ):
-            return None
-        game_root = read_configured_game_root(game_def, self.app_state.local_config)
-        if not game_root:
-            return None
-        return resolve_target_root_for_chapter(game_root, chapter_id, game_def)
-
-    def _resolve_target_root_for_chapter(
-        self, game_root: str, chapter_id: str
-    ) -> str | None:
-        game_def = get_game(self.game_combo.currentData() or "")
-        return resolve_target_root_for_chapter(
-            game_root,
-            chapter_id,
-            game_def,
-        )
-
-    def _get_or_prompt_game_folder(self) -> str | None:
-        game_def = get_game(self.game_combo.currentData() or "")
-        settings_service = None
-        if hasattr(self.parent(), "settings_service"):
-            settings_service = self.parent().settings_service
-        elif self.app_state and hasattr(self.app_state, "settings_service"):
-            settings_service = self.app_state.settings_service
-        return get_or_prompt_game_folder(
-            app_state=self.app_state,
-            game_def=game_def,
-            settings_service=settings_service,
-            logger=logging.getLogger(__name__),
-        )
-
-    def _toggle_file_usage(self, file_path: str):
-        is_unused = file_path not in self.unused_files
-        if is_unused:
-            self.unused_files.add(file_path)
-            self.extra_files_mappings.pop(file_path, None)
-        else:
-            self.unused_files.discard(file_path)
-        if file_path not in self.extra_file_widgets:
-            return
-        widget = self.extra_file_widgets[file_path]
-        toggle_btn = widget.findChild(QPushButton, f"toggle_btn_{file_path}")
-        if toggle_btn:
-            toggle_btn.setText(
-                tr("ui.use_button") if is_unused else tr("ui.remove_button")
-            )
-        path_input = widget.findChild(QLineEdit, "path_input")
-        if path_input:
-            path_input.setEnabled(not is_unused)
-            if is_unused:
-                path_input.clear()
-        browse_btn = widget.findChild(QPushButton, "browse_target_button")
-        if browse_btn:
-            browse_btn.setEnabled(not is_unused)
-        target_combo = widget.findChild(QComboBox, "extra_file_target_combo")
-        if target_combo:
-            target_combo.setEnabled(not is_unused)
-        self._set_extra_file_target_controls(file_path)
-        self._refresh_summary_text()
-
-    def _apply_theme_styles(self):
-        border = self._theme_value("border", "#2d5440")
-        background = self._theme_value("background", "#132019")
-        elements = self._theme_value("elements", "#1d3a2b")
-        hint = self._theme_value("secondary_text", "#8fa89a")
-        field_bg = self._mix_color(elements, 0.08)
-        self.setStyleSheet(
-            f"""
-            QDialog {{
-                background-color: {self._mix_color(background, 0.08)};
-            }}
-            QWidget {{
-                color: {self._theme_value("main_text", "#e8e9eb")};
-            }}
-            QTabWidget::pane, QScrollArea {{
-                background-color: {field_bg};
-            }}
-            QLineEdit, QComboBox {{
-                background-color: {elements};
-            }}
-            QComboBox {{
-                border: 2px solid {border};
-                border-radius: {clamp_border_radius(7, height=max(30, round(36 * self._ui_scale())), border_width=2)}px;
-            }}
-            QComboBox QAbstractItemView {{
-                background-color: {elements};
-                border: 2px solid {border};
-                selection-background-color: {self._theme_value("hover", "#3cb371")};
-                selection-color: {self._theme_value("main_text", "#e8e9eb")};
-            }}
-            QWidget[fileCard="true"] {{
-                background-color: {field_bg};
-                border: 1px solid {border};
-                border-radius: 10px;
-            }}
-            QLabel[hintText="true"] {{
-                color: {hint};
-                qproperty-alignment: AlignCenter;
-            }}
-            """
-        )
-        for widget in (self.files_summary_label,):
-            widget.setStyleSheet(
-                f"color: {hint}; background-color: {elements}; border: 1px solid {border}; border-radius: 10px;"
-            )
-
-    def _safe_warning(self, title: str, message: str) -> None:
-        try:
-            QMessageBox.warning(self, title, message)
-        except Exception:
-            logger.exception("ManualModInstallDialog: failed to show warning message")
-
-    def _safe_critical(self, title: str, message: str) -> None:
-        try:
-            QMessageBox.critical(self, title, message)
-        except Exception:
-            logger.exception("ManualModInstallDialog: failed to show critical message")
-
-    def _safe_information(self, title: str, message: str) -> None:
-        try:
-            QMessageBox.information(self, title, message)
-        except Exception:
-            logger.exception(
-                "ManualModInstallDialog: failed to show information message"
-            )
-
-    @staticmethod
-    def _is_existing_absolute_folder(path: str) -> bool:
-        return bool(path) and (
-            os.path.isabs(path) or PureWindowsPath(path).is_absolute()
-        ) and os.path.isdir(path)
-
-    def _on_finish(self):
-        has_data_files = bool(self.data_file_selections)
-        selected_data, used_patches = self._get_excluded_files()
-        extra_files_count = sum(
-            1
-            for fp, _ in self.all_files
-            if fp not in selected_data
-            and fp not in self.unused_files
-            and fp not in used_patches
-        )
-        has_extra_files = extra_files_count > 0
-        if not has_data_files and (not has_extra_files):
-            self._safe_warning(tr("errors.error"), tr("dialogs.no_data_file_selected"))
-            return
-        for file_path, target_path in self.extra_files_mappings.items():
-            if self._extra_file_target(file_path) == EXTRA_FILE_TARGET_NONE:
-                continue
-            if not is_safe_relative_path(target_path):
-                self._safe_warning(
-                    tr("errors.error"), tr("dialogs.path_outside_game_folder")
-                )
-                return
-        active_extra_files = {
-            file_path
-            for file_path, _ in self.all_files
-            if file_path not in selected_data | self.unused_files | used_patches
-        }
-        for file_path, target_data in self.extra_file_targets.items():
-            if file_path not in active_extra_files:
-                continue
-            if target_data.get("target") == EXTRA_FILE_TARGET_CUSTOM and not self._is_existing_absolute_folder(
-                target_data.get("target_path", "")
-            ):
-                self._safe_warning(
-                    tr("errors.error"), tr("dialogs.custom_target_folder_not_set")
-                )
-                return
-        for patches in self.additional_patches_mappings.values():
-            for patch in patches.values():
-                target_path = patch["path"]
-                if not target_path or not target_path.strip():
-                    self._safe_warning(
-                        tr("errors.error"),
-                        tr("dialogs.additional_patch_no_target_path"),
-                    )
-                    return
-                if not is_safe_relative_path(target_path):
-                    self._safe_warning(
-                        tr("errors.error"), tr("dialogs.path_outside_game_folder")
-                    )
-                    return
-                if patch.get("target") == EXTRA_FILE_TARGET_CUSTOM and not self._is_existing_absolute_folder(
-                    patch.get("target_path", "")
-                ):
-                    self._safe_warning(
-                        tr("errors.error"), tr("dialogs.custom_target_folder_not_set")
-                    )
-                    return
-        try:
-            self._create_mod_from_files()
-            self.accept()
-        except Exception as e:
-            logger.error(f"Failed to create mod: {e}", exc_info=True)
-            self._safe_critical(
-                tr("errors.error"),
-                tr("errors.manual_install_failed", error=format_filesystem_error(e)),
-            )
-
-    @staticmethod
-    def _copy_file_to_relative_path(
-        target_mod_dir: str,
-        source_path: str,
-        relative_path: str,
-    ) -> str:
-        return copy_file_to_relative_path(target_mod_dir, source_path, relative_path)
-
-    def _join_storage_path(self, chapter_id: str, *parts: str) -> str:
-        game = self.game_combo.currentData()
-        game_def = get_game(game)
-        return join_storage_path(
-            chapter_id,
-            *parts,
-            game=game,
-            is_multi_tab=bool(game_def and game_def.is_multi_tab),
-        )
-
-    def _chapter_display_name(self, chapter_id: str) -> str:
-        for i in range(self.data_tabs.count()):
-            widget = self.data_tabs.widget(i)
-            if widget and getattr(widget, "_chapter_id", None) == chapter_id:
-                return self.data_tabs.tabText(i)
-        if "_" in chapter_id:
-            suffix = chapter_id.rsplit("_", 1)[1]
-            if suffix == "0":
-                return tr("tabs.menu_root")
-            try:
-                return tr(f"tabs.chapter_{suffix}")
-            except Exception:
-                return suffix
-        return chapter_id
-
-    def _copy_root_docs_to_mod(self, target_mod_dir: str) -> None:
-        copy_root_docs_to_mod(target_mod_dir=target_mod_dir, all_files=self.all_files)
-
-    def _create_mod_from_files(self):
-        if not self.app_state or not self.mod_service:
-            raise ValueError("app_state or mod_service not available")
-        mod_id, mod_name = build_manual_mod_identity(
-            gamebanana_metadata=self.gamebanana_metadata,
-            source_file_path=self.source_file_path,
-        )
-        _folder_name, target_mod_dir = create_manual_mod_dir(
-            mods_dir=self.app_state.mods_dir,
-            mod_name=mod_name,
-        )
-        files_structure = {}
-        game = self.game_combo.currentData()
-        for chapter_id, data_file_path in self.data_file_selections.items():
-            files_structure.setdefault(chapter_id, {})
-            stored_data_path = self._copy_file_to_relative_path(
-                target_mod_dir,
-                data_file_path,
-                self._join_storage_path(chapter_id, os.path.basename(data_file_path)),
-            )
-            files_structure[chapter_id]["data_file_path"] = stored_data_path
-        selected_data, used_patches = self._get_excluded_files()
-        excluded = selected_data | self.unused_files | used_patches
-        all_extra_files = [
-            (
-                fp,
-                self.extra_files_mappings.get(fp, ""),
-                self._extra_file_target(fp),
-                self._extra_file_target_path(fp),
-            )
-            for fp in (fp for fp, _ in self.all_files if fp not in excluded)
-        ]
-        for chapter_id, patches in self.additional_patches_mappings.items():
-            files_structure.setdefault(chapter_id, {})
-            for patch_file_path, patch in patches.items():
-                target_path = patch["path"]
-                if not target_path or not target_path.strip():
-                    continue
-                target_path_normalized = target_path.replace("\\", "/").strip("/")
-                if not target_path_normalized:
-                    continue
-                dir_part = os.path.dirname(target_path_normalized)
-                file_part = os.path.basename(target_path_normalized)
-                patch_name = f"{file_part}{os.path.splitext(patch_file_path)[1].lower()}"
-                stored_patch_path = self._join_storage_path(
-                    chapter_id, dir_part, patch_name
-                )
-                copied_path = self._copy_file_to_relative_path(
-                    target_mod_dir,
-                    patch_file_path,
-                    stored_patch_path,
-                )
-                files_structure[chapter_id].setdefault("extra_files", []).append(
-                    build_extra_file_entry(
-                        copied_path,
-                        patch["target"],
-                        patch.get("target_path", ""),
-                    )
-                )
-        for extra_file_path, relative_path, target, target_path in all_extra_files:
-            relative_path = (
-                relative_path.strip().strip("/").strip("\\") if relative_path else ""
-            )
-            path_chapter_id, stripped_relative_path = (
-                self._extract_chapter_prefixed_path(relative_path)
-                if target == EXTRA_FILE_TARGET_GAME_FOLDER
-                else (None, relative_path)
-            )
-            if path_chapter_id:
-                target_chapter_id = path_chapter_id
-                relative_path = stripped_relative_path.strip().strip("/").strip("\\")
-            else:
-                relative_path = relative_path.strip().strip("/").strip("\\")
-                target_chapter_id = self.extra_files_chapters.get(extra_file_path)
-            target_chapter_id = target_chapter_id or (
-                min(self.data_file_selections.keys())
-                if game == "deltarune" and self.data_file_selections
-                else game
-            )
-            files_structure.setdefault(target_chapter_id, {})
-            stored_extra_path = self._join_storage_path(
-                target_chapter_id,
-                relative_path,
-                os.path.basename(extra_file_path),
-            )
-            copied_path = self._copy_file_to_relative_path(
-                target_mod_dir,
-                extra_file_path,
-                stored_extra_path,
-            )
-            files_structure[target_chapter_id].setdefault("extra_files", []).append(
-                build_extra_file_entry(copied_path, target, target_path)
-            )
-        config_data = {
+    def _config(self, mod_id: str, mod_name: str, docs: list[str]) -> dict[str, object]:
+        config: dict[str, object] = {
+            "config_version": MOD_CONFIG_VERSION,
             "id": mod_id,
             "name": mod_name,
-            "game": game,
-            "files": files_structure,
+            "version": str(self.gamebanana_metadata.get("version") or "1.0.0"),
+            "authors": [
+                name.strip()
+                for name in self.authors_edit.text().split(",")
+                if name.strip()
+            ]
+            or ["Unknown"],
+            "game": str(self.game_combo.currentData() or "deltarune"),
+            "files": [
+                {"source": f"${{mod_path}}/{path}", "type": "info"}
+                for path in docs
+            ],
         }
-        if self.gamebanana_metadata:
-            from adapters.gamebanana_adapter import GameBananaAPI
+        for field in ("description", "homepage"):
+            if value := self.gamebanana_metadata.get(field):
+                config[field] = str(value)
+        tags = self.gamebanana_metadata.get("tags")
+        if isinstance(tags, list) and (valid := [tag for tag in tags if tag in MOD_CONFIG_TAGS]):
+            config["tags"] = valid
+        return config
 
-            for field in (
-                "author",
-                "description",
-                "icon",
-                "homepage",
-                "tags",
-                "version",
-            ):
-                if self.gamebanana_metadata.get(field):
-                    config_data[field] = self.gamebanana_metadata[field]
-            category_tag = GameBananaAPI.category_to_tag(
-                self.gamebanana_metadata.get("category")
+    def _create_mod_from_files(self) -> tuple[dict[str, object], Path]:
+        if self.app_state is None:
+            raise RuntimeError("application state is unavailable")
+        if not self.all_files:
+            raise ValueError("no files were selected for import")
+        mods_dir = Path(self.target_mods_dir or self.app_state.mods_dir)
+        mods_dir.mkdir(parents=True, exist_ok=True)
+        mod_id, mod_name = self._identity()
+        target = mods_dir / get_unique_mod_dir(str(mods_dir), mod_name)
+        target.mkdir(parents=True)
+        try:
+            _copied, docs = self._copy_sources(target)
+            config = self._config(mod_id, mod_name, docs)
+            write_mod_config(target / "mod_config.json", config)
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+        return config, target
+
+    def _open_editor(self, config: dict[str, object], folder: Path) -> bool:
+        from ui.dialogs.mod_editor.dialog import ModEditorDialog
+
+        payload = dict(config, folder_path=str(folder))
+        return (
+            ModEditorDialog(
+                self.parentWidget() or self, is_creating=False, mod_data=payload
+            ).exec()
+            == QDialog.DialogCode.Accepted
+        )
+
+    def _on_finish(self) -> None:
+        if not self.name_edit.text().strip():
+            self._safe_warning(tr("errors.error"), tr("dialogs.mod_name_empty"))
+            return
+        try:
+            config, folder = self._create_mod_from_files()
+        except Exception as error:
+            logger.exception("Manual import failed")
+            self._safe_critical(
+                tr("errors.error"),
+                tr("errors.manual_install_failed", error=format_filesystem_error(error)),
             )
-            if category_tag:
-                existing_tags = config_data.get("tags", [])
-                if not isinstance(existing_tags, list):
-                    existing_tags = [existing_tags] if existing_tags else []
-                if category_tag not in existing_tags:
-                    existing_tags.append(category_tag)
-                config_data["tags"] = existing_tags
-            config_data.setdefault("author", "Unknown")
-            config_data.setdefault("version", "1.0.0")
-        else:
-            config_data["author"] = "Unknown"
-            config_data["version"] = "1.0.0"
-        self._copy_root_docs_to_mod(target_mod_dir)
-        config_path = os.path.join(target_mod_dir, MOD_CONFIG_FILENAME)
-        save_json(config_path, build_mod_config_data(config_data), indent=2)
-        logger.info(f"Manual mod created: {target_mod_dir}")
+            return
+        if self._open_editor(config, folder):
+            self.accept()
+            return
+        shutil.rmtree(folder, ignore_errors=True)
+        self.reject()
+
+    @staticmethod
+    def _safe_warning(title: str, message: str) -> None:
+        try:
+            QMessageBox.warning(None, title, message)
+        except RuntimeError:
+            logger.exception("Could not show manual-import warning")
+
+    @staticmethod
+    def _safe_critical(title: str, message: str) -> None:
+        try:
+            QMessageBox.critical(None, title, message)
+        except RuntimeError:
+            logger.exception("Could not show manual-import error")
+
+    @override
+    def closeEvent(self, event) -> None:
+        if self.temp_dir_to_cleanup:
+            shutil.rmtree(self.temp_dir_to_cleanup, ignore_errors=True)
+        super().closeEvent(event)

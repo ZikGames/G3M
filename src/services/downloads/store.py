@@ -38,7 +38,7 @@ class DownloadsStore(BaseJsonStore):
     def find(self, record_id: str) -> DownloadRecord | None:
         return next((r for r in self._records if r.id == record_id), None)
 
-    def find_by_canonical_key(self, key: str) -> DownloadRecord | None:
+    def find_by_canonical_key(self, key: str, *, target_mods_dir: str | None = None, fallback_mods_dir: str | None = None) -> DownloadRecord | None:
         if not key:
             return None
         return next(
@@ -46,6 +46,11 @@ class DownloadsStore(BaseJsonStore):
                 r
                 for r in self._records
                 if r.canonical_key == key
+                and (
+                    target_mods_dir is None
+                    or os.path.normcase(os.path.abspath(str(r.metadata.get("target_mods_dir") or fallback_mods_dir or "")))
+                    == os.path.normcase(os.path.abspath(target_mods_dir))
+                )
                 and r.download_status
                 not in (DownloadStatus.FAILED, DownloadStatus.CANCELLED)
             ),

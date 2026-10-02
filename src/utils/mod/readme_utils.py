@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+from collections.abc import Iterator
 from pathlib import Path
 
 from config.config import (
@@ -13,64 +13,126 @@ from config.config import (
     MOD_PDF_EXTENSIONS,
     MOD_README_ENCODINGS,
 )
-from utils.mod.config_parser import _sanitize_info_files
+from utils.mod.archive import (
+    ArchiveValidationError,
+    list_archive_members,
+    split_archive_virtual_path,
+)
+from utils.mod.config import iter_mod_config_leaves, load_mod_config
 
 
-def _load_info_files_config(folder: Path) -> dict[str, str]:
+def _load_config(folder: Path) -> dict[str, object]:
     config_path = folder / MOD_CONFIG_FILENAME
     if not config_path.is_file():
         return {}
     try:
-        with config_path.open(encoding="utf-8") as handle:
-            config_data = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+        return load_mod_config(config_path)
+    except (OSError, ValueError):
         return {}
-    return _sanitize_info_files(config_data.get("info_files"))
 
 
-def find_mod_info_candidates(mod_folder: str | None) -> list[str]:
-    """Return sorted top-level documentation file names from the mod folder."""
-    if not mod_folder:
+def _iter_operation_info_sources(entries: list[object]) -> Iterator[str]:
+    for _group_path, entry in iter_mod_config_leaves(entries):
+        source = entry.get("source")
+        if entry.get("type") == "info" and isinstance(source, str):
+            yield source
+
+
+def _mod_local_path(folder: Path, source: str) -> Path | None:
+    prefix = "${mod_path}/"
+    if not source.startswith(prefix) or source.endswith("/"):
+        return None
+    path = folder.joinpath(*source[len(prefix) :].split("/"))
+    try:
+        path.resolve(strict=False).relative_to(folder.resolve())
+    except ValueError:
+        return None
+    return path
+
+
+def _expand_mod_path_placeholder(source: str, placeholders: object) -> str:
+    if source.startswith("${mod_path}/") or not source.startswith("${"):
+        return source
+    name, separator, suffix = source[2:].partition("}")
+    value = placeholders.get(name) if isinstance(placeholders, dict) else None
+    return f"{value}{suffix}" if separator and isinstance(value, str) and value.startswith("${mod_path}/") else source
+
+
+def _archive_info_file(path: Path) -> str | None:
+    try:
+        virtual = split_archive_virtual_path(path)
+        if virtual is None or virtual.directory or not virtual.archive.is_file():
+            return None
+        members = list_archive_members(virtual.archive)
+    except (ArchiveValidationError, OSError, ValueError):
+        return None
+    if not any(
+        member.name == virtual.member and not member.directory and not member.link
+        for member in members
+    ):
+        return None
+    return f"{virtual.archive}/{virtual.member}"
+
+
+def _listed_info_files(folder: Path) -> list[str]:
+    config = _load_config(folder)
+    files = config.get("files")
+    if not isinstance(files, list):
         return []
-    folder = Path(mod_folder)
-    if not folder.is_dir():
-        return []
+    placeholders = config.get("placeholders")
+    result = []
+    for source in _iter_operation_info_sources(files):
+        path = _mod_local_path(
+            folder, _expand_mod_path_placeholder(source, placeholders)
+        )
+        if path is None or path.suffix.casefold() not in MOD_DOCUMENTATION_EXTENSIONS:
+            continue
+        if path.is_file() and not path.is_symlink():
+            result.append(str(path))
+            continue
+        if archive_path := _archive_info_file(path):
+            result.append(archive_path)
+    return result
+
+
+def _all_info_files(folder: Path) -> list[Path]:
     return sorted(
-        [
-            path.name
-            for path in folder.iterdir()
-            if path.is_file() and path.suffix.lower() in MOD_DOCUMENTATION_EXTENSIONS
-        ],
-        key=str.lower,
+        (
+            path
+            for path in folder.rglob("*")
+            if path.is_file()
+            and not path.is_symlink()
+            and path.name != MOD_CONFIG_FILENAME
+            and path.suffix.casefold() in MOD_DOCUMENTATION_EXTENSIONS
+        ),
+        key=lambda path: path.relative_to(folder).as_posix().casefold(),
     )
 
 
-def find_mod_readme_files(mod_folder: str | None) -> list[str]:
-    """Return ordered top-level README/text files from the mod folder."""
+def find_mod_unlisted_readme_files(mod_folder: str | None) -> list[str]:
+    """Return unlisted readable files in stable relative-path order."""
     if not mod_folder:
         return []
     folder = Path(mod_folder)
     if not folder.is_dir():
         return []
-    files = [
-        path
-        for path in folder.iterdir()
-        if path.is_file() and path.suffix.lower() in MOD_DOCUMENTATION_EXTENSIONS
-    ]
-    files_by_name = {path.name: path for path in files}
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for rel_path, visibility in _load_info_files_config(folder).items():
-        path = files_by_name.get(Path(rel_path).name)
-        if not path or path.name in seen:
-            continue
-        seen.add(path.name)
-        if visibility == "show":
-            ordered.append(str(path))
-    for path in sorted(files, key=lambda item: item.name.lower()):
-        if path.name not in seen:
-            ordered.append(str(path))
-    return ordered
+    listed = {
+        Path(path).resolve()
+        for path in _listed_info_files(folder)
+        if split_archive_virtual_path(path) is None
+    }
+    return [str(path) for path in _all_info_files(folder) if path.resolve() not in listed]
+
+
+def find_mod_readme_files(mod_folder: str | None, *, include_unlisted: bool = True) -> list[str]:
+    """Return listed info files first and optionally append unlisted files."""
+    if not mod_folder:
+        return []
+    folder = Path(mod_folder)
+    if not folder.is_dir():
+        return []
+    listed = _listed_info_files(folder)
+    return listed + (find_mod_unlisted_readme_files(mod_folder) if include_unlisted else [])
 
 
 def read_mod_readme(file_path: str) -> str:

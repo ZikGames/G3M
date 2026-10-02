@@ -11,6 +11,7 @@ from utils.path_utils import (
     _replace_svg_color_tokens,
     find_chapter_resource_dir,
     find_supported_game_data_file,
+    get_supported_game_data_filenames,
     get_user_data_root,
     get_user_mods_dir,
     normalize_user_input_path,
@@ -245,6 +246,20 @@ class TestPathUtils:
         resolved = find_supported_game_data_file(game_dir, "missing.win")
 
         assert resolved == game_win
+
+    def test_game_data_filename_priority_uses_the_selected_executable_runtime(self):
+        assert get_supported_game_data_filenames(
+            current_platform="Linux", executable_path="/games/game.exe"
+        )[0] == "data.win"
+        assert get_supported_game_data_filenames(
+            current_platform="Linux", executable_path="/games/game"
+        )[0] == "game.unx"
+        assert get_supported_game_data_filenames(
+            current_platform="Darwin", executable_path="/games/game.exe"
+        )[0] == "data.win"
+        assert get_supported_game_data_filenames(
+            current_platform="Darwin", executable_path="/games/Game.app"
+        )[0] == "game.ios"
 
     def test_path_handling_special_characters(self, temp_dir):
         """Checks that path handling special characters."""

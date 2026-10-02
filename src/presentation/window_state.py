@@ -14,7 +14,6 @@ def initialize_window_runtime(window) -> None:
     window._last_tooltip_global_pos = None
     window._last_tooltip_size_key = None
     window.resize(875, 750)
-    window._initial_size = window.size()
     window.background_movie = None
     window.background_pixmap = None
     window.custom_font_family = None

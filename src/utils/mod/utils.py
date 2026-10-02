@@ -1,8 +1,9 @@
 """Mod data extraction utilities."""
 
 import os
+from collections.abc import Mapping
 
-from services.migration_service import LEGACY_ICON_KEY
+from utils.mod.config import mod_local_relative_path
 
 
 def _get_mod_field(mod_data, field, default=None):
@@ -71,7 +72,17 @@ def resolve_mod_icon(config_data: dict, mod_folder_path: str):
     """Resolve path to mod's icon file."""
     if not mod_folder_path or not os.path.isdir(mod_folder_path):
         return None
-    icon_field = (config_data.get("icon") or config_data.get(LEGACY_ICON_KEY) or "").strip()
+    icon_value = str(config_data.get("icon") or "").strip()
+    raw_placeholders = config_data.get("placeholders")
+    placeholders: Mapping[str, object] = (
+        raw_placeholders if isinstance(raw_placeholders, Mapping) else {}
+    )
+    icon_field = mod_local_relative_path(
+        icon_value,
+        placeholders,
+    )
+    if icon_field is None:
+        icon_field = icon_value
     if icon_field:
         if icon_field.startswith(("http://", "https://")):
             return icon_field
@@ -94,20 +105,13 @@ def resolve_mod_icon(config_data: dict, mod_folder_path: str):
             return None
         if os.path.isfile(icon_path_abs):
             return icon_path_abs
-    return next(
-        (
-            p
-            for ext in [".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp"]
-            if os.path.isfile(p := os.path.join(mod_folder_path, f"_icon{ext}"))
-        ),
-        None,
-    )
+    return None
 
 
 def sort_gamebanana_files_by_priority(files: list[dict]) -> list[dict]:
     """Sort GameBanana files by compatibility priority (g3m > deltamod > others)."""
 
-    def _priority(file_info: dict) -> tuple[int, str]:
+    def _priority(file_info: dict) -> tuple[int, int, int, str]:
         compatibility = str(file_info.get("compatibility") or "").lower()
         if compatibility == "g3m":
             rank = 0
@@ -115,6 +119,14 @@ def sort_gamebanana_files_by_priority(files: list[dict]) -> list[dict]:
             rank = 1
         else:
             rank = 2
-        return (rank, str(file_info.get("name") or ""))
+        try:
+            timestamp = int(file_info.get("timestamp") or file_info.get("_tsDateAdded") or 0)
+        except (TypeError, ValueError):
+            timestamp = 0
+        try:
+            file_id = int(file_info.get("id") or file_info.get("_idRow") or 0)
+        except (TypeError, ValueError):
+            file_id = 0
+        return (rank, -timestamp, -file_id, str(file_info.get("name") or "").casefold())
 
     return sorted(files or [], key=_priority)

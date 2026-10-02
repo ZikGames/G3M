@@ -24,6 +24,7 @@ from ui.common.styling import (
     get_theme_color,
 )
 from ui.utils.ui_utils import UIAnimator
+from utils.mod.config import MOD_CONFIG_VERSION
 from utils.mod.utils import get_mod_id
 from utils.path_utils import colored_icon, resource_path
 
@@ -61,6 +62,8 @@ class InstalledModWidget(BaseModWidget):
         self._drag_start_pos = None
         self._drag_in_progress = False
         self._is_broken_cache = None
+        self._broken_reason = ""
+        self._operation_issue: tuple[str, str] | None = None
         self.use_button = None
         self.is_active = False
         self.status = "ready"
@@ -111,7 +114,7 @@ class InstalledModWidget(BaseModWidget):
         game_version_container_layout.addWidget(self.game_version_label_title)
         game_version_container_layout.addWidget(game_version_label_value)
         containers = [
-            self.author_container,
+            self.authors_container,
             game_version_container,
         ]
         for i, container in enumerate(containers):
@@ -205,7 +208,32 @@ class InstalledModWidget(BaseModWidget):
                 f"color: #F44336; {style}",
                 cache_attr="_status_indicator_stylesheet_cache",
             )
-            self.status_indicator.setToolTip(tr("tooltips.mod_broken"))
+            tooltip = tr("tooltips.mod_broken")
+            if self._broken_reason:
+                tooltip = f"{tooltip}\n{self._broken_reason}"
+            self.status_indicator.setToolTip(tooltip)
+            return
+
+        if self._operation_issue:
+            code, related_id = self._operation_issue
+            tooltip_keys = {
+                "dependency_missing": "tooltips.dependency_missing",
+                "dependency_inactive": "tooltips.dependency_inactive",
+                "dependency_relation_unsatisfied": "tooltips.dependency_order",
+                "dependency_cycle": "tooltips.dependency_cycle",
+                "conflict_active": "tooltips.conflict_active",
+            }
+            self.status_indicator.setPixmap(QPixmap())
+            self.status_indicator.setText("⚠")
+            color = "#F44336" if code == "dependency_cycle" else "#FF9800"
+            apply_stylesheet_if_changed(
+                self.status_indicator,
+                f"color: {color}; {style}",
+                cache_attr="_status_indicator_stylesheet_cache",
+            )
+            self.status_indicator.setToolTip(
+                tr(tooltip_keys.get(code, "tooltips.dependency_order"), mod_id=related_id)
+            )
             return
 
         if self._is_gamebanana_linked():
@@ -246,47 +274,61 @@ class InstalledModWidget(BaseModWidget):
     def _is_mod_broken(self) -> bool:
         if self._is_broken_cache is not None:
             return self._is_broken_cache
+        def broken(reason: str) -> bool:
+            self._broken_reason = reason
+            self._is_broken_cache = True
+            return True
+
         try:
             if not self.mod_data:
-                self._is_broken_cache = True
-                return True
+                return broken("Mod data is unavailable")
             key = get_mod_id(self.mod_data)
             if not key:
-                self._is_broken_cache = True
-                return True
+                return broken("The mod ID is missing")
             if not self.parent_app or not hasattr(self.parent_app, "mod_service"):
                 self._is_broken_cache = False
                 return False
             mod_folder = self.parent_app.mod_service.get_mod_folder_path(key)
             if not mod_folder or not os.path.exists(mod_folder):
-                self._is_broken_cache = True
-                return True
-            files = getattr(self.mod_data, "files", None)
-            if not files or not isinstance(files, dict):
-                self._is_broken_cache = True
-                return True
-            from utils.mod.config_parser import resolve_mod_file_path
+                return broken("The mod folder is unavailable")
+            config_data = self.parent_app.mod_service.get_mod_config(key)
+            if (
+                isinstance(config_data, dict)
+                and config_data.get("config_version") == MOD_CONFIG_VERSION
+            ):
+                from utils.mod.config import (
+                    iter_mod_config_leaves,
+                    validate_mod_config,
+                )
 
-            for chapter_data in files.values():
-                if chapter_data is None:
-                    continue
-                if isinstance(chapter_data, dict):
-                    data_file = chapter_data.get("data_file_path") or chapter_data.get(
-                        "data_file_url"
-                    )
-                else:
-                    data_file = getattr(chapter_data, "data_file_path", None)
-                if not data_file:
-                    continue
-                data_file_path = resolve_mod_file_path(mod_folder, data_file)
-                if not os.path.exists(data_file_path):
-                    self._is_broken_cache = True
-                    return True
-            self._is_broken_cache = False
-            return False
-        except Exception:
-            self._is_broken_cache = True
-            return True
+                if issues := validate_mod_config(config_data):
+                    return broken(issues[0].message)
+                from utils.mod.archive import (
+                    ArchiveValidationError,
+                    split_archive_virtual_path,
+                )
+
+                files_data = config_data.get("files")
+                if isinstance(files_data, list):
+                    for _group_path, leaf in iter_mod_config_leaves(files_data):
+                        source = str(leaf["source"])
+                        if not source.startswith("${mod_path}/"):
+                            continue
+                        source_path = os.path.join(
+                            mod_folder, source.removeprefix("${mod_path}/")
+                        )
+                        try:
+                            archive_path = split_archive_virtual_path(source_path)
+                        except ArchiveValidationError as error:
+                            return broken(str(error))
+                        checked_path = archive_path.archive if archive_path else source_path
+                        if not os.path.exists(checked_path):
+                            return broken(f"Required source is missing: {checked_path}")
+                self._is_broken_cache = False
+                return False
+            return broken("The current mod configuration is unavailable")
+        except Exception as error:
+            return broken(str(error))
 
     def _is_gamebanana_linked(self) -> bool:
         key = get_mod_id(self.mod_data)
@@ -348,6 +390,13 @@ class InstalledModWidget(BaseModWidget):
             return
         self.is_active = active
         self._sync_status()
+
+    def set_operation_issue(self, code: str | None, related_id: str = "") -> None:
+        issue = (code, related_id) if code else None
+        if self._operation_issue == issue:
+            return
+        self._operation_issue = issue
+        self._update_indicator()
 
     def _update_actions_visibility(self):
         if not hasattr(self, "actions_widget") or not hasattr(self, "checkmark_button"):

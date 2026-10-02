@@ -83,25 +83,23 @@ class GameVersionsManager(QObject):
         chapter_mods=None,
         app_state=None,
         mod_service=None,
+        feedback_service=None,
     ):
         ctx = self._get_game_context(game_id)
         if not ctx:
             return
+        from workers.game_version_archive_worker import (
+            CreatePatchedVersionWorker,
+            CreateVersionWorker,
+        )
+
         game_path, base_folder, protected = ctx[1], ctx[2], ctx[3]
         archive_path = unique_archive_path(self._store.versions_dir, version_name)
-        record = GameVersionRecord(
-            archive_path=archive_path,
-            game=game_id,
-            source_game_path=game_path,
-            archive_exists=False,
-            profile_name=profile_name,
-        )
-        self._store.add(record)
-
         use_patched = bool(profile_name and chapter_mods and app_state and mod_service)
         if use_patched:
-            from workers.game_version_archive_worker import CreatePatchedVersionWorker
-
+            from services.mod_operation_support import (
+                confirm_direct_operation_path_details,
+            )
             worker = CreatePatchedVersionWorker(
                 archive_path,
                 base_folder,
@@ -111,12 +109,25 @@ class GameVersionsManager(QObject):
                 chapter_mods or {},
                 parent=self,
             )
+            if not confirm_direct_operation_path_details(
+                feedback_service,
+                getattr(app_state, "local_config", None),
+                worker.direct_operation_path_details(),
+            ):
+                retire_qthread(worker)
+                self.operation_finished.emit()
+                return
         else:
-            from workers.game_version_archive_worker import CreateVersionWorker
+            worker = CreateVersionWorker(archive_path, base_folder, protected, parent=self)
 
-            worker = CreateVersionWorker(
-                archive_path, base_folder, protected, parent=self
-            )
+        record = GameVersionRecord(
+            archive_path=archive_path,
+            game=game_id,
+            source_game_path=game_path,
+            archive_exists=False,
+            profile_name=profile_name,
+        )
+        self._store.add(record)
         self._workers[archive_path] = worker
         worker.progress.connect(lambda p: self.progress_updated.emit(archive_path, p))
 

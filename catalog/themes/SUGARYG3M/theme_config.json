@@ -1,0 +1,14 @@
+{
+  "config_version": "1.0.0",
+  "custom_background_color": "#150028",
+  "custom_elements_color": "#65009F",
+  "custom_border_color": "#93049D",
+  "custom_hover_color": "#3E005C",
+  "custom_select_color": "#D5D6D8",
+  "custom_main_text_color": "#FFFAB9",
+  "custom_secondary_text_color": "#FFB5FF",
+  "background_disabled": false,
+  "disable_animations": false,
+  "disable_startup_sound": false,
+  "custom_border_radius": 5
+}

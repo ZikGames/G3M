@@ -13,6 +13,7 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.14"
+  PYTHONFAULTHANDLER: "1"
   G3MTOOL_BRANCH: main
 
 jobs:
@@ -23,21 +24,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: Linux
+          - label: Linux x64
             runs_on: ubuntu-24.04
+            architecture: x64
             g3mtool_runtime: linux-x64
+            g3mtool_dir: src/assets/bin/g3mtool_linux
+          - label: Linux arm64
+            runs_on: ubuntu-24.04-arm
+            architecture: arm64
+            g3mtool_runtime: linux-arm64
             g3mtool_dir: src/assets/bin/g3mtool_linux
           - label: macOS x64
             runs_on: macos-15-intel
+            architecture: x64
             g3mtool_runtime: osx-x64
             g3mtool_dir: src/assets/bin/g3mtool_macos
           - label: macOS arm64
             runs_on: macos-15
+            architecture: arm64
             g3mtool_runtime: osx-arm64
             g3mtool_dir: src/assets/bin/g3mtool_macos
-          - label: Windows
+          - label: Windows x64
             runs_on: windows-latest
+            architecture: x64
             g3mtool_runtime: win-x64
+            g3mtool_dir: src/assets/bin/g3mtool_windows
+          - label: Windows arm64
+            runs_on: windows-11-arm
+            architecture: arm64
+            g3mtool_runtime: win-arm64
             g3mtool_dir: src/assets/bin/g3mtool_windows
     steps:
       - uses: actions/checkout@v7
@@ -46,6 +61,7 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.architecture }}
           cache: pip
           cache-dependency-path: pyproject.toml
 
@@ -111,8 +127,8 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/src
         run: |
           set -o pipefail
-          pytest tests/ --collect-only -q 2>&1 | tee test-collection.log || true
-          pytest tests/ -v --maxfail=5 2>&1 | tee test-output.log
+          pytest tests/ --collect-only -q 2>&1 | tee test-collection.log
+          pytest tests/ -v --capture=tee-sys 2>&1 | tee test-output.log
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
@@ -121,7 +137,8 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/src
         run: |
           pytest tests/ --collect-only -q 2>&1 | Tee-Object -FilePath test-collection.log
-          pytest tests/ -v --maxfail=5 2>&1 | Tee-Object -FilePath test-output.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pytest tests/ -v --capture=tee-sys 2>&1 | Tee-Object -FilePath test-output.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Publish test results summary

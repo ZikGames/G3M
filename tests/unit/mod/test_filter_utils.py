@@ -26,13 +26,13 @@ class TestModFilterUtils:
         assert isinstance(result, list)
         assert len(result) == 2
 
-    def test_filter_search_matches_author(self):
-        """Checks that filtering search matches author."""
+    def test_filter_search_matches_authors(self):
+        """Checks that filtering search matches authors."""
         mod = {
             "id": "gb_mod_12345",
             "name": "Fancy Mod",
             "description": "Visual refresh",
-            "author": "Alice",
+            "authors": ["Alice"],
         }
         result = filter_and_sort_mods([mod], {"search_text": "alice"})
         assert result == [mod]
@@ -42,7 +42,7 @@ class TestModFilterUtils:
         mod = {
             "id": "local_12345",
             "name": "Library Mod",
-            "author": "Bob",
+            "authors": ["Bob"],
             "last_updated": "2025-02-11 09:15",
             "added_date": "2025-03-12 18:00",
         }
@@ -67,7 +67,7 @@ class TestModFilterUtils:
             "id": "gb_mod_12345",
             "name": "Story Pack",
             "description": "Expanded scenes",
-            "author": "Carol",
+            "authors": ["Carol"],
             "gamebanana_category": "Narrative",
         }
         result = filter_and_sort_mods([mod], {"search_text": "carol narrative"})

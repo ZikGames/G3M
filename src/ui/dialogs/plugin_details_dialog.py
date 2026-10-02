@@ -243,7 +243,7 @@ class PluginDetailsDialog(QDialog):
                 update_button.clicked.connect(self._request_update)
                 actions_layout.addWidget(update_button)
         else:
-            download_button = QPushButton(tr("plugins.action_download"))
+            download_button = QPushButton(tr("catalog.action_download"))
             self._download_button = download_button
             download_button.setEnabled(self._can_download)
             download_button.setStyleSheet(f"color: {tc}; border-radius: {dr}px;")
@@ -419,7 +419,7 @@ class PluginDetailsDialog(QDialog):
             self._update_button.setText(tr("plugins.details_update"))
             self._update_button.setToolTip(tr("tooltips.plugin_update"))
         if self._download_button is not None:
-            self._download_button.setText(tr("plugins.action_download"))
+            self._download_button.setText(tr("catalog.action_download"))
         if self._no_settings_label is not None:
             self._no_settings_label.setText(tr("plugins.no_settings"))
         for label, label_text, description in self._schema_texts:

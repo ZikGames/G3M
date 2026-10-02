@@ -89,6 +89,7 @@ class PizzaOvenConversionPresenter:
         initial_game_type: str | None = None,
         gamebanana_metadata: dict | None = None,
         on_success=None,
+        target_mods_dir: str | None = None,
     ) -> bool:
         resolved_game_type = initial_game_type or self._current_game_type()
         while True:
@@ -119,6 +120,7 @@ class PizzaOvenConversionPresenter:
                     initial_game_type=resolved_game_type,
                     gamebanana_metadata=gamebanana_metadata or {},
                     on_success=on_success,
+                    target_mods_dir=target_mods_dir,
                 )
                 if accepted:
                     return True
@@ -131,6 +133,7 @@ class PizzaOvenConversionPresenter:
                     temp_dir=temp_dir,
                     gamebanana_metadata=gamebanana_metadata or {},
                     on_success=on_success,
+                    target_mods_dir=target_mods_dir,
                 ):
                     return True
                 continue
@@ -148,6 +151,7 @@ class PizzaOvenConversionPresenter:
         initial_game_type: str | None,
         gamebanana_metadata: dict,
         on_success=None,
+        target_mods_dir: str | None = None,
     ) -> bool:
         from ui.dialogs.manual_install.dialog import ManualModInstallDialog
 
@@ -157,6 +161,7 @@ class PizzaOvenConversionPresenter:
             gamebanana_metadata=gamebanana_metadata,
             source_file_path=source_file_path,
             initial_game_type=initial_game_type,
+            target_mods_dir=target_mods_dir,
         )
         dialog.temp_dir_to_cleanup = None
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -183,6 +188,7 @@ class PizzaOvenConversionPresenter:
         temp_dir: str | None,
         gamebanana_metadata: dict,
         on_success=None,
+        target_mods_dir: str | None = None,
     ) -> bool:
         from ui.dialogs.pizza_oven_conversion_dialog import PizzaOvenConversionDialog
 
@@ -195,7 +201,7 @@ class PizzaOvenConversionPresenter:
         worker = PizzaOvenConversionWorker(
             self.conversion_service,
             prepared_path,
-            self.app_state.mods_dir,
+            target_mods_dir or self.app_state.mods_dir,
             game_path,
             source_file_path=source_file_path,
             gamebanana_metadata=gamebanana_metadata,

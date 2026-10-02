@@ -15,8 +15,12 @@ from typing import Any, Protocol
 from adapters.g3mtool_adapter import G3MToolManager
 from config.config import MOD_CONFIG_FILENAME, MOD_DOCUMENTATION_EXTENSIONS
 from services.localization_service import tr
-from utils.file_utils import get_unique_mod_dir, remove_archive_extension, save_json
-from utils.mod.config_parser import build_mod_config_data
+from utils.file_utils import get_unique_mod_dir, remove_archive_extension
+from utils.mod.config import (
+    MOD_CONFIG_TAGS,
+    MOD_CONFIG_VERSION,
+    write_mod_config,
+)
 from utils.patching.patch_verification_utils import files_match, verify_generated_patch
 
 logger = logging.getLogger(__name__)
@@ -58,7 +62,7 @@ _PASS2_EXTENSIONS = {
 }
 _FONT_NAMES = {"bigfont", "captionfont", "credits", "tutorial"}
 _RELEVANT_MOD_EXTENSIONS = _PASS1_EXTENSIONS | _PASS2_EXTENSIONS
-_METADATA_FIELDS = ("name", "author", "description", "homepage", "icon", "version")
+_METADATA_FIELDS = ("name", "authors", "description", "homepage", "icon", "version")
 
 
 class PizzaOvenConversionError(RuntimeError):
@@ -302,7 +306,7 @@ class PizzaOvenConversionService:
         if mod_json.get("title"):
             metadata["name"] = str(mod_json["title"]).strip()
         if mod_json.get("submitter"):
-            metadata["author"] = str(mod_json["submitter"]).strip()
+            metadata["authors"] = [str(mod_json["submitter"]).strip()]
         if mod_json.get("description"):
             metadata["description"] = str(mod_json["description"]).strip()
         if mod_json.get("homepage"):
@@ -335,7 +339,7 @@ class PizzaOvenConversionService:
             metadata["name"] = (
                 remove_archive_extension(os.path.basename(base)) or "PizzaOven Mod"
             )
-        metadata.setdefault("author", "Unknown")
+        metadata.setdefault("authors", ["Unknown"])
         metadata.setdefault("version", "1.0.0")
         return metadata
 
@@ -818,7 +822,6 @@ class PizzaOvenConversionService:
         mod_name = str(metadata.get("name") or "PizzaOven Mod").strip()
         mod_id = str(metadata.get("id") or f"local_po_{uuid.uuid4().hex[:12]}")
         target_mod_dir = self._prepare_target_mod_dir(mods_dir, mod_name, mod_id)
-        files_structure: dict[str, dict[str, Any]] = {"pizzatower": {}}
         changed_remaining = list(changed_files)
         data_file_name = self._write_data_patch(
             target_mod_dir,
@@ -827,38 +830,71 @@ class PizzaOvenConversionService:
             changed_remaining,
             reusable_patches.get("data.win"),
         )
-        if data_file_name:
-            files_structure["pizzatower"]["data_file_path"] = data_file_name
         extra_files = self._write_extra_files(
             target_mod_dir,
             working_game_dir,
             changed_remaining,
             reusable_patches,
         )
-        if extra_files:
-            files_structure["pizzatower"]["extra_files"] = extra_files
         self._copy_root_docs(source_dir, target_mod_dir, set(used_source_files))
         self._copy_icon_asset(source_dir, target_mod_dir, metadata)
+        operations: list[dict[str, str]] = []
+        if data_file_name:
+            operations.append(
+                {
+                    "source": f"${{mod_path}}/{data_file_name}",
+                    "target": "${game_path}/data.win",
+                    "type": (
+                        "patch"
+                        if data_file_name.lower().endswith((".xdelta", ".g3mpatch"))
+                        else "overwrite"
+                    ),
+                }
+            )
+        for relative_path in extra_files:
+            suffix = next(
+                (
+                    suffix
+                    for suffix in (".xdelta", ".g3mpatch")
+                    if relative_path.casefold().endswith(suffix)
+                ),
+                "",
+            )
+            operations.append(
+                {
+                    "source": f"${{mod_path}}/{relative_path}",
+                    "target": f"${{game_path}}/{relative_path[:-len(suffix)] if suffix else relative_path}",
+                    "type": "patch" if suffix else "overwrite",
+                }
+            )
         config_data: dict[str, Any] = {
+            "config_version": MOD_CONFIG_VERSION,
             "id": mod_id,
             "name": mod_name,
             "game": "pizzatower",
             "version": str(metadata.get("version") or "1.0.0"),
-            "author": str(metadata.get("author") or "Unknown"),
-            "description": str(metadata.get("description") or ""),
-            "files": files_structure,
+            "authors": [
+                str(name).strip()
+                for name in metadata.get("authors", [])
+                if isinstance(metadata.get("authors"), list)
+                if str(name).strip()
+            ]
+            or ["Unknown"],
+            "files": operations,
         }
+        if description := str(metadata.get("description") or "").strip():
+            config_data["description"] = description
         if homepage := metadata.get("homepage"):
             config_data["homepage"] = homepage
-        if icon := metadata.get("icon"):
-            config_data["icon"] = icon
-        if tags := metadata.get("tags"):
-            config_data["tags"] = tags if isinstance(tags, list) else [tags]
-        save_json(
-            os.path.join(target_mod_dir, MOD_CONFIG_FILENAME),
-            build_mod_config_data(config_data),
-            indent=2,
-        )
+        icon = str(metadata.get("icon") or "").strip()
+        if icon and os.path.isfile(os.path.join(target_mod_dir, os.path.basename(icon))):
+            config_data["icon"] = f"${{mod_path}}/{os.path.basename(icon)}"
+        tags = metadata.get("tags")
+        if isinstance(tags, list):
+            config_data["tags"] = [tag for tag in tags if tag in MOD_CONFIG_TAGS]
+            if not config_data["tags"]:
+                config_data.pop("tags")
+        write_mod_config(os.path.join(target_mod_dir, MOD_CONFIG_FILENAME), config_data)
         return PizzaOvenConversionResult(
             mod_dir=target_mod_dir,
             changed_files=changed_files,

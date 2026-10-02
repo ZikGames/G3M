@@ -1,0 +1,811 @@
+"""Reversible sequential executor for resolved mod operations."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import stat
+import sys
+import tempfile
+from collections.abc import Callable
+from contextlib import ExitStack, suppress
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+from utils.mod.archive import (
+    ArchiveVirtualPath,
+    archive_format,
+    materialize_archive,
+    rebuild_archive,
+)
+from utils.mod.filesystem import DirectoryTraversalError, iter_directory_tree
+from utils.mod.hashing import sha256_path
+from utils.mod.operation_plan import ModOperationPlan, PlannedModOperation
+
+PatchFunction = Callable[[Path, Path, Path], bool | None]
+MergeFunction = Callable[[Path, list[Path], Path], bool | None]
+ProgressFunction = Callable[[int, int, PlannedModOperation], None]
+_MERGEABLE_DATA_SUFFIXES = frozenset({".win", ".ios", ".droid", ".unx"})
+
+
+def _is_mergeable_target(target: Path | ArchiveVirtualPath | None) -> bool:
+    if isinstance(target, Path):
+        return target.suffix.casefold() in _MERGEABLE_DATA_SUFFIXES
+    return (
+        isinstance(target, ArchiveVirtualPath)
+        and not target.directory
+        and Path(target.member).suffix.casefold() in _MERGEABLE_DATA_SUFFIXES
+    )
+
+
+class ModOperationExecutionError(RuntimeError):
+    """An operation cannot safely be applied."""
+
+
+class ModOperationCancelledError(ModOperationExecutionError):
+    """The caller cancelled the operation plan."""
+
+
+class ModRecoveryConflictError(ModOperationExecutionError):
+    """A deployed path changed outside the active session."""
+
+
+@dataclass(slots=True)
+class JournalEntry:
+    path: str
+    kind: str
+    backup: str | None
+    deployed_hash: str | None = None
+    preserve_external: bool = False
+    controlled_paths: tuple[str, ...] = ()
+
+
+class ModOperationJournal:
+    """Durable snapshots for one operation overlay session."""
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root)
+        self.backups = self.root / "backups"
+        self.manifest = self.root / "manifest.json"
+        if self.manifest.is_file():
+            previous = self.load(self.root)
+            if previous.state not in {"restored", "retired"}:
+                raise ModOperationExecutionError("a previous operation session requires recovery")
+            shutil.rmtree(self.backups, ignore_errors=True)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.backups.mkdir(exist_ok=True)
+        self.entries: list[JournalEntry] = []
+        self._by_path: set[str] = set()
+        self.state = "active"
+        self._write_manifest("active")
+
+    @classmethod
+    def load(cls, root: str | Path) -> ModOperationJournal:
+        """Load an interrupted session without changing its manifest."""
+        journal_root = Path(root)
+        manifest = journal_root / "manifest.json"
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            state = payload["state"]
+            raw_entries = payload["entries"]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise ModOperationExecutionError(f"cannot load recovery journal: {error}") from error
+        if state not in {"active", "applied", "restored", "retired"} or not isinstance(raw_entries, list):
+            raise ModOperationExecutionError("recovery journal is invalid")
+        instance = cls.__new__(cls)
+        instance.root = journal_root
+        instance.backups = journal_root / "backups"
+        instance.manifest = manifest
+        instance.entries = []
+        for raw_entry in raw_entries:
+            if not isinstance(raw_entry, dict):
+                raise ModOperationExecutionError("recovery journal entry is invalid")
+            controlled_paths = raw_entry.get("controlled_paths", [])
+            if not isinstance(controlled_paths, list) or any(
+                not isinstance(path, str) or not path or Path(path).is_absolute() or ".." in Path(path).parts
+                for path in controlled_paths
+            ):
+                raise ModOperationExecutionError("recovery journal entry is invalid")
+            try:
+                entry = JournalEntry(
+                    path=raw_entry["path"],
+                    kind=raw_entry["kind"],
+                    backup=raw_entry.get("backup"),
+                    deployed_hash=raw_entry.get("deployed_hash"),
+                    preserve_external=raw_entry.get("preserve_external", False),
+                    controlled_paths=tuple(controlled_paths),
+                )
+            except (KeyError, TypeError) as error:
+                raise ModOperationExecutionError("recovery journal entry is invalid") from error
+            if (
+                entry.kind not in {"file", "directory", "link", "missing"}
+                or not isinstance(entry.path, str)
+                or not Path(entry.path).is_absolute()
+                or (entry.kind != "missing" and not _valid_backup_path(entry.backup))
+                or (entry.deployed_hash is not None and not isinstance(entry.deployed_hash, str))
+                or not isinstance(entry.preserve_external, bool)
+            ):
+                raise ModOperationExecutionError("recovery journal entry is invalid")
+            instance.entries.append(entry)
+        instance._by_path = {entry.path for entry in instance.entries}
+        instance.state = state
+        return instance
+
+    def capture(
+        self,
+        path: str | Path,
+        *,
+        preserve_external: bool = False,
+        controlled_path: str | Path | None = None,
+        controlled_paths: tuple[str, ...] = (),
+    ) -> None:
+        """Snapshot an object and each missing parent once, before mutation."""
+        target = Path(os.path.abspath(os.fspath(path)))
+        _assert_target_parents_safe(target)
+        relative_paths = tuple(controlled_paths)
+        if controlled_path is not None:
+            controlled = Path(os.path.abspath(os.fspath(controlled_path)))
+            try:
+                relative_paths += (str(controlled.relative_to(target)),)
+            except ValueError as error:
+                raise ModOperationExecutionError("controlled path is outside its journal target") from error
+        missing: list[Path] = []
+        cursor = target
+        while not _path_exists(cursor):
+            missing.append(cursor)
+            if cursor.parent == cursor:
+                break
+            cursor = cursor.parent
+        for candidate in reversed(missing):
+            self._capture_one(candidate)
+        self._capture_one(
+            target,
+            preserve_external=preserve_external,
+            controlled_paths=relative_paths,
+        )
+        if preserve_external:
+            for entry in tuple(self.entries):
+                ancestor = Path(entry.path)
+                if entry.kind == "missing" and target.is_relative_to(ancestor):
+                    self._capture_one(
+                        ancestor,
+                        preserve_external=True,
+                        controlled_paths=tuple(
+                            str(target.relative_to(ancestor) / relative)
+                            for relative in relative_paths
+                        ),
+                    )
+
+    def seal(self) -> None:
+        """Record exactly what this session deployed before launching a game."""
+        self.checkpoint()
+
+    def checkpoint(self) -> None:
+        """Record G3M-controlled changes before external processes run."""
+        for entry in self.entries:
+            path = Path(entry.path)
+            entry.deployed_hash = _path_hash(path)
+        self.state = "applied"
+        self._write_manifest("applied")
+
+    def restore(self, *, force: bool = False) -> None:
+        """Restore snapshots in reverse order without overwriting external edits."""
+        if self.state == "retired":
+            raise ModOperationExecutionError("recovery journal was retired by the user")
+        if not force:
+            self.verify_deployed()
+        for entry in reversed(self.entries):
+            target = Path(entry.path)
+            _assert_target_parents_safe(target)
+            if (
+                force
+                and entry.preserve_external
+                and entry.kind in {"directory", "missing"}
+                and entry.deployed_hash is not None
+                and _path_hash(target) != entry.deployed_hash
+            ):
+                if entry.kind == "directory":
+                    _restore_directory_preserving_external(
+                        self.root / str(entry.backup), target, entry.controlled_paths
+                    )
+                else:
+                    _remove_controlled_paths(target, entry.controlled_paths)
+                continue
+            _remove_path(target)
+            if entry.kind == "file":
+                backup = self.root / str(entry.backup)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup, target)
+            elif entry.kind == "directory":
+                backup = self.root / str(entry.backup)
+                shutil.copytree(backup, target, symlinks=True)
+            elif entry.kind == "link":
+                backup = self.root / str(entry.backup)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _copy_link(backup, target)
+        self.state = "restored"
+        self._write_manifest("restored")
+
+    def verify_deployed(self) -> None:
+        """Fail when a deployed path differs from G3M's last known state."""
+        if self.state != "applied":
+            return
+        changed = [
+            entry.path
+            for entry in self.entries
+            if _path_hash(Path(entry.path)) != entry.deployed_hash
+        ]
+        if changed:
+            raise ModRecoveryConflictError(
+                f"deployed paths changed outside G3M: {', '.join(changed)}"
+            )
+
+    def retire(self) -> None:
+        """Keep external changes and mark this recovery session as resolved."""
+        self._write_manifest("retired")
+
+    def discard(self) -> None:
+        """Forget a successfully committed permanent operation and its backups."""
+        shutil.rmtree(self.root)
+
+    def _capture_one(
+        self,
+        target: Path,
+        *,
+        preserve_external: bool = False,
+        controlled_paths: tuple[str, ...] = (),
+    ) -> None:
+        key = str(target)
+        if key in self._by_path:
+            entry = next(entry for entry in self.entries if entry.path == key)
+            if preserve_external and not entry.preserve_external:
+                entry.preserve_external = True
+                self._write_manifest("active")
+            if controlled_paths:
+                entry.controlled_paths = tuple(dict.fromkeys((*entry.controlled_paths, *controlled_paths)))
+                self._write_manifest("active")
+            return
+        backup_relative = f"backups/{len(self.entries):08d}"
+        backup = self.root / backup_relative
+        if _path_exists(target):
+            if _is_link(target):
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                _copy_link(target, backup)
+                kind = "link"
+            elif target.is_dir():
+                shutil.copytree(target, backup, symlinks=True)
+                kind = "directory"
+            elif target.is_file():
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target, backup)
+                kind = "file"
+            else:
+                raise ModOperationExecutionError(f"unsupported target object: {target}")
+        else:
+            backup_relative = None
+            kind = "missing"
+        self.entries.append(
+            JournalEntry(
+                key,
+                kind,
+                backup_relative,
+                preserve_external=preserve_external,
+                controlled_paths=controlled_paths,
+            )
+        )
+        self._by_path.add(key)
+        self._write_manifest("active")
+
+    def _write_manifest(self, state: str) -> None:
+        self.state = state
+        payload = json.dumps(
+            {"state": state, "entries": [asdict(entry) for entry in self.entries]},
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".manifest.", suffix=".tmp", dir=self.root
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as temporary:
+                temporary.write(payload)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.replace(temporary_name, self.manifest)
+        finally:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary_name)
+
+
+class ModOperationExecutor:
+    """Apply a validated plan in its visible order and keep a recovery journal."""
+
+    def __init__(
+        self,
+        journal_root: str | Path,
+        *,
+        patcher: PatchFunction | None = None,
+        merger: MergeFunction | None = None,
+    ) -> None:
+        self.journal = ModOperationJournal(journal_root)
+        self.patcher = patcher
+        self.merger = merger
+        self._hard_reset_roots: set[str] = set()
+
+    def execute(
+        self,
+        plan: ModOperationPlan,
+        *,
+        progress: ProgressFunction | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> ModOperationJournal:
+        if plan.has_errors:
+            raise ModOperationExecutionError("operation plan contains unresolved errors")
+        try:
+            total = len(plan.operations)
+            completed = 0
+            handled: set[int] = set()
+            for operation in plan.operations:
+                if id(operation) in handled:
+                    continue
+                if is_cancelled is not None and is_cancelled():
+                    raise ModOperationCancelledError("operation cancelled")
+                merge_operations = self.merge_operations(plan.operations, operation)
+                if merge_operations:
+                    self._execute_merge(merge_operations)
+                    handled.update(id(item) for item in merge_operations)
+                    completed += len(merge_operations)
+                else:
+                    self._execute_operation(operation)
+                    handled.add(id(operation))
+                    completed += 1
+                if progress is not None:
+                    progress(completed, total, operation)
+            self.journal.seal()
+            return self.journal
+        except Exception:
+            self.journal.restore(force=True)
+            raise
+
+    @staticmethod
+    def merge_operations(
+        operations: tuple[PlannedModOperation, ...], operation: PlannedModOperation
+    ) -> tuple[PlannedModOperation, ...]:
+        """Return matching data patches from one simultaneous profile step."""
+        target = operation.target
+        if (
+            operation.merge_group is None
+            or operation.type != "patch"
+            or not _is_mergeable_target(target)
+        ):
+            return ()
+        matches = tuple(
+            candidate
+            for candidate in operations
+            if candidate.merge_group == operation.merge_group
+            and candidate.type == "patch"
+            and candidate.target == target
+            and isinstance(candidate.source, Path)
+            and not candidate.source_is_directory
+        )
+        return tuple(sorted(matches, key=lambda candidate: candidate.merge_priority)) if len(matches) > 1 else ()
+
+    def _execute_merge(self, operations: tuple[PlannedModOperation, ...]) -> None:
+        if self.merger is None:
+            raise ModOperationExecutionError("no patch merge backend is configured")
+        target = operations[0].target
+        if (
+            not isinstance(target, (Path, ArchiveVirtualPath))
+            or not _is_mergeable_target(target)
+        ):
+            raise ModOperationExecutionError("patch merge requires a supported data file")
+        with ExitStack() as stack:
+            if isinstance(target, ArchiveVirtualPath):
+                _assert_target_parents_safe(target.archive)
+                self.journal.capture(target.archive)
+                archive_root = Path(
+                    stack.enter_context(
+                        tempfile.TemporaryDirectory(prefix="g3m_archive_merge_")
+                    )
+                )
+                if target.archive.exists():
+                    materialize_archive(target.archive, archive_root)
+                resolved_target = archive_root.joinpath(*target.member.split("/"))
+            else:
+                _assert_target_parents_safe(target)
+                self.journal.capture(target)
+                archive_root = None
+                resolved_target = target
+            if not resolved_target.is_file():
+                raise ModOperationExecutionError("patch merge requires an existing data file")
+            patches: list[Path] = []
+            for operation in operations:
+                source = self._source_path(operation, stack)
+                self._verify_hash(resolved_target, operation.target_hash, "target")
+                patches.append(source)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{resolved_target.name}.",
+                suffix=resolved_target.suffix or ".tmp",
+                dir=resolved_target.parent,
+            )
+            os.close(descriptor)
+            output = Path(temporary_name)
+            try:
+                output.unlink()
+                result = self.merger(resolved_target, patches, output)
+                if result is False or not output.is_file():
+                    raise ModOperationExecutionError(
+                        "patch merge backend did not produce an output file"
+                    )
+                os.replace(output, resolved_target)
+            finally:
+                with suppress(FileNotFoundError):
+                    output.unlink()
+            if isinstance(target, ArchiveVirtualPath):
+                if archive_root is None:
+                    raise ModOperationExecutionError("archive merge workspace is unavailable")
+                target.archive.parent.mkdir(parents=True, exist_ok=True)
+                rebuild_archive(target.archive, archive_root)
+
+    def _execute_operation(self, operation: PlannedModOperation) -> None:
+        if operation.type == "info":
+            return
+        if operation.target is None:
+            raise ModOperationExecutionError("operation target is missing")
+        with ExitStack() as stack:
+            source = self._source_path(operation, stack)
+            if isinstance(operation.target, ArchiveVirtualPath):
+                _assert_target_parents_safe(operation.target.archive)
+                self.journal.capture(operation.target.archive)
+                temporary = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="g3m_archive_")))
+                if operation.target.archive.exists():
+                    materialize_archive(operation.target.archive, temporary)
+                target = (
+                    temporary.joinpath(*operation.target.member.split("/"))
+                    if operation.target.member
+                    else temporary
+                )
+                self._apply(operation, source, target)
+                operation.target.archive.parent.mkdir(parents=True, exist_ok=True)
+                rebuild_archive(operation.target.archive, temporary)
+                return
+            target = operation.target
+            _assert_target_parents_safe(target)
+            preserve_external = operation.type in {"hard-overwrite", "hard-extract"}
+            if operation.type == "hard-overwrite":
+                journal_target = target.parent if not operation.target_is_directory else target
+                deployed_root = (
+                    target / source.name if operation.target_is_directory else target
+                )
+            else:
+                journal_target = target
+                deployed_root = target
+            controlled_paths = (
+                _controlled_paths(source, deployed_root, journal_target)
+                if preserve_external
+                else ()
+            )
+            self.journal.capture(
+                journal_target,
+                preserve_external=preserve_external,
+                controlled_paths=controlled_paths,
+            )
+            if operation.type.endswith("extract") and archive_format(target) == "lzma":
+                self._write_lzma_extract(operation, source, target, stack)
+                return
+            self._apply(operation, source, target)
+
+    def _source_path(self, operation: PlannedModOperation, stack: ExitStack) -> Path:
+        source = operation.source
+        if isinstance(source, ArchiveVirtualPath):
+            temporary = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="g3m_archive_")))
+            materialize_archive(source.archive, temporary)
+            resolved = temporary.joinpath(*source.member.split("/")) if source.member else temporary
+            self._verify_hash(resolved, operation.source_hash, "source")
+            return resolved
+        self._verify_hash(source, operation.source_hash, "source")
+        if operation.type.endswith("extract") and archive_format(source) is not None:
+            temporary = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="g3m_archive_")))
+            materialize_archive(source, temporary)
+            return temporary
+        return source
+
+    def _apply(self, operation: PlannedModOperation, source: Path, target: Path) -> None:
+        if not source.exists():
+            raise ModOperationExecutionError(f"source does not exist: {source}")
+        if operation.type == "patch":
+            self._apply_patch(operation, source, target)
+            return
+        if operation.type.endswith("extract"):
+            self._apply_extract(operation, source, target)
+            return
+        self._apply_overwrite(operation, source, target)
+
+    def _apply_patch(self, operation: PlannedModOperation, source: Path, target: Path) -> None:
+        if source.is_dir() or target.is_dir() or not target.exists():
+            raise ModOperationExecutionError("patch requires existing source and target files")
+        self._verify_hash(target, operation.target_hash, "target")
+        if self.patcher is None:
+            raise ModOperationExecutionError("no patch backend is configured")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=target.suffix or ".tmp", dir=target.parent
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            temporary.unlink()
+            result = self.patcher(target, source, temporary)
+            if result is False or not temporary.is_file():
+                raise ModOperationExecutionError("patch backend did not produce an output file")
+            os.replace(temporary, target)
+        finally:
+            with suppress(FileNotFoundError):
+                temporary.unlink()
+
+    def _apply_overwrite(self, operation: PlannedModOperation, source: Path, target: Path) -> None:
+        soft = operation.type == "soft-overwrite"
+        hard = operation.type == "hard-overwrite"
+        self._verify_hash_if_present(target, operation.target_hash, "target")
+        if source.is_dir():
+            destination = target / source.name if operation.target_is_directory else target
+            if hard:
+                if operation.target_is_directory:
+                    _remove_path(destination)
+                else:
+                    self._clear_hard_root(operation, target.parent)
+            _copy_tree(source, destination, soft=soft)
+            return
+        if not source.is_file():
+            raise ModOperationExecutionError(f"source is not a regular file: {source}")
+        if hard:
+            self._clear_hard_root(
+                operation, target if operation.target_is_directory else target.parent
+            )
+            destination = target / source.name if operation.target_is_directory else target
+        else:
+            destination = target / source.name if operation.target_is_directory else target
+        _copy_file(source, destination, soft=soft)
+
+    def _apply_extract(self, operation: PlannedModOperation, source: Path, target: Path) -> None:
+        if not operation.target_is_directory:
+            raise ModOperationExecutionError("extract requires a directory target")
+        if not source.is_dir():
+            raise ModOperationExecutionError("extract requires a directory or archive source")
+        self._verify_hash_if_present(target, operation.target_hash, "target")
+        if operation.type == "hard-extract":
+            self._clear_hard_root(operation, target)
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+        _extract_tree(source, target, soft=operation.type == "soft-extract")
+
+    def _clear_hard_root(self, operation: PlannedModOperation, root: Path) -> None:
+        target = operation.target
+        if isinstance(target, ArchiveVirtualPath):
+            member = target.member.rstrip("/")
+            if not operation.type.endswith("extract") and not operation.target_is_directory:
+                member = member.rpartition("/")[0]
+            key = f"{target.archive.resolve(strict=False)}!/{member}"
+        else:
+            key = os.path.normcase(str(root.resolve(strict=False)))
+        if key in self._hard_reset_roots:
+            return
+        _clear_directory(root)
+        self._hard_reset_roots.add(key)
+
+    def _write_lzma_extract(
+        self,
+        operation: PlannedModOperation,
+        source: Path,
+        target: Path,
+        stack: ExitStack,
+    ) -> None:
+        if operation.type == "hard-extract" or source.is_dir():
+            raise ModOperationExecutionError("LZMA extract requires one file and cannot be hard")
+        self._verify_hash_if_present(target, operation.target_hash, "target")
+        if operation.type == "soft-extract" and target.exists():
+            return
+        temporary = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="g3m_lzma_")))
+        _copy_file(source, temporary / source.name, soft=False)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        rebuild_archive(target, temporary)
+
+    @staticmethod
+    def _verify_hash(path: Path, expected: str | None, label: str) -> None:
+        if expected is not None and sha256_path(path) != expected:
+            raise ModOperationExecutionError(f"{label} hash does not match")
+
+    def _verify_hash_if_present(self, path: Path, expected: str | None, label: str) -> None:
+        if expected is None:
+            return
+        if not path.exists():
+            raise ModOperationExecutionError(f"{label} required by hash does not exist")
+        self._verify_hash(path, expected, label)
+
+
+def _copy_file(source: Path, target: Path, *, soft: bool) -> None:
+    _assert_target_parents_safe(target)
+    if _path_exists(target):
+        if soft:
+            return
+        _remove_path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+def _copy_tree(source: Path, target: Path, *, soft: bool) -> None:
+    if not _ensure_directory(target, soft=soft):
+        return
+    skipped: list[str] = []
+    try:
+        entries = iter_directory_tree(source)
+        for child, relative, directory in entries:
+            if any(relative == prefix or relative.startswith(f"{prefix}/") for prefix in skipped):
+                continue
+            destination = target.joinpath(*relative.split("/"))
+            if directory:
+                if not _ensure_directory(destination, soft=soft):
+                    skipped.append(relative)
+            else:
+                _copy_file(child, destination, soft=soft)
+    except DirectoryTraversalError as error:
+        raise ModOperationExecutionError(str(error)) from error
+
+
+def _extract_tree(source: Path, target: Path, *, soft: bool) -> None:
+    for child in sorted(source.iterdir(), key=lambda path: path.name.casefold()):
+        destination = target / child.name
+        if child.is_dir():
+            _copy_tree(child, destination, soft=soft)
+        else:
+            _copy_file(child, destination, soft=soft)
+
+
+def _clear_directory(path: Path) -> None:
+    _assert_target_parents_safe(path)
+    if _is_link(path) or (_path_exists(path) and not path.is_dir()):
+        _remove_path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    for child in path.iterdir():
+        _remove_path(child)
+
+
+def _remove_path(path: Path) -> None:
+    if not _path_exists(path):
+        return
+    _assert_target_parents_safe(path)
+    if _is_link(path):
+        _unlink_link(path)
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+
+
+def _restore_directory_preserving_external(
+    backup: Path, target: Path, controlled_paths: tuple[str, ...]
+) -> None:
+    """Restore original files without deleting data created after deployment."""
+    if not _path_exists(target):
+        shutil.copytree(backup, target, symlinks=True)
+    elif _is_link(target) or not target.is_dir():
+        _remove_path(target)
+        shutil.copytree(backup, target, symlinks=True)
+    else:
+        for source in backup.iterdir():
+            destination = target / source.name
+            if source.is_dir() and not _is_link(source) and destination.is_dir() and not _is_link(destination):
+                _restore_directory_preserving_external(source, destination, ())
+            else:
+                _remove_path(destination)
+                if _is_link(source):
+                    _copy_link(source, destination)
+                elif source.is_dir():
+                    shutil.copytree(source, destination, symlinks=True)
+                else:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+    _remove_controlled_paths(target, tuple(
+        path for path in controlled_paths if not _path_exists(backup / path)
+    ))
+
+
+def _controlled_paths(source: Path, destination: Path, root: Path) -> tuple[str, ...]:
+    """List deployed files so forced recovery can keep later external files."""
+    try:
+        destination_relative = destination.relative_to(root)
+    except ValueError as error:
+        raise ModOperationExecutionError("controlled path is outside its journal target") from error
+    if source.is_file():
+        return (str(destination_relative),)
+    if not source.is_dir():
+        return ()
+    try:
+        return tuple(
+            str(destination_relative / relative)
+            for _path, relative, directory in iter_directory_tree(source)
+            if not directory
+        )
+    except DirectoryTraversalError as error:
+        raise ModOperationExecutionError(str(error)) from error
+
+
+def _remove_controlled_paths(target: Path, controlled_paths: tuple[str, ...]) -> None:
+    for relative_path in controlled_paths:
+        _remove_path(target / relative_path)
+
+
+def _path_hash(path: Path) -> str | None:
+    if not _path_exists(path):
+        return None
+    return sha256_path(path)
+
+
+def _valid_backup_path(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    parts = Path(value).parts
+    return bool(parts) and parts[0] == "backups" and ".." not in parts and not Path(value).is_absolute()
+
+
+def _ensure_directory(path: Path, *, soft: bool) -> bool:
+    _assert_target_parents_safe(path)
+    if _is_link(path) or (_path_exists(path) and not path.is_dir()):
+        if soft:
+            return False
+        _remove_path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    return True
+
+
+def _path_exists(path: Path) -> bool:
+    return path.exists() or _is_link(path)
+
+
+def _is_link(path: Path) -> bool:
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return False
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_point)
+
+
+def _unlink_link(path: Path) -> None:
+    try:
+        path.unlink()
+    except IsADirectoryError:
+        path.rmdir()
+
+
+def _copy_link(source: Path, target: Path) -> None:
+    try:
+        destination = os.readlink(source)
+    except OSError as error:
+        raise ModOperationExecutionError(f"cannot preserve link: {source}") from error
+    try:
+        os.symlink(destination, target, target_is_directory=source.is_dir())
+    except OSError as error:
+        raise ModOperationExecutionError(f"cannot restore link: {target}") from error
+
+
+_DARWIN_SYSTEM_LINKS = (
+    frozenset({Path("/var"), Path("/tmp"), Path("/etc")})
+    if sys.platform == "darwin"
+    else frozenset()
+)
+
+
+def _assert_target_parents_safe(path: Path) -> None:
+    current = path.parent
+    while True:
+        if _is_link(current):
+            if current not in _DARWIN_SYSTEM_LINKS:
+                raise ModOperationExecutionError(
+                    f"target is inside a link or reparse point: {current}"
+                )
+        if current.parent == current:
+            return
+        current = current.parent

@@ -178,6 +178,13 @@ a = Analysis(
     noarchive=False,
 )
 
+# Bundled source resources must not include caches from the build machine.
+a.datas = [
+    entry for entry in a.datas
+    if '__pycache__' not in Path(entry[0]).parts
+    and Path(entry[0]).suffix not in {'.pyc', '.pyo'}
+]
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(

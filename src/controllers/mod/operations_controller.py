@@ -3,16 +3,13 @@
 import contextlib
 import logging
 import os
-import shutil
 
-from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QDialog
 
 from adapters.gamebanana_adapter import GameBananaAPI
 from config.config import UI_COLORS
 from services.localization_service import tr
 from ui.dialogs.file_picker_dialog import GameBananaFilePickerDialog
-from ui.widgets.mod.installed_mod_widget import InstalledModWidget
 from utils.mod.utils import (
     get_gamebanana_item_type,
     get_gamebanana_mod_id,
@@ -21,7 +18,6 @@ from utils.mod.utils import (
     sort_gamebanana_files_by_priority,
 )
 from utils.process_utils import format_filesystem_error
-from workers.install.batch_install_worker import InstallModsThread
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +30,6 @@ class ModOperationsController:
         self.feedback_service = feedback_service
         self.mod_service = mod_service
         self.app = app_window
-        from ui.utils.ui_utils import DebounceTimer
-
-        self._update_debounce_short = DebounceTimer(delay_ms=200)
-        self._update_debounce_long = DebounceTimer(delay_ms=1000)
-
     def _safe_execute(self, func, error_msg_prefix="", default_return=None):
         try:
             return func()
@@ -68,13 +59,6 @@ class ModOperationsController:
                 e,
                 exc_info=True,
             )
-
-    @staticmethod
-    def _disconnect_task_signals(task) -> None:
-        for sig_name in ("progress", "status", "result_ready", "finished"):
-            if hasattr(task, sig_name):
-                with contextlib.suppress(TypeError, RuntimeError):
-                    getattr(task, sig_name).disconnect()
 
     def _pick_gamebanana_file(self, available_files, mod_name, homepage):
         available_files = sort_gamebanana_files_by_priority(available_files)
@@ -146,6 +130,9 @@ class ModOperationsController:
         file_id = None
         file_name = None
         compatibility = None
+        size_bytes = None
+        md5 = None
+        timestamp = None
         if selected_file:
             download_url = selected_file.get("download_url") or selected_file.get(
                 "_sDownloadUrl"
@@ -153,6 +140,11 @@ class ModOperationsController:
             file_id = selected_file.get("id") or selected_file.get("_idRow")
             file_name = selected_file.get("name") or selected_file.get("_sFile")
             compatibility = selected_file.get("compatibility")
+            size_bytes = selected_file.get("size_bytes") or selected_file.get("_nFilesize")
+            md5 = selected_file.get("md5") or selected_file.get("_sMd5Checksum")
+            timestamp = selected_file.get("timestamp") or selected_file.get("_tsDateAdded")
+        if not download_url and file_id:
+            download_url = f"https://gamebanana.com/dl/{file_id}"
         if not download_url:
             self._safe_show_message("error", "errors.no_download_url")
             return
@@ -166,9 +158,12 @@ class ModOperationsController:
             "item_type": item_type_lower,
             "gb_file_id": file_id,
             "file_name": file_name,
+            "size_bytes": size_bytes,
+            "md5": md5,
+            "timestamp": timestamp,
             "compatibility": compatibility,
             "name": getattr(mod, "name", None),
-            "author": getattr(mod, "author", None),
+            "authors": getattr(mod, "authors", []) or [],
             "version": getattr(mod, "version", None),
             "description": getattr(mod, "description", None),
             "homepage": getattr(mod, "homepage", None),
@@ -192,38 +187,54 @@ class ModOperationsController:
             "Failed to refresh cards",
         )
 
-    def _start_install_thread(self, install_thread, op_id: int):
-        try:
-            self.app_state.is_installing = True
-            self.app_state._scan_blocked = True
-            self.set_install_buttons_enabled(False)
-            self.app.action_button.setText(tr("ui.cancel_button"))
-            install_thread.progress.connect(
-                lambda v, oid=op_id: self.on_install_progress_token(v, oid)
-            )
-            install_thread.status.connect(
-                lambda msg, col, oid=op_id: self.on_install_status_token(msg, col, oid)
-            )
-            install_thread.result_ready.connect(
-                lambda ok, oid=op_id: self._on_install_task_finished(ok, oid)
-            )
-            self.app.progress_bar.setVisible(True)
-            self.app.progress_bar.setValue(0)
-            self._safe_execute(
-                lambda: self.feedback_service.update_status(
-                    tr("status.preparing_download"), UI_COLORS["status_warning"]
-                ),
-                "Feedback manager update failed",
-            )
-            self.app_state.current_task = install_thread
-            self.app.game_launch.update_button_state()
-            install_thread.start()
-            logger.info(
-                f"ModOperationsController: Started mod installation thread (op_id={op_id})"
-            )
-        except Exception as e:
-            logger.error(f"Error starting install thread: {e}", exc_info=True)
-            self._handle_install_start_error(e)
+    def enqueue_resolved_gamebanana_update(
+        self,
+        mod,
+        resolved: dict,
+        *,
+        replace_current: bool,
+        batch_id: str,
+        mod_folder: str | None = None,
+        target_mods_dir: str | None = None,
+    ) -> str | None:
+        """Queue one already-resolved update, snapshotting it before replacement."""
+        from models.download_models import SourceKind, TargetKind
+
+        metadata = resolved.get("metadata")
+        source_url = resolved.get("source_url")
+        canonical_key = resolved.get("canonical_key")
+        if not isinstance(metadata, dict) or not isinstance(source_url, str):
+            return None
+        mod_id = get_mod_id(mod)
+        if not isinstance(mod_id, str):
+            return None
+        if not replace_current:
+            mod_folder = mod_folder or self.mod_service.get_mod_folder_path(mod_id)
+            if not mod_folder or not os.path.isdir(mod_folder):
+                return None
+        update_metadata = {
+            **metadata,
+            "update_batch_id": batch_id,
+            "update_mod_id": mod_id,
+            "target_mods_dir": target_mods_dir or self.app_state.mods_dir,
+        }
+        if not replace_current:
+            update_metadata["snapshot_mod_folder"] = mod_folder
+            update_metadata["snapshot_version"] = str(getattr(mod, "version", "") or "previous")
+        record_id, duplicate = self.app.downloads_manager.enqueue(
+            display_name=str(resolved.get("display_name") or getattr(mod, "name", mod_id)),
+            source_kind=SourceKind.GAMEBANANA,
+            target_kind=TargetKind.MOD,
+            source_url=source_url,
+            canonical_key=(
+                f"{canonical_key}:update:{batch_id}" if canonical_key else None
+            ),
+            metadata=update_metadata,
+            auto_use=True,
+        )
+        if duplicate:
+            self.app.downloads_manager.action_install(record_id)
+        return record_id
 
     def _get_available_gamebanana_files(self, mod) -> list[dict]:
         files = getattr(mod, "gamebanana_supported_files", []) or []
@@ -306,9 +317,11 @@ class ModOperationsController:
                     "_idRow": file_id,
                     "_bHasContents": True,
                     "version": file_data.get("_sVersion")
-                    or file_data.get("version", "1.0.0"),
+                    or file_data.get("version", ""),
+                    "timestamp": file_data.get("_tsDateAdded") or file_data.get("timestamp"),
                     "size_bytes": file_data.get("_nFilesize")
                     or file_data.get("size_bytes", 0),
+                    "md5": file_data.get("md5") or file_data.get("_sMd5Checksum"),
                     "download_count": file_data.get("_nDownloadCount")
                     or file_data.get("download_count", 0),
                 }
@@ -354,282 +367,10 @@ class ModOperationsController:
                     mod, force, is_update, selected_file=selected_file
                 )
                 return
-            available_chapters = []
-            from models.game_modes import get_game
-
-            game_def = get_game(mod.game)
-            tab_ids = [tab.tab_id for tab in game_def.tabs] if game_def else [mod.game]
-            for chapter_id in tab_ids:
-                if mod.get_chapter_data(chapter_id):
-                    available_chapters.append(chapter_id)
-            if not available_chapters:
-                self._safe_show_message(
-                    "warning", "errors.mod_no_files", mod_name=mod.name
-                )
-                return
-            was_installed_before = (
-                self.mod_service.is_mod_installed(mod.id) or is_update
-            )
-            install_tasks = [(mod, chapter_id) for chapter_id in available_chapters]
-            self._safe_execute(
-                lambda: setattr(self.app_state, "operation_cancelled", False),
-                "Failed to set operation_cancelled",
-            )
-            if self.app_state.current_task:
-                try:
-                    self._disconnect_task_signals(self.app_state.current_task)
-                except (TypeError, RuntimeError) as e:
-                    logger.debug(
-                        f"Failed to disconnect signals from previous task: {e}"
-                    )
-            self.app._install_op_id += 1
-            op_id = self.app._install_op_id
-            install_thread = InstallModsThread(
-                self.app, install_tasks, was_installed_before
-            )
-            self._start_install_thread(install_thread, op_id)
+            self._safe_show_message("warning", "errors.mod_no_files", mod_name=mod.name)
         except (OSError, KeyError, Exception) as e:
             logger.error("ModOperationsController: install start failed: %s", e, exc_info=True)
             self._handle_install_start_error(e)
-
-    def on_install_progress_token(self, value: int, op_id: int):
-        current_op_id = getattr(self.app, "_install_op_id", 0)
-        if current_op_id == op_id and self.app_state.is_installing:
-            self.app.progress_bar.setValue(value)
-
-    def on_install_status_token(self, message: str, color: str, op_id: int):
-        current_op_id = getattr(self.app, "_install_op_id", 0)
-        if current_op_id == op_id and self.app_state.is_installing:
-            try:
-                self.app._update_status(message, color)
-            except Exception as e:
-                logger.warning(
-                    "ModOperationsController: install status callback failed: %s",
-                    e,
-                    exc_info=True,
-                )
-
-    def _on_install_task_finished(self, success: bool, op_id: int):
-        current_op_id = getattr(self.app, "_install_op_id", 0)
-        if current_op_id != op_id:
-            return
-        was_installed_before = False
-        if self.app_state.current_task:
-            was_installed_before = getattr(
-                self.app_state.current_task, "was_installed_before", False
-            )
-        self._on_install_complete(success, "", was_installed_before)
-
-    def _on_install_complete(
-        self, success: bool, message: str = "", was_installed_before: bool = False
-    ):
-        current_task = self.app_state.current_task
-        installed_mod_info = None
-        if current_task and hasattr(current_task, "mod_info"):
-            installed_mod_info = current_task.mod_info
-        self.app.progress_bar.setValue(0)
-        self.app.progress_bar.setVisible(False)
-        self.app_state.clear_current_task()
-        self.app_state.is_installing = False
-        self.set_install_buttons_enabled(True)
-        self._safe_execute(
-            lambda: self.app.game_launch.update_button_state(),
-            "Failed to update button state",
-        )
-        if not success:
-            is_cancelled = (
-                message == tr("status.operation_cancelled")
-                or "cancelled" in message.lower()
-                or self.app_state.operation_cancelled
-            )
-            if is_cancelled:
-                logger.info("ModOperationsController: Installation was cancelled")
-                self._safe_execute(
-                    lambda: setattr(self.app_state, "operation_cancelled", False),
-                    "Failed to set operation_cancelled",
-                )
-                self._safe_update_status(
-                    tr("status.operation_cancelled"), UI_COLORS["status_warning"]
-                )
-            else:
-                self._safe_update_status(
-                    tr("status.mod_install_error"), UI_COLORS["status_error"]
-                )
-            try:
-                if current_task:
-                    temp_root = getattr(current_task, "temp_root", None)
-                    if temp_root and os.path.isdir(temp_root):
-                        shutil.rmtree(temp_root, ignore_errors=True)
-            except (AttributeError, OSError, shutil.Error) as e:
-                logger.debug(f"Failed to clean temp root: {e}", exc_info=True)
-            self.app.game_launch.update_button_state()
-            self.app_state._scan_blocked = False
-            return
-        self.app_state._scan_blocked = False
-        self._safe_execute(
-            lambda: self.mod_service.invalidate_mods_cache(),
-            "invalidate_mods_cache failed",
-            default_return=None,
-        )
-        try:
-            self.mod_service.load_local_mods()
-            self.mod_service.mod_list_updated.emit()
-            self._safe_execute(
-                lambda: (
-                    self.app.search_display.update_search_cards()
-                    if hasattr(self.app, "search_display")
-                    else None
-                ),
-                "Failed to update search cards",
-            )
-            if installed_mod_info and hasattr(self.app_state, "all_mods"):
-                mod_id = get_mod_id(installed_mod_info)
-                if mod_id:
-                    self._sync_installed_mod_to_all_mods(mod_id)
-        except Exception as e:
-            logger.warning(
-                f"ModOperationsController: Failed to reload local mods: {e}",
-                exc_info=True,
-            )
-
-        def update_filtered_mods():
-            try:
-                if not hasattr(self.app, "search_display"):
-                    return
-                self.app.search_display.update_filtered_mods(preserve_page=True)
-                if not (installed_mod_info and self.app_state.filtered_mods):
-                    return
-                mod_id = get_mod_id(installed_mod_info)
-                if not mod_id:
-                    return
-                for mod in self.app_state.filtered_mods:
-                    if get_mod_id(mod) == mod_id:
-                        self._safe_execute(
-                            lambda: self.app.search_display.update_display(),
-                            "Failed to update display",
-                        )
-                        return
-                logger.debug(
-                    f"ModOperationsController: Installed mod {mod_id} not found in filtered_mods"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"ModOperationsController: Failed to update filtered mods: {e}",
-                    exc_info=True,
-                )
-
-        def check_cache_and_update():
-            try:
-                self.mod_service._get_mods_cache()
-            except Exception as e:
-                logger.warning(f"ModOperationsController: Failed to check cache: {e}")
-
-        def update_cards_with_retry():
-            try:
-                self.mod_service.invalidate_mods_cache()
-                self.app.search_display.update_search_cards()
-            except Exception as e:
-                logger.warning(
-                    f"ModOperationsController: Failed to update search cards: {e}",
-                    exc_info=True,
-                )
-
-        def update_library_with_retry():
-            try:
-                if hasattr(self.app, "library_display"):
-                    self.app.library_display.update_display()
-            except Exception as e:
-                logger.warning(
-                    f"ModOperationsController: Failed to update library display: {e}",
-                    exc_info=True,
-                )
-
-        if current_task and installed_mod_info:
-            self.refresh_specific_mod_widget_after_update(installed_mod_info)
-        elif current_task and not installed_mod_info:
-            logger.debug("ModOperationsController: current_task.mod_info was missing")
-        self._update_debounce_short.call(check_cache_and_update)
-        self._update_debounce_short.call(update_filtered_mods)
-        self._update_debounce_short.call(update_cards_with_retry)
-        self._update_debounce_short.call(update_library_with_retry)
-        self._update_debounce_long.call(check_cache_and_update)
-        if message:
-            self._safe_update_status(message, UI_COLORS["status_success"])
-        else:
-            self._safe_update_status(
-                tr("status.mod_installed_success"), UI_COLORS["status_success"]
-            )
-        if not was_installed_before:
-            self._safe_execute(
-                lambda: QTimer.singleShot(
-                    0,
-                    lambda: self._safe_show_message(
-                        "info", "dialogs.mod_installed_apply_info"
-                    ),
-                ),
-                "Failed to show mod installed info",
-            )
-        if getattr(self.app, "pending_updates", None):
-            next_mod = self.app.pending_updates.pop(0)
-            QTimer.singleShot(0, lambda: self.mod_service.update_mod(next_mod))
-        self.app.game_launch.update_button_state()
-
-    def _sync_installed_mod_to_all_mods(self, mod_id: str):
-        try:
-            if not self.app_state.all_mods:
-                self.app_state.all_mods = []
-            existing_mod = next(
-                (m for m in self.app_state.all_mods if get_mod_id(m) == mod_id), None
-            )
-            cache = self.mod_service._get_mods_cache()
-            if mod_id not in cache:
-                return
-            config_data = cache[mod_id].config_data
-            if not existing_mod:
-                mod_to_add = self.mod_service.create_mod_object_from_info(
-                    config_data, self.app_state.all_mods
-                )
-                if mod_to_add:
-                    self.app_state.append_mod(mod_to_add)
-            elif config_data.get("files") and (
-                not hasattr(existing_mod, "files") or not existing_mod.files
-            ):
-                temp_mod = self.mod_service.create_mod_object_from_info(
-                    config_data, self.app_state.all_mods
-                )
-                if hasattr(temp_mod, "files") and temp_mod.files:
-                    existing_mod.files = temp_mod.files
-        except Exception as e:
-            logger.debug(
-                f"ModOperationsController: _sync_installed_mod_to_all_mods failed for {mod_id}: {e}"
-            )
-
-    def refresh_specific_mod_widget_after_update(self, mod_info=None):
-        mod_to_update = mod_info
-        if mod_to_update is None:
-            if not self.app_state.current_task:
-                return
-            install_tasks = getattr(self.app_state.current_task, "install_tasks", [])
-            if not install_tasks:
-                return
-            mod_to_update = install_tasks[0][0]
-        mod_id_to_find = get_mod_id(mod_to_update)
-        if not mod_id_to_find:
-            return
-        if hasattr(self.app, "installed_mods_layout"):
-            for i in range(self.app.installed_mods_layout.count()):
-                item = self.app.installed_mods_layout.itemAt(i)
-                if item and item.widget():
-                    widget = item.widget()
-                    if isinstance(widget, InstalledModWidget):
-                        widget_key = get_mod_id(widget.mod_data)
-                        if widget_key == mod_id_to_find:
-                            widget.update_status()
-                            break
-        if hasattr(self.app, "search_display"):
-            for card in self.app.search_display.card_widget_cache.values():
-                if get_mod_id(card.mod_data) == mod_id_to_find:
-                    card.update_installation_status()
 
     def on_mod_uninstall_requested(self, mod):
         if self.app_state.is_installing:

@@ -37,6 +37,25 @@ def test_community_dialog_builds_gamebanana_feed_filters(qapp):
     assert dialog._worker is None
 
 
+def test_community_dialog_adds_validated_plugin_feed(qapp):
+    from PyQt6.QtWidgets import QWidget
+
+    from models.plugin_models import PluginCommunityFeed
+    from ui.dialogs.community_dialog import CommunityDialog
+
+    feed = PluginCommunityFeed(
+        id="plugin:news:updates",
+        label="Plugin news",
+        url="https://example.com/rss",
+        plugin_id="news",
+    )
+    parent = QWidget()
+    parent.plugin_runtime_service = SimpleNamespace(get_community_feeds=lambda: [feed])
+    dialog = CommunityDialog(parent, SimpleNamespace(global_settings={}))
+
+    assert dialog.feed_combo.itemData(2) == feed
+
+
 def test_community_dialog_does_not_retire_stopped_worker_twice(qapp, monkeypatch):
     from ui.dialogs import community_dialog
 

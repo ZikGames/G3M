@@ -140,9 +140,9 @@ class TestSnapshotAndApply:
 
         with open(config_path, encoding="utf-8") as handle:
             applied_config = json.load(handle)
-        assert applied_config["metadata"]["id"] == "gb_mod_123"
+        assert applied_config["config_version"] == "2.0.0"
         assert applied_config["id"] == "gb_mod_123"
-        assert applied_config["metadata"]["name"] == "Version 2"
+        assert applied_config["name"] == "Version 2"
 
     def test_apply_can_switch_between_xdelta_and_g3mpatch_versions_repeatedly(
         self, mod_folder

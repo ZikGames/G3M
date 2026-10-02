@@ -1,9 +1,13 @@
 """Summary panel for displaying selected mod details in the Library tab."""
 
+import base64
 import html
 import logging
 import os
+import re
 import threading
+from collections.abc import Mapping
+from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -13,10 +17,13 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from models.mod_models import format_mod_authors
 from services.localization_service import tr
 from ui.common.styling import (
     DEFAULT_COLORS,
@@ -29,10 +36,40 @@ from ui.common.styling import (
     load_mod_icon_universal,
     rgba_from_color,
 )
+from utils.mod.archive import ArchiveVirtualPath
+from utils.mod.config import (
+    MOD_CONFIG_VERSION,
+    ModConfigValidationError,
+    iter_mod_config_leaves,
+    load_mod_config,
+)
+from utils.mod.operation_plan import ModPathContext, resolve_operation_path
 from utils.mod.readme_utils import find_mod_readme_files
-from utils.path_utils import colored_icon
+from utils.path_utils import colored_icon, resource_path
 
 logger = logging.getLogger(__name__)
+
+_OPERATION_ICON_FILES = {
+    "patch": "patch_type_icon.svg",
+    "overwrite": "overwrite_type_icon.svg",
+    "soft-overwrite": "overwrite_type_icon.svg",
+    "hard-overwrite": "overwrite_type_icon.svg",
+    "extract": "extract_type_icon.svg",
+    "soft-extract": "extract_type_icon.svg",
+    "hard-extract": "extract_type_icon.svg",
+    "info": "info_type_icon.svg",
+}
+_MAX_SUMMARY_AFFECTED_FILES = 4
+_OPERATION_LABEL_KEYS = {
+    "patch": "ui.mod_editor_type_patch",
+    "overwrite": "ui.mod_editor_type_overwrite",
+    "soft-overwrite": "ui.mod_editor_type_soft_overwrite",
+    "hard-overwrite": "ui.mod_editor_type_hard_overwrite",
+    "extract": "ui.mod_editor_type_extract",
+    "soft-extract": "ui.mod_editor_type_soft_extract",
+    "hard-extract": "ui.mod_editor_type_hard_extract",
+    "info": "ui.mod_editor_type_info",
+}
 
 
 class ModSummaryPanel(QFrame):
@@ -61,13 +98,14 @@ class ModSummaryPanel(QFrame):
         self._app_state = app_state
         self._current_mod = None
         self._current_mod_folder = None
-        self._cached_metadata = None
-        self._cached_file_info = None
-        self._cached_mod_id = None
         self._current_readme_files = []
         self._mod_size_cache = {}
         self._size_threads = {}
         self._cache_lock = threading.Lock()
+        self._operation_path_tooltips: dict[str, str] = {}
+        self._operation_config: dict[str, object] | None = None
+        self._operation_leaves: list[tuple[tuple[str, ...], dict[str, object]]] = []
+        self._showing_all_operations = False
         self.setObjectName("summaryPanel")
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setAutoFillBackground(True)
@@ -115,7 +153,7 @@ class ModSummaryPanel(QFrame):
     def _on_size_computed(self, mod_folder: str, size: int):
         """Called on main thread when size computation completes."""
         if mod_folder == self._current_mod_folder:
-            self._update_metadata(self._current_mod, mod_folder, cache_result=True)
+            self._update_metadata(self._current_mod, mod_folder)
             self.apply_theme()
 
     def _build_ui(self):
@@ -135,7 +173,7 @@ class ModSummaryPanel(QFrame):
         self._scroll.setAutoFillBackground(True)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll.viewport().setObjectName("summaryViewport")
         self._scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._content = QWidget()
@@ -224,13 +262,52 @@ class ModSummaryPanel(QFrame):
         self._meta_label.setWordWrap(True)
         cl.addWidget(self._meta_label)
 
+        self._state_label = QLabel()
+        self._state_label.setObjectName("summaryInfoBlock")
+        self._state_label.setWordWrap(True)
+        self._state_label.hide()
+        cl.addWidget(self._state_label)
+
         self._data_label = QLabel()
         self._data_label.setObjectName("summaryInfoBlock")
         self._data_label.setWordWrap(True)
         self._data_label.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
         )
+        self._data_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse
+        )
+        self._data_label.linkHovered.connect(self._on_operation_path_hover)
         cl.addWidget(self._data_label)
+
+        self._all_operations_title = QLabel()
+        self._all_operations_title.setObjectName("summaryOperationListTitle")
+        self._all_operations_title.hide()
+        cl.addWidget(self._all_operations_title)
+
+        self._operations_tree = QTreeWidget()
+        self._operations_tree.setObjectName("summaryOperationsTree")
+        self._operations_tree.setColumnCount(3)
+        self._operations_tree.setRootIsDecorated(False)
+        self._operations_tree.setUniformRowHeights(True)
+        self._operations_tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self._operations_tree.setAlternatingRowColors(False)
+        self._operations_tree.setMinimumHeight(180)
+        self._operations_tree.setMaximumHeight(280)
+        self._operations_tree.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._operations_tree.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._operations_tree.hide()
+        cl.addWidget(self._operations_tree)
+
+        self._operations_toggle = QPushButton()
+        self._operations_toggle.setObjectName("summaryOperationsToggle")
+        self._operations_toggle.clicked.connect(self._toggle_all_operations)
+        self._operations_toggle.hide()
+        cl.addWidget(self._operations_toggle, 0, Qt.AlignmentFlag.AlignLeft)
 
         self._extra_label = QLabel()
         self._extra_label.setObjectName("summaryInfoBlock")
@@ -262,10 +339,14 @@ class ModSummaryPanel(QFrame):
     def show_empty(self):
         self._current_mod = None
         self._current_mod_folder = None
-        self._cached_mod_id = None
-        self._cached_metadata = None
-        self._cached_file_info = None
         self._current_readme_files = []
+        self._operation_config = None
+        self._operation_leaves = []
+        self._showing_all_operations = False
+        self._operations_tree.clear()
+        self._operations_tree.hide()
+        self._all_operations_title.hide()
+        self._operations_toggle.hide()
         self._playtime_widget.hide()
         self._readme_button.hide()
         with self._cache_lock:
@@ -274,14 +355,13 @@ class ModSummaryPanel(QFrame):
         self._empty_label.show()
         self._scroll.hide()
 
-    def show_mod(self, mod_data, mod_folder=None, is_active=False):
-        from utils.patching.mod_resolve_utils import get_mod_id
-
+    def show_mod(self, mod_data, mod_folder=None, is_active=False, relation_issue=None):
+        self._showing_all_operations = False
+        self._operation_config = None
+        self._operation_leaves = []
+        self._operations_tree.clear()
         self._current_mod = mod_data
         self._current_mod_folder = self._resolve_mod_folder(mod_data, mod_folder)
-        self._cached_mod_id = get_mod_id(mod_data) if mod_data else None
-        self._cached_metadata = None
-        self._cached_file_info = None
         self._current_readme_files = find_mod_readme_files(self._current_mod_folder)
         self._empty_label.hide()
         self._scroll.show()
@@ -300,11 +380,30 @@ class ModSummaryPanel(QFrame):
             border_color=bc,
         )
         self._update_metadata(mod_data, self._current_mod_folder)
+        self._update_relation_issue(relation_issue)
         self._populate_file_info(mod_data, self._current_mod_folder)
         self._update_playtime(mod_data)
         self._update_action_visibility(mod_data, self._current_mod_folder)
         self.update_use_button_state(is_active)
         self.apply_theme()
+
+    def _update_relation_issue(self, relation_issue) -> None:
+        if not relation_issue:
+            self._state_label.hide()
+            return
+        code, related_id = relation_issue
+        tooltip_keys = {
+            "dependency_missing": "tooltips.dependency_missing",
+            "dependency_inactive": "tooltips.dependency_inactive",
+            "dependency_relation_unsatisfied": "tooltips.dependency_order",
+            "dependency_cycle": "tooltips.dependency_cycle",
+            "conflict_active": "tooltips.conflict_active",
+        }
+        color = "#F44336" if code == "dependency_cycle" else "#FF9800"
+        self._state_label.setText(
+            f"<span style='color:{color};'>{html.escape(tr(tooltip_keys.get(code, 'tooltips.dependency_order'), mod_id=related_id))}</span>"
+        )
+        self._state_label.show()
 
     def _update_action_visibility(self, mod_data, mod_folder) -> None:
         is_local_mod = bool(mod_folder) and os.path.isdir(mod_folder)
@@ -322,7 +421,7 @@ class ModSummaryPanel(QFrame):
         )
         self._readme_button.setVisible(is_local_mod and bool(self._current_readme_files))
 
-    def _update_metadata(self, mod_data, mod_folder, cache_result=False):
+    def _update_metadata(self, mod_data, mod_folder):
         config = self._get_config()
         tc = get_theme_color(config, "main_text") if config else DEFAULT_COLORS["main_text"]
         sc = (
@@ -331,10 +430,10 @@ class ModSummaryPanel(QFrame):
             else DEFAULT_COLORS["secondary_text"]
         )
         parts = []
-        author = getattr(mod_data, "author", None)
-        if author:
+        authors = format_mod_authors(getattr(mod_data, "authors", []))
+        if authors:
             parts.append(
-                f"<span style='color:{tc}'>{tr('ui.author_label')}</span> <span style='color:{sc}'>{author}</span>"
+                f"<span style='color:{tc}'>{tr('ui.authors_label')}</span> <span style='color:{sc}'>{authors}</span>"
             )
         version = getattr(mod_data, "version", None)
         if version:
@@ -382,127 +481,260 @@ class ModSummaryPanel(QFrame):
                 )
 
         metadata_text = "<br>".join(parts)
-        self._cached_metadata = metadata_text if cache_result else None
         self._meta_label.setText(metadata_text)
 
-    def _populate_file_info(self, mod_data, mod_folder, cache_result=False):
-        files = getattr(mod_data, "files", None)
-        if not files or not isinstance(files, dict):
-            data_text = f"<span style='color:{get_theme_color(self._get_config(), 'secondary_text', DEFAULT_COLORS['secondary_text']) if self._get_config() else DEFAULT_COLORS['secondary_text']}'>{tr('ui.no_data_files')}</span>"
-            self._cached_file_info = (data_text, False) if cache_result else None
-            self._data_label.setText(data_text)
-            self._extra_label.hide()
+    def _populate_file_info(self, mod_data, mod_folder):
+        self._operation_path_tooltips.clear()
+        self._data_label.setToolTip("")
+        operation_config = self._load_operation_config(mod_folder)
+        if operation_config is not None:
+            self._populate_operation_file_info(operation_config)
             return
+        self._operation_config = None
+        self._operation_leaves = []
+        self._showing_all_operations = False
+        self._operations_tree.clear()
+        self._operations_tree.hide()
+        self._all_operations_title.hide()
+        self._operations_toggle.hide()
+        self._data_label.show()
+        data_text = f"<span style='color:{get_theme_color(self._get_config(), 'secondary_text', DEFAULT_COLORS['secondary_text']) if self._get_config() else DEFAULT_COLORS['secondary_text']}'>{tr('ui.no_data_files')}</span>"
+        self._data_label.setText(data_text)
+        self._extra_label.hide()
+
+    @staticmethod
+    def _load_operation_config(mod_folder: str | None) -> dict[str, object] | None:
+        if not mod_folder:
+            return None
+        try:
+            config = load_mod_config(os.path.join(mod_folder, "mod_config.json"))
+        except (ModConfigValidationError, OSError):
+            return None
+        return config if config.get("config_version") == MOD_CONFIG_VERSION else None
+
+    def _populate_operation_file_info(self, config_data: dict[str, object]) -> None:
         config = self._get_config()
         tc = get_theme_color(config, "main_text") if config else DEFAULT_COLORS["main_text"]
-        sc = (
-            get_theme_color(config, "secondary_text")
-            if config
-            else DEFAULT_COLORS["secondary_text"]
+        sc = get_theme_color(config, "secondary_text") if config else DEFAULT_COLORS["secondary_text"]
+        files = config_data.get("files")
+        self._operation_config = config_data
+        self._operation_leaves = (
+            list(iter_mod_config_leaves(files))
+            if isinstance(files, list)
+            else []
         )
-        sorted_keys = sorted(
-            files.keys(),
-            key=lambda k: (0 if k == "0" else 1, int(k) if k.isdigit() else 999, k),
-        )
-        data_lines = []
-        extra_chapters: dict[str, list[tuple[str, int, list[str]]]] = {
-            "game_folder": [],
-            "game_data_folder": [],
-            "custom": [],
-            "none": [],
-        }
-        for chapter_key in sorted_keys:
-            ch_info = files[chapter_key]
-            if ch_info is None:
-                continue
-            if isinstance(ch_info, dict):
-                data_file = ch_info.get("data_file_path") or ch_info.get("data_file_url")
-                extra_files = ch_info.get("extra_files", [])
-            else:
-                data_file = getattr(ch_info, "data_file_path", None)
-                extra_files = getattr(ch_info, "extra_files", [])
-            chapter_label = self._format_chapter_label(chapter_key)
-            if data_file:
-                size_str = ""
-                raw_data_file = str(data_file).replace("\\", "/")
-                display_name = self._format_display_path(raw_data_file)
-                if mod_folder:
-                    try:
-                        data_path = self._resolve_data_file_path(
-                            mod_folder, chapter_key, raw_data_file
-                        )
-                        if data_path:
-                            from ui.utils.ui_utils import format_size
-
-                            size_str = f" - {format_size(os.path.getsize(data_path))}"
-                    except Exception as e:
-                        logger.debug(
-                            f"ModSummaryPanel: failed to calculate file size for chapter {chapter_key}: {e}",
-                            exc_info=True,
-                        )
-                data_lines.append(
-                    f"<span style='color:{tc}'>{html.escape(chapter_label)}:</span> <span style='color:{sc}'>{self._wrap_display_text(display_name)}{html.escape(size_str)}</span>"
-                )
-            for target, extra_paths in self._collect_extra_paths(extra_files).items():
-                display_target = target if target in extra_chapters else "none"
-                if not extra_paths:
-                    continue
-                file_lines = [
-                    f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{sc}'>{self._wrap_display_text(self._format_display_path(file_path))}</span>"
-                    for file_path in extra_paths
-                ]
-                extra_chapters[display_target].append(
-                    (chapter_label, len(extra_paths), file_lines)
-                )
-        data_text = (
-            "<br>".join(data_lines)
-            if data_lines
-            else f"<span style='color:{sc}'>-</span>"
-        )
-        self._data_label.setText(
-            f"<span style='color:{tc}; font-weight:600;'>{tr('ui.changed_data_files_label')}</span><br><br>{data_text}"
-        )
-        if any(extra_chapters.values()):
-            lines = []
-            for target, label_key in (
-                ("game_folder", "ui.extra_files_label"),
-                ("game_data_folder", "ui.data_folder_files_label"),
-                ("custom", "ui.custom_target_files_label"),
-                ("none", "ui.dependency_files_label"),
-            ):
-                chapters = extra_chapters[target]
-                if not chapters:
-                    continue
-                total = sum(count for _chapter, count, _files in chapters)
-                lines.append(
-                    f"<span style='color:{tc}; font-weight:600;'>{tr(label_key)}</span> <span style='color:{sc}'>{total}</span>"
-                )
-                for ch_label, ch_count, file_lines in chapters:
-                    lines.append(
-                        f"<br><span style='color:{tc}'>&nbsp;&nbsp;{html.escape(ch_label)}:</span> <span style='color:{sc}'>{ch_count}</span>"
-                    )
-                    lines.extend(file_lines)
-            extra_text = "<br>".join(lines)
-            self._extra_label.setText(extra_text)
-            self._extra_label.show()
-            self._cached_file_info = (
-                (
-                    f"<span style='color:{tc}; font-weight:600;'>{tr('ui.changed_data_files_label')}</span><br><br>{data_text}",
-                    extra_text,
-                )
-                if cache_result
-                else None
+        self._operation_path_tooltips.clear()
+        self._data_label.setToolTip("")
+        if not self._operation_leaves:
+            self._data_label.show()
+            self._data_label.setText(
+                f"<span style='color:{tc}; font-weight:600;'>{tr('ui.mod_summary_changes')}</span>"
+                f"<br><br><span style='color:{sc}'>-</span>"
             )
-        else:
+            self._operations_tree.clear()
+            self._operations_tree.hide()
+            self._all_operations_title.hide()
+            self._operations_toggle.hide()
             self._extra_label.hide()
-            self._cached_file_info = (
-                (
-                    f"<span style='color:{tc}; font-weight:600;'>{tr('ui.changed_data_files_label')}</span><br><br>{data_text}",
-                    False,
-                )
-                if cache_result
-                else None
+            return
+
+        self._populate_operation_summary(tc, sc)
+        self._operations_toggle.setText(
+            tr(
+                "ui.mod_summary_show_summary"
+                if self._showing_all_operations
+                else "ui.mod_summary_show_all"
             )
+        )
+        self._operations_toggle.show()
+        if self._showing_all_operations:
+            self._data_label.hide()
+            self._all_operations_title.setText(
+                tr(
+                    "ui.mod_summary_all_operations",
+                    count=len(self._operation_leaves),
+                )
+            )
+            self._all_operations_title.show()
+            self._populate_all_operations_tree()
+            self._operations_tree.show()
+        else:
+            self._data_label.show()
+            self._all_operations_title.hide()
+            self._operations_tree.hide()
+        self._extra_label.hide()
+
+    def _populate_operation_summary(self, text_color: str, secondary_color: str) -> None:
+        operation_counts: dict[str, int] = {}
+        affected_files: list[tuple[int, str]] = []
+        seen_targets: set[str] = set()
+        for index, (_group_path, leaf) in enumerate(self._operation_leaves, start=1):
+            operation = str(leaf.get("type", "info"))
+            operation_counts[operation] = operation_counts.get(operation, 0) + 1
+            target = leaf.get("target")
+            if isinstance(target, str) and target not in seen_targets:
+                seen_targets.add(target)
+                affected_files.append((index, target))
+
+        lines = []
+        for operation, count in operation_counts.items():
+            label = tr(_OPERATION_LABEL_KEYS.get(operation, "ui.mod_editor_type_info"))
+            lines.append(
+                f"{self._operation_icon_html(operation, text_color)}&nbsp;"
+                f"<span style='color:{text_color}'>{html.escape(tr('ui.mod_summary_operation_count', operation=label, count=count))}</span>"
+            )
+        if affected_files:
+            lines.append(
+                f"<br><span style='color:{text_color}; font-weight:600;'>{tr('ui.mod_summary_affected_files')}</span>"
+            )
+            planned = self._planned_operation_paths(
+                self._operation_config or {},
+                [
+                    (index, *self._operation_leaves[index - 1])
+                    for index, _target in affected_files[:_MAX_SUMMARY_AFFECTED_FILES]
+                ],
+            )
+            for index, target in affected_files[:_MAX_SUMMARY_AFFECTED_FILES]:
+                target_key = f"target_{index}"
+                target_path = planned.get(index, {}).get("target")
+                self._operation_path_tooltips[target_key] = target_path or target
+                lines.append(
+                    f"• {self._operation_path_link(target_key, target, text_color)}"
+                )
+            hidden_count = len(affected_files) - _MAX_SUMMARY_AFFECTED_FILES
+            if hidden_count > 0:
+                lines.append(
+                    f"<span style='color:{secondary_color}'>{html.escape(tr('ui.mod_summary_more_files', count=hidden_count))}</span>"
+                )
+
+        self._data_label.setText(
+            f"<span style='color:{text_color}; font-weight:600;'>{tr('ui.mod_summary_changes')}</span>"
+            f"<br><br>{'<br>'.join(lines)}"
+        )
+
+    def _populate_all_operations_tree(self) -> None:
+        planned = self._planned_operation_paths(
+            self._operation_config or {},
+            [
+                (index, group_path, leaf)
+                for index, (group_path, leaf) in enumerate(
+                    self._operation_leaves, start=1
+                )
+            ],
+        )
+        self._operations_tree.setUpdatesEnabled(False)
+        self._operations_tree.clear()
+        self._operations_tree.setHeaderLabels(
+            [
+                tr("ui.mod_editor_type"),
+                tr("ui.mod_editor_source"),
+                tr("ui.mod_editor_target"),
+            ]
+        )
+        items = []
+        for index, (_group_path, leaf) in enumerate(self._operation_leaves, start=1):
+            operation = str(leaf.get("type", "info"))
+            source = str(leaf.get("source", ""))
+            target = str(leaf.get("target", ""))
+            item = QTreeWidgetItem(
+                [
+                    tr(_OPERATION_LABEL_KEYS.get(operation, "ui.mod_editor_type_info")),
+                    source,
+                    target,
+                ]
+            )
+            item.setToolTip(1, planned.get(index, {}).get("source") or source)
+            item.setToolTip(2, planned.get(index, {}).get("target") or target)
+            items.append(item)
+        self._operations_tree.addTopLevelItems(items)
+        self._operations_tree.setColumnWidth(0, 130)
+        self._operations_tree.setColumnWidth(1, 220)
+        self._operations_tree.setUpdatesEnabled(True)
+
+    def _toggle_all_operations(self) -> None:
+        if self._operation_config is None:
+            return
+        self._showing_all_operations = not self._showing_all_operations
+        self._populate_operation_file_info(self._operation_config)
+
+    @staticmethod
+    def _operation_icon_html(operation: str, color: str) -> str:
+        icon_name = _OPERATION_ICON_FILES.get(operation)
+        if not icon_name:
+            return ""
+        try:
+            with open(resource_path(f"assets/icons/{icon_name}"), encoding="utf-8") as icon_file:
+                svg = re.sub(r"#[0-9A-Fa-f]{6}", color, icon_file.read())
+        except OSError:
+            return ""
+        icon_data = base64.b64encode(svg.encode()).decode("ascii")
+        return f"<img src='data:image/svg+xml;base64,{icon_data}' width='18' height='18'>"
+
+    def _on_operation_path_hover(self, link: str) -> None:
+        self._data_label.setToolTip(self._operation_path_tooltips.get(link, ""))
+
+    def _planned_operation_paths(
+        self,
+        config_data: dict[str, object],
+        leaves: list[tuple[int, tuple[str, ...], dict[str, object]]],
+    ) -> dict[int, dict[str, str]]:
+        mod_folder = self._current_mod_folder
+        if not mod_folder:
+            return {}
+        game_mode = getattr(self._app_state, "game_mode", None)
+        try:
+            runtime_config = self._get_config() or {}
+            game_path = game_mode.get_game_path(runtime_config) if game_mode else None
+            game_data_path = game_mode.get_data_path(runtime_config) if game_mode else None
+            context = ModPathContext.create(
+                mod_path=mod_folder,
+                game_path=game_path,
+                game_data_path=game_data_path,
+                user_path=Path.home(),
+            )
+            placeholders = config_data.get("placeholders", {})
+            if not isinstance(placeholders, Mapping):
+                placeholders = {}
+            game = str(config_data.get("game", "") or "")
+            planned = {}
+            for index, _group_path, leaf in leaves:
+                source = resolve_operation_path(
+                    str(leaf["source"]),
+                    context=context,
+                    custom_placeholders=placeholders,
+                    game=game,
+                )
+                target = (
+                    resolve_operation_path(
+                        str(leaf["target"]),
+                        context=context,
+                        custom_placeholders=placeholders,
+                        is_target=True,
+                        game=game,
+                    )
+                    if isinstance(leaf.get("target"), str)
+                    else None
+                )
+                planned[index] = {
+                    "source": self._resolved_operation_path(source) if source else "",
+                    "target": self._resolved_operation_path(target) if target else "",
+                }
+            return planned
+        except (AttributeError, ModConfigValidationError, OSError, TypeError, ValueError):
+            return {}
+
+    @staticmethod
+    def _resolved_operation_path(value: Path | ArchiveVirtualPath) -> str:
+        if isinstance(value, ArchiveVirtualPath):
+            member = value.member.strip("/")
+            return f"{value.archive}{'/' + member if member else ''}{'/' if value.directory else ''}"
+        return str(value)
+
+    def _operation_path_link(self, key: str, path: str, color: str) -> str:
+        return (
+            f"<a href='{html.escape(key, quote=True)}' style='color:{color}; "
+            f"text-decoration:none;'>{self._wrap_display_text(path)}</a>"
+        )
 
     @staticmethod
     def _format_playtime_hours(hours: float) -> str:
@@ -526,45 +758,6 @@ class ModSummaryPanel(QFrame):
         self._playtime_widget.show()
 
     @staticmethod
-    def _collect_extra_paths(extra_files) -> dict[str, list[str]]:
-        """Return extra file paths grouped by deployment target."""
-        result: dict[str, list[str]] = {}
-        if isinstance(extra_files, dict):
-            for values in extra_files.values():
-                if isinstance(values, list):
-                    result.setdefault("game_folder", []).extend(
-                        str(value) for value in values if value
-                    )
-            return result
-        if not isinstance(extra_files, list) or not extra_files:
-            return result
-        for ef in extra_files:
-            if isinstance(ef, str) and ef:
-                result.setdefault("game_folder", []).append(ef)
-            elif isinstance(ef, dict):
-                file_path = ef.get("file_path") or ef.get("url")
-                if file_path:
-                    target = str(
-                        ef.get("target")
-                        or ef.get("status")
-                        or "game_folder"
-                    ).lower()
-                    result.setdefault(target, []).append(str(file_path))
-        return result
-
-    @staticmethod
-    def _format_display_path(path: str) -> str:
-        normalized = str(path or "").replace("\\", "/")
-        if not normalized:
-            return ""
-        is_dir = normalized.endswith("/")
-        trimmed = normalized.rstrip("/")
-        if not trimmed:
-            return "/"
-        name = os.path.basename(trimmed) or trimmed
-        return f"{name}/" if is_dir else name
-
-    @staticmethod
     def _wrap_display_text(text: str) -> str:
         escaped = html.escape(str(text or ""))
         for separator in ("/", "_", "-", ".", ")", "]"):
@@ -572,55 +765,6 @@ class ModSummaryPanel(QFrame):
         for separator in ("(", "["):
             escaped = escaped.replace(separator, f"&#8203;{separator}")
         return escaped
-
-    @staticmethod
-    def _format_chapter_label(chapter_key) -> str:
-        if isinstance(chapter_key, str) and chapter_key.startswith("deltarune_"):
-            suffix = chapter_key.removeprefix("deltarune_")
-            try:
-                ch_id = int(suffix)
-                if ch_id == 0:
-                    return tr("tabs.menu_root")
-                return tr("ui.chapter_title", chapter_num=ch_id)
-            except (ValueError, TypeError) as error:
-                logger.debug("Best-effort operation failed: %s", error, exc_info=True)
-        if chapter_key == "deltarune":
-            return tr("tabs.menu_root")
-        try:
-            ch_id = int(chapter_key)
-            if ch_id == 0:
-                return tr("tabs.menu_root")
-            return tr("ui.chapter_title", chapter_num=ch_id)
-        except (ValueError, TypeError):
-            return chapter_key.capitalize()
-
-    def _resolve_data_file_path(
-        self, mod_folder: str | None, chapter_key, data_file: str
-    ) -> str:
-        if not data_file:
-            return ""
-        data_file_str = str(data_file)
-        if os.path.isfile(data_file_str):
-            return data_file_str
-        if not mod_folder or not os.path.isdir(mod_folder):
-            return ""
-        try:
-            from utils.mod.config_parser import resolve_mod_file_path
-
-            resolved = resolve_mod_file_path(mod_folder, data_file_str)
-            if resolved and os.path.isfile(resolved):
-                return resolved
-        except ImportError as e:
-            logger.warning("resolve_mod_file_path not available: %s", e)
-        except Exception as e:
-            logger.warning(
-                "Failed to resolve chapter folder for %s: %s", chapter_key, e
-            )
-        file_name = os.path.basename(data_file_str.replace("\\", "/"))
-        for root, _, files in os.walk(mod_folder):
-            if file_name in files:
-                return os.path.join(root, file_name)
-        return ""
 
     @staticmethod
     def _resolve_mod_folder(mod_data, mod_folder: str | None) -> str | None:
@@ -782,6 +926,45 @@ class ModSummaryPanel(QFrame):
             self._data_label, block_ss, cache_attr="_data_ss_cache"
         )
         apply_stylesheet_if_changed(
+            self._all_operations_title,
+            f"color: {text_color}; font-weight: 600; padding: 2px 2px 0 2px;",
+            cache_attr="_operations_title_ss_cache",
+        )
+        apply_stylesheet_if_changed(
+            self._operations_tree,
+            f"""
+            QTreeWidget#summaryOperationsTree {{
+                background-color: {meta_bg}; color: {text_color};
+                border: 2px solid {border}; border-radius: {min(br, 14)}px;
+                outline: none;
+            }}
+            QTreeWidget#summaryOperationsTree::item {{ min-height: 26px; padding: 3px 6px; }}
+            QTreeWidget#summaryOperationsTree::item:hover {{ background-color: {button_hover}; }}
+            QHeaderView::section {{
+                background-color: {elements}; color: {secondary};
+                border: none; border-bottom: 1px solid {border}; padding: 5px 6px;
+                font-weight: 600;
+            }}
+            """,
+            cache_attr="_operations_tree_ss_cache",
+        )
+        apply_stylesheet_if_changed(
+            self._operations_toggle,
+            build_button_style(
+                "summaryOperationsToggle",
+                elements,
+                button_hover,
+                text_color,
+                border,
+                width=None,
+                height=32,
+                font_size=max(11, round(12 * self._layout_scale())),
+                border_radius=min(br, 10),
+                padding="0 12px",
+            ),
+            cache_attr="_operations_toggle_ss_cache",
+        )
+        apply_stylesheet_if_changed(
             self._extra_label, block_ss, cache_attr="_extra_ss_cache"
         )
         apply_stylesheet_if_changed(
@@ -801,18 +984,12 @@ class ModSummaryPanel(QFrame):
                 border_width=2,
                 border_color=border,
             )
-            self._update_metadata(
-                self._current_mod, self._current_mod_folder, cache_result=True
-            )
-            self._populate_file_info(
-                self._current_mod, self._current_mod_folder, cache_result=True
-            )
+            self._update_metadata(self._current_mod, self._current_mod_folder)
+            self._populate_file_info(self._current_mod, self._current_mod_folder)
             self._update_playtime(self._current_mod)
         self.update_use_button_state(self._use_button.text() == tr("ui.remove_button"))
 
     def refresh_theme(self):
-        self._cached_metadata = None
-        self._cached_file_info = None
         self._current_readme_files = find_mod_readme_files(self._current_mod_folder)
         self.apply_theme()
 
@@ -826,3 +1003,4 @@ class ModSummaryPanel(QFrame):
         if self._current_mod:
             self._update_action_visibility(self._current_mod, self._current_mod_folder)
             self._update_playtime(self._current_mod)
+            self._populate_file_info(self._current_mod, self._current_mod_folder)

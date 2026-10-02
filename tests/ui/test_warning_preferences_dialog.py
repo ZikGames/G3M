@@ -10,7 +10,7 @@ def test_warning_preferences_dialog_ignores_legacy_section_overrides(qapp):
     config = {"warning_preferences": {"section_overrides": {"major": False}}}
     dialog = WarningPreferencesDialog(config)
     try:
-        child = dialog.warning_checkboxes["g3mpatch_original_hash_mismatch"]
+        child = dialog.warning_checkboxes["xdelta_apply_failed"]
         skip_all_index = dialog.layout().indexOf(dialog.skip_all_checkbox)
         skip_all_item = dialog.layout().itemAt(skip_all_index)
 
@@ -18,10 +18,10 @@ def test_warning_preferences_dialog_ignores_legacy_section_overrides(qapp):
         assert skip_all_item.alignment() == Qt.AlignmentFlag.AlignCenter
         assert child.isEnabled() is True
         assert (
-            dialog.warning_help_buttons["g3mpatch_original_hash_mismatch"].text() == "?"
+            dialog.warning_help_buttons["xdelta_apply_failed"].text() == "?"
         )
         tooltip = dialog.warning_help_buttons[
-            "g3mpatch_original_hash_mismatch"
+            "xdelta_apply_failed"
         ].toolTip()
         assert tooltip
         assert "{severity}" not in tooltip
@@ -70,11 +70,11 @@ def test_warning_preferences_dialog_accept_writes_preferences(qapp):
     config = {}
     dialog = WarningPreferencesDialog(config)
     try:
-        dialog.warning_checkboxes["g3mpatch_newer_tool"].setChecked(False)
+        dialog.warning_checkboxes["patching_warning"].setChecked(False)
         dialog.accept()
 
         overrides = config["warning_preferences"]["warning_overrides"]
-        assert overrides["g3mpatch_newer_tool"] is False
+        assert overrides["patching_warning"] is False
         assert "section_overrides" not in config["warning_preferences"]
     finally:
         dialog.close()

@@ -66,25 +66,62 @@ def fetch_gamebanana_rss(
     normalized_feed = feed.capitalize()
     if normalized_feed not in {"New", "Featured"}:
         raise ValueError(f"Unsupported GameBanana RSS feed: {feed}")
-    response = session.get(
-        _FEED_URL.format(feed=normalized_feed, game_id=int(game_id)),
-        timeout=NETWORK_TIMEOUT_MEDIUM,
-        stream=True,
+    payload = _fetch_rss_payload(
+        session, _FEED_URL.format(feed=normalized_feed, game_id=int(game_id))
     )
-    try:
-        response.raise_for_status()
-        payload = bytearray()
-        for chunk in response.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            payload.extend(chunk)
-            if len(payload) > _MAX_RESPONSE_BYTES:
-                raise ValueError("GameBanana RSS response is too large")
-    finally:
-        response.close()
     return parse_gamebanana_rss(
-        bytes(payload), game_id=game_id, game_name=game_name
+        payload, game_id=game_id, game_name=game_name
     )
+
+
+def fetch_rss_feed(
+    session: requests.Session,
+    url: str,
+    *,
+    feed_id: str,
+    feed_name: str,
+) -> list[GameBananaFeedItem]:
+    """Fetch a plugin-provided HTTPS RSS feed with the standard size limit."""
+    return parse_rss_feed(
+        _fetch_rss_payload(session, url),
+        feed_id=feed_id,
+        feed_name=feed_name,
+    )
+
+
+def parse_rss_feed(
+    payload: bytes,
+    *,
+    feed_id: str,
+    feed_name: str,
+) -> list[GameBananaFeedItem]:
+    """Parse a generic HTTPS RSS feed into Community cards."""
+    root = ElementTree.fromstring(_extract_rss_document(payload))
+    items: list[GameBananaFeedItem] = []
+    for rank, node in enumerate(root.findall(".//item")):
+        title = (node.findtext("title") or "").strip()
+        url = (node.findtext("link") or "").strip()
+        if not title or not _is_https_url(url):
+            continue
+        image_url = _safe_external_image_url(node.findtext("image"))
+        if not image_url:
+            enclosure = node.find("enclosure")
+            image_url = _safe_external_image_url(
+                enclosure.get("url") if enclosure is not None else None
+            )
+        items.append(
+            GameBananaFeedItem(
+                title=title,
+                url=url,
+                image_url=image_url,
+                published_at=_parse_date(node.findtext("pubDate")),
+                content_type="rss",
+                game_id=feed_id,
+                game_name=feed_name,
+                rank=rank,
+            )
+        )
+    return items
 
 
 def merge_gamebanana_feeds(
@@ -115,6 +152,27 @@ def _is_gamebanana_item_url(url: str) -> bool:
     }
 
 
+def _is_https_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "https" and bool(parsed.hostname)
+
+
+def _fetch_rss_payload(session: requests.Session, url: str) -> bytes:
+    response = session.get(url, timeout=NETWORK_TIMEOUT_MEDIUM, stream=True)
+    try:
+        response.raise_for_status()
+        payload = bytearray()
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            payload.extend(chunk)
+            if len(payload) > _MAX_RESPONSE_BYTES:
+                raise ValueError("RSS response is too large")
+        return bytes(payload)
+    finally:
+        response.close()
+
+
 def _extract_rss_document(payload: bytes) -> bytes:
     """Discard content injected before or after the single RSS document."""
     start = payload.find(b"<rss")
@@ -142,6 +200,11 @@ def _safe_image_url(value: str | None) -> str:
         )
         else ""
     )
+
+
+def _safe_external_image_url(value: str | None) -> str:
+    url = (value or "").strip()
+    return url if _is_https_url(url) else ""
 
 
 def _parse_date(value: str | None) -> datetime | None:

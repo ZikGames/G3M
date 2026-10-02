@@ -17,7 +17,7 @@ def test_search_card_keyboard_selection_details_and_actions(qtbot):
         id="keyboard_mod",
         name="Keyboard Mod",
         version="1.0.0",
-        author="Author",
+        authors=["Author"],
         description="Description",
         game_version="",
         description_url="",

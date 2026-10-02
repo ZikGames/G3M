@@ -1,0 +1,11 @@
+{
+  "config_version": "1.0.0",
+  "custom_background_color": "#000000",
+  "custom_elements_color": "#000000",
+  "custom_border_color": "#FFFFFF",
+  "custom_hover_color": "#3C393E",
+  "custom_select_color": "#CBCBCB",
+  "custom_main_text_color": "#FFFFFF",
+  "custom_secondary_text_color": "#939393",
+  "custom_border_radius": 0
+}

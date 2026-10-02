@@ -118,7 +118,12 @@ class UpdateChecker(QObject):
             )
             return None
         platform_key = self._get_platform_key(system)
-        download_url = (launcher_files.get("urls") or {}).get(platform_key)
+        urls = launcher_files.get("urls") or {}
+        download_url = urls.get(platform_key)
+        if not download_url and platform_key and platform_key.endswith("-x86_64"):
+            # Keep updates working with settings created before architecture-specific URLs.
+            legacy_key = platform_key.removesuffix("-x86_64")
+            download_url = urls.get(legacy_key)
         if not download_url:
             self._safe_update_status(
                 tr("errors.no_build_for_os", platform=platform_key),
@@ -144,11 +149,23 @@ class UpdateChecker(QObject):
         ).start()
 
     def _get_platform_key(self, system: str) -> str | None:
-        return {
+        platform_name = {
             "Windows": "windows",
             "Linux": "linux",
-            "Darwin": f"macos-{ARCH}",
+            "Darwin": "macos",
         }.get(system)
+        if platform_name is None:
+            return None
+        return f"{platform_name}-{self._normalize_architecture(ARCH)}"
+
+    @staticmethod
+    def _normalize_architecture(machine: str) -> str:
+        normalized = machine.strip().lower().replace("-", "_")
+        if normalized in {"amd64", "x64", "x86_64"}:
+            return "x86_64"
+        if normalized in {"aarch64", "arm64"}:
+            return "arm64"
+        return normalized
 
     def _get_archive_extension(self, url: str) -> str:
         url_path = url.split("?", 1)[0].lower()
@@ -233,34 +250,62 @@ class UpdateChecker(QObject):
             None,
         )
 
+    def _build_windows_updater_script(self) -> tuple[str, str]:
+        """Build an elevated helper that starts only after this process exits."""
+        script_path = os.path.join(
+            tempfile.gettempdir(), f"g3m_updater_{os.getpid()}_{time.monotonic_ns()}.cmd"
+        )
+        script = f'''@echo off
+setlocal
+set "G3M_PID={os.getpid()}"
+set "INSTALLER=%~1"
+set "UPDATE_DIR=%~2"
+:wait_for_g3m
+tasklist /FI "PID eq %G3M_PID%" /NH | findstr /R /C:"[ ]%G3M_PID%[ ]" >nul
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto wait_for_g3m
+)
+start "" /wait "%INSTALLER%"
+set "RESULT=%ERRORLEVEL%"
+rmdir /s /q "%UPDATE_DIR%"
+del "%~f0"
+exit /b %RESULT%
+'''
+        return script_path, script
+
     def _launch_windows_installer(self, extraction_dir: str) -> bool:
         new_exe_path = self._find_windows_installer(extraction_dir)
         if not new_exe_path:
             raise AppError("errors.exe_not_found_in_archive")
         logger.info("[UPDATE] Found installer executable: %s", new_exe_path)
+        updater_script_path, updater_script = self._build_windows_updater_script()
+        with open(updater_script_path, "w", encoding="ascii", newline="\r\n") as file_obj:
+            file_obj.write(updater_script)
         import ctypes
 
-        result = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", new_exe_path, None, None, 1
-        )
+        try:
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                os.environ.get("COMSPEC", "cmd.exe"),
+                f'/d /c ""{updater_script_path}" "{new_exe_path}" "{os.path.dirname(extraction_dir)}""',
+                os.path.dirname(new_exe_path),
+                0,
+            )
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.remove(updater_script_path)
+            raise
         if result <= 32:
+            with contextlib.suppress(OSError):
+                os.remove(updater_script_path)
             raise AppError("errors.installer_launch_failed", code=result)
         self.status_changed.emit(
             tr("status.installer_launched_closing"), UI_COLORS["status_success"]
         )
         self.quit_requested.emit()
-        timer = threading.Timer(3.0, self._force_exit_after_installer_launch)
-        timer.daemon = True
-        timer.start()
         return True
-
-    @staticmethod
-    def _force_exit_after_installer_launch() -> None:
-        logger.info("Forced process exit after launching updater installer")
-        for handler in logging.getLogger().handlers:
-            with contextlib.suppress(Exception):
-                handler.flush()
-        os._exit(0)
 
     def _get_replace_target(self, system: str) -> str:
         current_exe_path = os.path.realpath(sys.executable)
@@ -403,17 +448,28 @@ fi
                 "[UPDATE] Starting update process for version %s",
                 update_info["version"],
             )
+            system = platform.system()
+            if system == "Windows":
+                tmp_dir = tempfile.mkdtemp(prefix="g3m-update-")
+                try:
+                    archive_path = self._download_archive(update_info, tmp_dir)
+                    self.status_changed.emit(
+                        tr("status.unpacking_and_installing"), UI_COLORS["status_warning"]
+                    )
+                    extraction_dir = os.path.join(tmp_dir, "extracted")
+                    self._extract_archive(system, archive_path, extraction_dir)
+                    installer_launched = self._launch_windows_installer(extraction_dir)
+                except Exception:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    raise
+                return
             with tempfile.TemporaryDirectory(prefix="g3m-update-") as tmp_dir:
                 archive_path = self._download_archive(update_info, tmp_dir)
                 self.status_changed.emit(
                     tr("status.unpacking_and_installing"), UI_COLORS["status_warning"]
                 )
-                system = platform.system()
                 extraction_dir = os.path.join(tmp_dir, "extracted")
                 self._extract_archive(system, archive_path, extraction_dir)
-                if system == "Windows":
-                    installer_launched = self._launch_windows_installer(extraction_dir)
-                    return
                 replace_target = self._get_replace_target(system)
                 staged_content_path = self._stage_unix_content(system, extraction_dir)
                 logger.info(

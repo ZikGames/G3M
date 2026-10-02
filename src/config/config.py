@@ -22,7 +22,7 @@ if _dotenv_path.is_file():
     load_dotenv(dotenv_path=_dotenv_path)
 
 """Application identity and external service configuration."""
-APP_VERSION = "3.3.4"
+APP_VERSION = "3.4.0"
 APP_DISPLAY_NAME = "G3M"
 APP_ORGANIZATION_NAME = "g3m"
 APP_DATA_DIR_NAME = "G3M"
@@ -61,17 +61,19 @@ STEAM_APP_ID_UNDERTALE = "391540"
 STEAM_APP_ID_PIZZA_TOWER = "2231450"
 
 """Plugin and profile runtime configuration."""
-PLUGIN_API_VERSION = "1.1.0"
-PLUGIN_CATALOG_URL = (
-    "https://raw.githubusercontent.com/y114git/G3M/main/catalog/plugins/plugins.json"
-)
+PLUGIN_API_VERSION = "1.3.0"
+PLUGIN_CATALOG_URL = "https://raw.githubusercontent.com/y114git/G3M/main/catalog/plugins/plugins.json"
+THEME_CATALOG_URL = "https://raw.githubusercontent.com/y114git/G3M/main/catalog/themes/themes.json"
 PLUGIN_HOOKS = {
-    "app_ready",
-    "app_shutdown",
     "before_mod_apply",
     "after_mod_apply_before_launch",
+    "after_mod_apply_committed",
     "mod_apply_cancelled",
     "after_game_started",
+    "launch_action",
+    "launch_action_cancelled",
+    "launch_option_changed",
+    "community_feeds",
     "before_restore_after_exit",
     "after_restore_after_exit",
     "shortcut_dialog",
@@ -84,9 +86,6 @@ PLUGIN_HOOKS = {
     "profile_changed",
     "settings_view",
     "main_view",
-    "navigation_actions",
-    "game_registry",
-    "background_task",
 }
 PLUGIN_TAGS = {
     "interface",
@@ -134,7 +133,6 @@ ARROW_UP_SVG_TEMPLATE = shared_styles.ARROW_UP_SVG_TEMPLATE
 RICH_HTML_CSS_CLASS_MAP = shared_styles.RICH_HTML_CSS_CLASS_MAP
 BASE_TAG_NAMES = ("textedit", "customization", "gameplay", "other")
 CYOP_AFOM_TAG = "CYOP/AFOM"
-LIBRARY_IMPORT_ARCHIVE_EXTENSIONS = (".zip", ".7z", ".rar", ".tar.gz", ".lzma", ".gz")
 MOD_MARKDOWN_EXTENSIONS = (".md", ".markdown")
 MOD_HTML_EXTENSIONS = (".html", ".htm")
 MOD_PDF_EXTENSIONS = (".pdf",)
@@ -147,16 +145,6 @@ MOD_DOCUMENTATION_EXTENSIONS = (
 )
 MOD_README_ENCODINGS = ("utf-8-sig", "utf-16", "cp1251", "latin-1")
 MOD_README_HEADING_FONT_FACTORS = {1: 2.0, 2: 1.5, 3: 1.2, 4: 1.0, 5: 0.8, 6: 0.7}
-MANUAL_INSTALL_OPENABLE_DOC_EXTENSIONS = (
-    ".cfg",
-    ".ini",
-    ".json",
-    ".log",
-    ".rtf",
-    ".yaml",
-    ".yml",
-    *MOD_DOCUMENTATION_EXTENSIONS,
-)
 RICH_HTML_IMG_RE = re.compile(r"<img\b([^>]*)/?>", re.IGNORECASE | re.DOTALL)
 RICH_HTML_ATTR_RE = re.compile(r'(\w[\w-]*)=["\']([^"\']*)["\']')
 RICH_HTML_CLASS_RE = re.compile(
@@ -370,9 +358,7 @@ NETWORK_TIMEOUT_LONG = 45
 NETWORK_TIMEOUT_HEAD = 15
 INITIALIZATION_TIMEOUT = 5000
 ONLINE_UPDATE_INTERVAL = 10 * 60 * 1000
-LAUNCHER_FALLBACK_TIMEOUT = 8000
 SPLASH_WATCHDOG_TIMEOUT = 15000
-SPLASH_RETRY_DELAY = 100
 IMAGE_CACHE_MAX_SIZE = 100
 NETWORK_SEMAPHORE_LIMIT = 4
 THREAD_WAIT_TIMEOUT = 2000
@@ -428,26 +414,9 @@ THEME_CONFIG_FILENAMES = (
     THEME_CONFIG_FILENAME,
     LEGACY_THEME_CONFIG_FILENAME,
 )
-DATA_WIN_FILENAME = "data.win"
 META_JSON_FILENAME = "meta.json"
 META_TOML_FILENAME = "meta.toml"
 ICON_PNG_FILENAME = "icon.png"
-MOD_TYPE_G3MPATCH = "g3mpatch"
-MOD_TYPE_XDELTA = "xdelta"
-MOD_TYPE_CSX = "csx"
-MOD_TYPE_DATAFILE = "datafile"
 DELTAMOD_INFO_FILENAME = "_deltamodInfo.json"
-MAX_PATCHING_ARCHIVES = 10
-MOD_TYPE_OVERRIDES_ONLY = "overrides_only"
 MOD_FILTER_TRUE_VALUES = (True, "true", "True", 1)
 MOD_FILTER_NSFW_TEXT_MARKERS = ("nsfw", "adult", "18+", "18plus", "explicit", "mature")
-
-SKIP_FILES = (
-    "mod_config.json",
-    "_icon.png",
-    "icon.png",
-    "meta.json",
-    META_TOML_FILENAME,
-    DELTAMOD_INFO_FILENAME,
-)
-ARCHIVE_EXTENSIONS = (".zip", ".7z", ".rar", ".tar.gz", ".lzma")

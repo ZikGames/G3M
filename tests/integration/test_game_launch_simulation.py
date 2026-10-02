@@ -138,7 +138,7 @@ class TestGameLaunchSimulation:
         assert len(game_name) > 0
         assert 'Sugary Spire' in game_name
 
-    def test_cleanup_emits_files_restored_after_game_closed_restore(self, app_state, feedback_service):
+    def test_cleanup_emits_files_restored_after_game_closed_restore(self, app_state, feedback_service, qtbot):
         """Checks that cleanup emits a final success status after restore completes."""
         from services.launch_service import GameLauncher
 
@@ -146,12 +146,43 @@ class TestGameLaunchSimulation:
         launcher = GameLauncher(app_state, feedback_service, mod_service)
         statuses = []
         launcher.status_changed.connect(lambda message, color: statuses.append((message, color)))
-        launcher.mod_patcher.restore_all_backups = MagicMock(return_value=True)
         launcher._direct_launch_cleanup_info = None
 
         launcher._cleanup_direct_launch_files()
 
+        qtbot.waitUntil(lambda: bool(statuses))
         assert statuses[-1][0] == "Files restored successfully."
+
+    def test_vanilla_game_can_launch_again_after_exit(self, app_state, feedback_service, qtbot):
+        from services.launch_service import GameLauncher
+        from services.launch_transaction import LaunchState
+
+        launcher = GameLauncher(app_state, feedback_service, MagicMock())
+        for _ in range(2):
+            launcher.launch_transaction.begin()
+            launcher.launch_transaction.mark_launching()
+            launcher.launch_transaction.mark_running()
+            launcher._check_game_running(True)
+            qtbot.waitUntil(lambda: launcher.launch_transaction.state == LaunchState.COMPLETED)
+
+    def test_keep_changes_runs_plugin_save_cleanup_without_restoring_mods(
+        self, app_state, feedback_service, monkeypatch
+    ):
+        from models.launch_modes import LaunchMode
+        from services.launch_service import GameLauncher
+
+        launcher = GameLauncher(app_state, feedback_service, MagicMock())
+        launcher._selected_launch_mode = LaunchMode.KEEP_CHANGES
+        launcher._permanent_committed = True
+        restore_mods = MagicMock()
+        plugin_hook = MagicMock()
+        monkeypatch.setattr(launcher, "_cleanup_direct_launch_files", restore_mods)
+        monkeypatch.setattr(launcher, "_execute_plugin_hook", plugin_hook)
+
+        launcher._check_game_running(False)
+
+        restore_mods.assert_not_called()
+        plugin_hook.assert_called_once_with("after_restore_after_exit", False)
 
 
 class TestPathResolution:

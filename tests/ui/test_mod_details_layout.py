@@ -13,7 +13,7 @@ def test_details_actions_stay_visible_above_scrolling_content(qtbot):
     mod = BrowserModInfo.from_dict(
         {
             "name": "Chapter One music pack",
-            "author": "Music workshop",
+            "authors": ["Music workshop"],
             "game": "deltarune",
             "full_description": "<p>Battle and exploration tracks.</p>" * 50,
         }

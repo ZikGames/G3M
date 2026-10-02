@@ -17,7 +17,8 @@ def test_modded_launch_transaction_covers_full_lifecycle():
     assert transaction.mark_deployed(lambda: True)
     transaction.mark_launching()
     transaction.mark_running()
-    assert transaction.restore(lambda: True)
+    transaction.transition(LaunchState.RESTORING)
+    transaction.transition(LaunchState.COMPLETED)
 
     assert transaction.state == LaunchState.COMPLETED
     assert transaction.history == [
@@ -39,7 +40,8 @@ def test_vanilla_launch_skips_backup_and_apply_states():
     transaction.begin()
     transaction.mark_launching()
     transaction.mark_running()
-    assert transaction.restore(lambda: True)
+    transaction.transition(LaunchState.RESTORING)
+    transaction.transition(LaunchState.COMPLETED)
 
     assert LaunchState.APPLYING not in transaction.history
     assert transaction.state == LaunchState.COMPLETED
@@ -53,18 +55,6 @@ def test_failed_deployed_state_stops_transaction():
     assert transaction.mark_deployed(lambda: False) is False
     assert transaction.state == LaunchState.FAILED
     assert transaction.failure_reason == "deployed-state"
-
-
-def test_recovery_has_explicit_state_sequence():
-    transaction = LaunchTransaction()
-
-    assert transaction.recover(lambda: True)
-
-    assert transaction.history == [
-        LaunchState.IDLE,
-        LaunchState.RECOVERING,
-        LaunchState.COMPLETED,
-    ]
 
 
 @pytest.mark.parametrize(

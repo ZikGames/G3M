@@ -63,11 +63,13 @@ class DownloadsManager(QObject):
         self._download_generations: dict[str, int] = {}
         self._mods_dir: str | None = None
         self._plugin_install_service = None
+        self._themes_dir: str | None = None
         self._progress_emit_state: dict[str, tuple[int, int, int, float]] = {}
 
-    def set_app_context(self, *, mods_dir: str, plugin_install_service=None):
+    def set_app_context(self, *, mods_dir: str, plugin_install_service=None, themes_dir: str | None = None):
         self._mods_dir = mods_dir
         self._plugin_install_service = plugin_install_service
+        self._themes_dir = themes_dir
 
     @property
     def store(self) -> DownloadsStore:
@@ -95,12 +97,20 @@ class DownloadsManager(QObject):
         source_file_path: str | None = None,
         canonical_key: str | None = None,
         metadata: dict | None = None,
+        auto_use: bool | None = None,
     ) -> tuple[str, bool]:
+        metadata = dict(metadata or {})
+        if target_kind == TargetKind.MOD and self._mods_dir:
+            metadata.setdefault("target_mods_dir", self._mods_dir)
         if canonical_key:
-            existing = self._store.find_by_canonical_key(canonical_key)
+            existing = self._store.find_by_canonical_key(
+                canonical_key,
+                target_mods_dir=metadata.get("target_mods_dir") if target_kind == TargetKind.MOD else None,
+                fallback_mods_dir=self._mods_dir,
+            )
             if existing:
-                if target_kind == TargetKind.PLUGIN and not existing.is_active:
-                    self._replace_existing_plugin_record(existing.id)
+                if target_kind in (TargetKind.PLUGIN, TargetKind.THEME) and not existing.is_active:
+                    self._replace_existing_catalog_record(existing.id)
                 else:
                     return existing.id, True
 
@@ -113,9 +123,13 @@ class DownloadsManager(QObject):
             source_url=source_url,
             source_file_path=source_file_path,
             canonical_key=canonical_key,
-            auto_use=not settings.get("downloads_no_auto_use", False),
+            auto_use=(
+                not settings.get("downloads_no_auto_use", False)
+                if auto_use is None
+                else auto_use
+            ),
             delete_after_use=settings.get("downloads_delete_after_use", False),
-            metadata=metadata or {},
+            metadata=metadata,
         )
         self._store.add(record)
         self.record_added.emit(record)
@@ -123,7 +137,7 @@ class DownloadsManager(QObject):
         self._emit_badge()
         return record.id, False
 
-    def _replace_existing_plugin_record(self, record_id: str) -> None:
+    def _replace_existing_catalog_record(self, record_id: str) -> None:
         record = self._store.find(record_id)
         if not record:
             return
@@ -185,9 +199,18 @@ class DownloadsManager(QObject):
             )
             return
 
+        from utils.network_utils import GAMEBANANA_DOWNLOAD_HOSTS
         from workers.download_worker import DownloadWorker
 
-        worker = DownloadWorker(record.id, record.source_url, target_path, parent=self)
+        gamebanana = record.source_kind == SourceKind.GAMEBANANA
+        worker = DownloadWorker(
+            record.id,
+            record.source_url,
+            target_path,
+            expected_md5=record.metadata.get("md5") if gamebanana else None,
+            allowed_hosts=GAMEBANANA_DOWNLOAD_HOSTS if gamebanana else None,
+            parent=self,
+        )
         worker.progress_updated.connect(self._on_download_progress)
         worker.download_finished.connect(
             lambda record_id, success, error, saved_path, gen=generation: (
@@ -298,6 +321,7 @@ class DownloadsManager(QObject):
         record = self._store.find(record_id)
         if not record or not record.file_exists or not record.file_path:
             return
+        mods_dir = self._mod_target_dir(record)
         if record.target_kind == TargetKind.PLUGIN and not self._plugin_install_service:
             logger.warning("DownloadsManager: plugin_install_service not set")
             record.use_status = UseStatus.FAILED
@@ -306,7 +330,15 @@ class DownloadsManager(QObject):
             self.record_updated.emit(record)
             self._emit_badge()
             return
-        if record.target_kind == TargetKind.MOD and not self._mods_dir:
+        if record.target_kind == TargetKind.THEME and not self._themes_dir:
+            logger.warning("DownloadsManager: themes_dir not set")
+            record.use_status = UseStatus.FAILED
+            record.error_message = "Theme catalog is not available"
+            self._store.update(record)
+            self.record_updated.emit(record)
+            self._emit_badge()
+            return
+        if record.target_kind == TargetKind.MOD and not mods_dir:
             logger.warning("DownloadsManager: mods_dir not set, cannot run Use")
             record.use_status = UseStatus.FAILED
             record.error_message = "Application context not ready"
@@ -325,9 +357,10 @@ class DownloadsManager(QObject):
             record_id=record.id,
             file_path=record.file_path,
             target_kind=record.target_kind,
-            mods_dir=self._mods_dir or "",
+            mods_dir=mods_dir or "",
             metadata=record.metadata,
             plugin_install_service=self._plugin_install_service,
+            themes_dir=self._themes_dir,
             parent=self,
         )
         worker.use_finished.connect(self._on_use_finished)
@@ -356,6 +389,7 @@ class DownloadsManager(QObject):
             self.record_updated.emit(record)
             self._emit_badge()
             return
+        self._remember_gamebanana_file(record)
         record.ever_installed = True
         if record.delete_after_use:
             record.use_status = UseStatus.READY
@@ -369,6 +403,41 @@ class DownloadsManager(QObject):
             self.record_updated.emit(record)
         self._emit_badge()
         self.use_completed.emit()
+
+    def _mod_target_dir(self, record: DownloadRecord) -> str | None:
+        metadata = record.metadata if isinstance(record.metadata, dict) else {}
+        target_mods_dir = metadata.get("target_mods_dir")
+        return target_mods_dir if isinstance(target_mods_dir, str) else self._mods_dir
+
+    def _remember_gamebanana_file(self, record: DownloadRecord) -> None:
+        metadata = record.metadata if isinstance(record.metadata, dict) else {}
+        raw_mod_id = metadata.get("gb_mod_id")
+        file_id = metadata.get("gb_file_id")
+        item_type = str(metadata.get("item_type") or "mod").casefold()
+        mods_dir = self._mod_target_dir(record)
+        if not mods_dir or not raw_mod_id or not file_id or item_type not in {"mod", "wip"}:
+            return
+        try:
+            try:
+                timestamp = int(metadata["timestamp"])
+            except (KeyError, TypeError, ValueError):
+                timestamp = None
+            from utils.file_utils import load_json, save_json
+
+            metadata_path = os.path.join(mods_dir, "mods_data.json")
+            saved = load_json(metadata_path) if os.path.isfile(metadata_path) else {}
+            mod_id = f"gb_{item_type}_{int(raw_mod_id)}"
+            entry = saved.get(mod_id)
+            marker = {
+                **(entry if isinstance(entry, dict) else {}),
+                "gamebanana_file_id": int(file_id),
+            }
+            if timestamp is not None:
+                marker["gamebanana_file_timestamp"] = timestamp
+            saved[mod_id] = marker
+            save_json(metadata_path, saved, indent=2)
+        except (OSError, TypeError, ValueError) as error:
+            logger.warning("DownloadsManager: failed to save GameBanana file marker: %s", error)
 
     def action_install(self, record_id: str):
         record = self._store.find(record_id)
@@ -526,6 +595,7 @@ class DownloadsManager(QObject):
                 return
 
             def _on_success():
+                self._remember_gamebanana_file(record)
                 record.ever_installed = True
                 record.use_status = UseStatus.READY
                 if record.delete_after_use:
@@ -548,6 +618,7 @@ class DownloadsManager(QObject):
                 temp_dir=temp_dir,
                 initial_game_type=initial_game_type,
                 gamebanana_metadata=gb_metadata,
+                target_mods_dir=self._mod_target_dir(record),
                 on_success=_on_success,
             )
         except Exception as e:
@@ -572,7 +643,7 @@ class DownloadsManager(QObject):
             "mod_id": m["gb_mod_id"],
             "item_type": m.get("item_type", "mod"),
             "name": m.get("name") or record.display_name,
-            "author": m.get("author"),
+            "authors": m.get("authors") or [],
             "version": m.get("version"),
             "description": m.get("description"),
             "file_name": m.get("file_name"),

@@ -446,19 +446,22 @@ def tr(key: str, **kwargs) -> str:
 
 def get_library_tab_title(app_state) -> str:
     """Return the themed Library tab title, including the DELTAG3M easter egg."""
-    active_theme_name = str(
-        getattr(app_state, "local_config", {}).get("active_theme_name", "")
-    ).strip()
-    if active_theme_name.upper() == "DELTAG3M":
+    if _is_deltag3m_active(app_state):
         return tr("ui.library_tab_easter_egg")
     return tr("ui.library_tab")
 
 
 def get_settings_library_tab_title(app_state) -> str:
     """Return the themed Settings Library tab title, including the DELTAG3M easter egg."""
-    active_theme_name = str(
-        getattr(app_state, "local_config", {}).get("active_theme_name", "")
-    ).strip()
-    if active_theme_name.upper() == "DELTAG3M":
+    if _is_deltag3m_active(app_state):
         return tr("ui.settings_tab_library_easter_egg")
     return tr("ui.settings_tab_library")
+
+
+def _is_deltag3m_active(app_state) -> bool:
+    return (
+        str(getattr(app_state, "local_config", {}).get("active_theme_name", ""))
+        .strip()
+        .upper()
+        == "DELTAG3M"
+    )

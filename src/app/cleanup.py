@@ -120,8 +120,6 @@ def perform_close_cleanup(w):
     """Perform cleanup during closeEvent. `w` is the AppWindow instance."""
     try:
         w.customization_service.stop_background_music()
-        if getattr(w, "plugin_runtime_service", None):
-            w.plugin_runtime_service.execute_hook("app_shutdown")
         if getattr(w, "discord_rich_presence_service", None):
             w.discord_rich_presence_service.shutdown()
         if getattr(w, "session_manager", None):
@@ -170,9 +168,7 @@ def perform_close_cleanup(w):
         with contextlib.suppress(Exception):
             shutdown_image_loader_pool(remaining_timeout_ms())
         background_operations.cancel_threads(remaining_timeout_ms())
-        w.game_launcher._cleanup_direct_launch_files()
-        if hasattr(w.game_launcher, "mod_patcher"):
-            w.game_launcher.mod_patcher.cleanup_processes_and_temp_files()
+        w.game_launcher._cleanup_direct_launch_files(blocking=True)
         background_operations.cancel_processes()
         if getattr(w, "main_tab_widget", None):
             w.app_state.local_config["last_active_tab"] = (

@@ -5,10 +5,10 @@ from PyQt6.QtWidgets import QApplication
 from app.dialogs import on_downloads_record_updated, on_downloads_use_completed
 from app.game_ui import on_games_registry_changed, on_used_mods_updated
 from app.localization_utils import relocalize_texts, relocalize_ui
+from controllers.catalog_controller import CatalogController
 from controllers.game_launch_controller import GameLaunchController
 from controllers.library_display_controller import LibraryDisplayController
 from controllers.mod.operations_controller import ModOperationsController
-from controllers.plugins_controller import PluginsController
 from controllers.refresh_controller import RefreshController
 from controllers.search_display_controller import SearchDisplayController
 from controllers.settings_controller import SettingsUiController
@@ -22,6 +22,8 @@ from presentation.update_presenter import (
 )
 from ui.common.feedback import safe_show_message
 from ui.utils.ui_utils import DebounceTimer
+
+PluginsController = CatalogController
 
 
 class WindowComposition:
@@ -179,29 +181,26 @@ class WindowComposition:
             app_window=window,
         )
         if (
-            window.plugin_catalog_service is not None
+            window.catalog_service is not None
             and window.plugin_state_service is not None
             and window.plugin_runtime_service is not None
             and window.plugin_install_service is not None
         ):
-            window.plugins_ui = PluginsController(
+            window.catalog_ui = PluginsController(
                 window.app_state,
                 window.feedback_service,
                 window.downloads_manager,
-                window.plugin_catalog_service,
+                window.catalog_service,
                 window.plugin_state_service,
                 window.plugin_runtime_service,
                 window.plugin_install_service,
                 window,
             )
-            window.initialization_finished.connect(
-                lambda: window.plugin_runtime_service.execute_hook("app_ready")
-            )
         else:
-            window.plugins_ui = None
-        if window.plugins_ui is not None:
+            window.catalog_ui = None
+        if window.catalog_ui is not None:
             window.settings_service.theme_changed.connect(
-                lambda: window.plugins_ui.handle_theme_refresh()
+                lambda: window.catalog_ui.handle_theme_refresh()
             )
         if getattr(window, "discord_rich_presence_service", None) is not None:
             window.initialization_finished.connect(

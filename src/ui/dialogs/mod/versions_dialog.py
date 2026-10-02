@@ -6,7 +6,6 @@ import os
 import shutil
 import tempfile
 import time
-import zipfile
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -114,35 +113,36 @@ def _resolve_content_path(temp_dir: str) -> str:
 
 def _apply_version_zip(mod_folder: str, zip_path: str):
     """Apply version zip, converting deltamod contents if needed."""
-    from utils.file_utils import load_json, save_json
+    from utils.file_utils import load_json
+    from utils.mod.config import write_mod_config
+    from utils.mod.legacy_config_migration import migrate_legacy_config
 
     temp_dir = tempfile.mkdtemp(prefix="mv_apply_")
     backup_dir = tempfile.mkdtemp(prefix="mv_backup_")
     staged_current = False
     try:
-        current_config = load_json(
-            os.path.join(mod_folder, MOD_CONFIG_FILENAME), persist_normalized=False
-        )
+        current_config = load_json(os.path.join(mod_folder, MOD_CONFIG_FILENAME))
         current_metadata = current_config.get("metadata", {})
         current_mod_id = (
             current_metadata.get("id") if isinstance(current_metadata, dict) else None
         ) or current_config.get("id")
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(temp_dir)
+        from utils.mod.archive import materialize_archive
+
+        materialize_archive(zip_path, temp_dir)
         content_path = _resolve_content_path(temp_dir)
         from utils.file_utils import normalize_mod_package
 
         package = normalize_mod_package(content_path, require_mod_config=True)
+        staged_config_path = package["mod_config_path"]
+        if not staged_config_path:
+            raise FileNotFoundError("Staged mod configuration is missing")
+        staged_config = migrate_legacy_config(
+            load_json(staged_config_path),
+            mod_root_path=content_path,
+        )
         if current_mod_id:
-            staged_config_path = package["mod_config_path"]
-            if not staged_config_path:
-                raise FileNotFoundError("Staged mod configuration is missing")
-            staged_config = load_json(staged_config_path, persist_normalized=False)
-            staged_metadata = staged_config.get("metadata")
-            if isinstance(staged_metadata, dict):
-                staged_metadata["id"] = current_mod_id
             staged_config["id"] = current_mod_id
-            save_json(staged_config_path, staged_config)
+        write_mod_config(staged_config_path, staged_config)
         for item in os.listdir(mod_folder):
             if item != MOD_VERSIONS_DIR:
                 shutil.move(

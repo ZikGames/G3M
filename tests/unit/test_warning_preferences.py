@@ -1,5 +1,6 @@
 """Unit tests for test warning preferences."""
 
+from services.mod_operation_support import direct_operation_paths_preapproved
 from services.warning_service import (
     WarningSeverity,
     create_warning_event,
@@ -15,7 +16,7 @@ def test_skip_patching_warnings_migrates_to_skip_all():
     prefs = normalize_warning_preferences(config)
 
     assert prefs["skip_all"] is True
-    assert is_warning_enabled("g3mpatch_original_hash_mismatch", config) is False
+    assert is_warning_enabled("xdelta_apply_failed", config) is False
 
 
 def test_legacy_section_override_is_removed_and_ignored():
@@ -23,47 +24,39 @@ def test_legacy_section_override_is_removed_and_ignored():
         "warning_preferences": {
             "skip_all": False,
             "section_overrides": {"major": False},
-            "warning_overrides": {"g3mpatch_original_hash_mismatch": True},
+            "warning_overrides": {"xdelta_apply_failed": False},
         }
     }
     prefs = normalize_warning_preferences(config)
 
     assert "section_overrides" not in prefs
-    assert is_warning_enabled("g3mpatch_original_hash_mismatch", config) is True
-    assert is_warning_enabled("xdelta_apply_failed", config) is True
+    assert is_warning_enabled("xdelta_apply_failed", config) is False
 
 
 def test_individual_warning_override_uses_registry_defaults():
     config = {
         "warning_preferences": {
             "warning_overrides": {
-                "minor_file_overrides_only": True,
-                "g3mpatch_newer_tool": False,
+                "patching_warning": False,
             }
         }
     }
 
-    assert is_warning_enabled("minor_file_overrides_only", config) is True
-    assert is_warning_enabled("g3mpatch_newer_tool", config) is False
+    assert is_warning_enabled("patching_warning", config) is False
 
 
-def test_legacy_extra_xdelta_warning_overrides_are_migrated():
-    config = {
-        "warning_preferences": {
-            "warning_overrides": {
-                "extra_xdelta_no_target": True,
-                "extra_xdelta_apply_failed": False,
-                "extra_additional_patch_apply_failed": True,
+def test_direct_absolute_paths_require_their_own_explicit_approval():
+    assert not direct_operation_paths_preapproved(
+        {"warning_preferences": {"skip_all": True}}
+    )
+    assert direct_operation_paths_preapproved(
+        {
+            "warning_preferences": {
+                "skip_all": True,
+                "warning_overrides": {"direct_absolute_operation_paths": False},
             }
         }
-    }
-
-    overrides = normalize_warning_preferences(config)["warning_overrides"]
-
-    assert overrides["extra_additional_patch_no_target"] is True
-    assert overrides["extra_additional_patch_apply_failed"] is True
-    assert "extra_xdelta_no_target" not in overrides
-    assert "extra_xdelta_apply_failed" not in overrides
+    )
 
 
 def test_warning_event_keeps_severity_and_context():
@@ -85,25 +78,6 @@ def test_unknown_warning_event_logs_fallback(caplog):
         context={"patch_name": "mod.xdelta"},
     )
 
-    assert event.warning_id == "legacy_patching_warning"
+    assert event.warning_id == "patching_warning"
     assert "unknown_warning" in caplog.text
-    assert "legacy_patching_warning" in caplog.text
-
-
-def test_extra_file_warning_definitions_are_registered():
-    definition = get_warning_definition("extra_file_missing")
-
-    assert definition.severity is WarningSeverity.MAJOR
-    assert definition.enabled_by_default is True
-    assert is_warning_enabled(
-        "extra_file_missing",
-        {"warning_preferences": {"warning_overrides": {"extra_file_missing": False}}},
-    ) is False
-    assert (
-        get_warning_definition("extra_additional_patch_no_target").severity
-        is WarningSeverity.MINOR
-    )
-
-
-def test_missing_data_file_is_critical():
-    assert get_warning_definition("data_file_missing").severity is WarningSeverity.CRITICAL
+    assert "patching_warning" in caplog.text

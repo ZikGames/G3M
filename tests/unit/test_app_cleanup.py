@@ -34,7 +34,6 @@ def test_perform_close_cleanup_stops_discovered_threads(qapp):
     root.search_display = Mock()
     root.game_launcher = Mock()
     root.game_launcher.monitor_thread = None
-    root.game_launcher.mod_patcher = Mock()
     root.refresh_controller = Mock()
     root.refresh_controller.fetch_thread = None
     root.refresh_controller.details_thread = None
@@ -64,6 +63,7 @@ def test_perform_close_cleanup_stops_discovered_threads(qapp):
     pool.clear.assert_called_once_with()
     pool.waitForDone.assert_called_once()
     shutdown_pool.assert_called_once()
+    root.game_launcher._cleanup_direct_launch_files.assert_called_once_with(blocking=True)
 
 
 def test_perform_close_cleanup_stops_threads_on_non_qobject_controllers(qapp):
@@ -77,7 +77,6 @@ def test_perform_close_cleanup_stops_threads_on_non_qobject_controllers(qapp):
     root.search_display = Mock()
     root.game_launcher = Mock()
     root.game_launcher.monitor_thread = None
-    root.game_launcher.mod_patcher = Mock()
     root.refresh_controller = Mock()
     root.refresh_controller.fetch_thread = QThread()
     root.refresh_controller.details_thread = QThread()
@@ -114,7 +113,6 @@ def test_perform_close_cleanup_skips_threads_managed_by_session(qapp):
     root.search_display = Mock()
     root.game_launcher = Mock()
     root.game_launcher.monitor_thread = None
-    root.game_launcher.mod_patcher = Mock()
     root.refresh_controller = Mock()
     root.refresh_controller.fetch_thread = None
     root.refresh_controller.details_thread = None

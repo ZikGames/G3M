@@ -8,20 +8,26 @@ import re
 import shutil
 import tomllib
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from defusedxml import ElementTree
 
 from config.config import MOD_DOCUMENTATION_EXTENSIONS
 from services.localization_service import tr
-from services.migration_service import build_extra_file_entry
 from utils.file_utils import (
     check_filename_is_deltamod_info,
     find_deltamod_info_file,
     get_chapter_folder_name,
     get_unique_mod_dir,
 )
-from utils.mod.config_parser import build_mod_config_data
+from utils.mod.config import (
+    MOD_CONFIG_TAGS,
+    MOD_CONFIG_VERSION,
+    parse_mod_config,
+    write_mod_config,
+)
+from utils.mod.operation_plan import section_target_root
 
 logger = logging.getLogger(__name__)
 
@@ -63,13 +69,9 @@ class DeltamodConverter:
             config_data = self._generate_config_json()
             if not config_data:
                 return None
-            config_metadata = (
-                config_data.get("metadata", config_data)
-                if isinstance(config_data, dict)
-                else {}
-            )
+            parse_mod_config(config_data)
             mod_name = self._normalize_folder_name(
-                config_metadata.get("name") or self._fallback_mod_name()
+                str(config_data.get("name") or self._fallback_mod_name())
             )
             folder_name = get_unique_mod_dir(self.mods_dir, mod_name)
             target_mod_dir = os.path.join(self.mods_dir, folder_name)
@@ -100,16 +102,13 @@ class DeltamodConverter:
             if not os.path.exists(icon_path):
                 icon_path = os.path.join(target_mod_dir, "icon.png")
             if os.path.exists(icon_path):
-                config_metadata["icon"] = (
-                    "_icon.png"
+                config_data["icon"] = (
+                    "${mod_path}/_icon.png"
                     if os.path.basename(icon_path) == "_icon.png"
-                    else "icon.png"
+                    else "${mod_path}/icon.png"
                 )
             config_path = os.path.join(target_mod_dir, "mod_config.json")
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(
-                    build_mod_config_data(config_data), f, indent=4, ensure_ascii=False
-                )
+            write_mod_config(config_path, config_data)
             logger.info(
                 f"Deltamod converted: {config_data.get('name')} → {target_mod_dir}"
             )
@@ -348,6 +347,7 @@ class DeltamodConverter:
             return None
         patches = self._collect_patches()
         meta = self.deltamod_info.get("metadata", {})
+        meta = dict(meta) if isinstance(meta, Mapping) else {}
 
         if self.gamebanana_metadata and "mod_id" in self.gamebanana_metadata:
             item_type = (
@@ -359,38 +359,66 @@ class DeltamodConverter:
             mod_id = f"gb_{item_type}_{self.gamebanana_metadata['mod_id']}"
         else:
             package_id = meta.get("packageID", "")
-            if package_id and package_id != "und.und.und":
-                mod_id = package_id.replace(".", "_")
-            else:
-                mod_id = f"local_{meta.get('name', 'unnamed')}_{uuid.uuid4().hex[:8]}"
+            mod_id = (
+                re.sub(r"[^a-z0-9_-]+", "_", str(package_id).lower()).strip("_-")
+                if package_id and package_id != "und.und.und"
+                else ""
+            )
+            if not mod_id or not mod_id[0].isalpha() or mod_id == "self":
+                mod_id = ""
+            if not mod_id:
+                name_part = re.sub(
+                    r"[^a-z0-9_-]+", "_", str(meta.get("name") or "unnamed").lower()
+                ).strip("_-")[:49]
+                mod_id = f"local_{name_part or 'mod'}_{uuid.uuid4().hex[:8]}"
+        mod_id = mod_id[:64].rstrip("_-")
 
         game_value = self._resolve_target_game(meta)
         self._target_game = game_value
-        authors = meta.get("author", [tr("defaults.unknown")])
-        if isinstance(authors, str):
-            authors = [authors]
+        raw_authors = self.gamebanana_metadata.get("authors") or meta.get(
+            "author", [tr("defaults.unknown")]
+        )
+        if isinstance(raw_authors, str):
+            raw_authors = [raw_authors]
+        authors = [
+            str(name).strip()
+            for name in raw_authors
+            if str(name).strip()
+        ] if isinstance(raw_authors, list) else []
+        if not authors:
+            authors = [tr("defaults.unknown")]
         config = {
+            "config_version": MOD_CONFIG_VERSION,
             "id": mod_id,
-            "version": meta.get("version", "1.0.0"),
-            "name": meta.get("name") or self._fallback_mod_name(),
-            "description": meta.get("description", tr("defaults.no_description")),
-            "author": ", ".join(str(author) for author in authors),
-            "homepage": (
-                self.gamebanana_metadata.get("homepage")
-                or self.gamebanana_metadata.get("profile_url")
-                or meta.get("url", "")
-            ),
+            "version": str(
+                self.gamebanana_metadata.get("version") or meta.get("version") or "1.0.0"
+            ).strip(),
+            "name": str(meta.get("name") or self._fallback_mod_name()).strip(),
+            "authors": authors,
             "game": game_value,
-            "game_version": self._resolve_game_version(game_value),
-            "files": self._generate_files_structure(patches),
-            "tags": meta.get("tags", []),
+            "files": self._generate_operations(patches),
         }
+        description = str(meta.get("description") or "").strip()
+        if description:
+            config["description"] = description
+        homepage = (
+            self.gamebanana_metadata.get("homepage")
+            or self.gamebanana_metadata.get("profile_url")
+            or meta.get("url")
+        )
+        if isinstance(homepage, str) and homepage.strip():
+            config["homepage"] = homepage.strip()
+        game_version = self._resolve_game_version(game_value)
+        if game_version:
+            config["game_version"] = str(game_version).strip()
+        tags = meta.get("tags", [])
+        config["tags"] = [
+            tag for tag in tags if isinstance(tag, str) and tag in MOD_CONFIG_TAGS
+        ] if isinstance(tags, list) else []
 
         if self.gamebanana_metadata:
             from adapters.gamebanana_adapter import GameBananaAPI
 
-            if self.gamebanana_metadata.get("icon"):
-                config["icon"] = self.gamebanana_metadata["icon"]
             if self.gamebanana_metadata.get("tags"):
                 gb_tags = self.gamebanana_metadata["tags"]
                 if isinstance(gb_tags, list):
@@ -410,12 +438,19 @@ class DeltamodConverter:
                     existing_tags.append(category_tag)
                 config["tags"] = existing_tags
 
-        return build_mod_config_data(config)
+        config["tags"] = list(
+            dict.fromkeys(
+                tag
+                for tag in config["tags"]
+                if isinstance(tag, str) and tag in MOD_CONFIG_TAGS
+            )
+        )
+        if not config["tags"]:
+            config.pop("tags")
+        return config
 
-    def _generate_files_structure(self, patches: list) -> dict[str, Any]:
-        files_structure = {}
-        if self.modding_xml is None:
-            return {}
+    def _generate_operations(self, patches: list) -> list[dict[str, str]]:
+        operations: list[dict[str, str]] = []
         for patch in patches:
             to_path = patch.get("to", "")
             patch_file = self._sanitize_relative_path(patch.get("patch", ""))
@@ -439,17 +474,31 @@ class DeltamodConverter:
                 )
                 continue
             content_key = self._normalize_content_key(chapter_key)
-            if content_key not in files_structure:
-                files_structure[content_key] = {}
-            if patch_type in {"xdelta", "g3mpatch", "csx"}:
-                files_structure[content_key]["data_file_path"] = patch_file
-            elif patch_type in {"override", "copy"}:
-                stored_path = self._build_stored_path(relative_path, filename)
-                files_structure[content_key].setdefault("extra_files", []).append(
-                    stored_path
-                )
-        self._add_csx_dependencies(files_structure, patches)
-        return files_structure
+            chapter_dir = get_chapter_folder_name(
+                content_key, game=self._target_game
+            )
+            source_path = patch_file
+            stored_target_path = self._build_stored_path(relative_path, filename)
+            if patch_type in {"override", "copy"}:
+                source_path = f"{chapter_dir}/{stored_target_path}"
+            elif patch_type != "csx":
+                source_path = f"{chapter_dir}/{patch_file}"
+            target_path = f"{section_target_root(self._target_game, content_key)}/"
+            target_path += stored_target_path
+            operations.append(
+                {
+                    "source": f"${{mod_path}}/{source_path}",
+                    "target": target_path,
+                    "type": "patch"
+                    if patch_type in {"g3mpatch", "csx"}
+                    or (
+                        patch_type == "xdelta"
+                        and os.path.splitext(patch_file)[1].lower() != ".win"
+                    )
+                    else "overwrite",
+                }
+            )
+        return operations
 
     @staticmethod
     def _is_supported_patch(patch_type: str, patch_file: str) -> bool:
@@ -484,41 +533,6 @@ class DeltamodConverter:
                 continue
             result.append(name)
         return sorted(result, key=str.casefold)
-
-    def _csx_dependencies_by_chapter(
-        self, patches: list
-    ) -> dict[str, list[tuple[str, bool]]]:
-        dependency_names = self._csx_dependency_names(patches)
-        if not dependency_names:
-            return {}
-        result: dict[str, list[tuple[str, bool]]] = {}
-        for patch in patches:
-            if patch.get("type", "").strip().lower() != "csx":
-                continue
-            chapter_key = self._parse_to_path(patch.get("to", ""))[0]
-            if not chapter_key:
-                continue
-            content_key = self._normalize_content_key(chapter_key)
-            if content_key in result:
-                continue
-            result[content_key] = [
-                (name, os.path.isdir(os.path.join(self.source_path, name)))
-                for name in dependency_names
-            ]
-        return result
-
-    def _add_csx_dependencies(self, files_structure: dict, patches: list) -> None:
-        for content_key, dependencies in self._csx_dependencies_by_chapter(
-            patches
-        ).items():
-            extra_files = files_structure.setdefault(content_key, {}).setdefault(
-                "extra_files", []
-            )
-            for name, is_directory in dependencies:
-                path = name
-                if is_directory:
-                    path += "/"
-                extra_files.append(build_extra_file_entry(path, "none"))
 
     def _resolve_patch_file(self, patch_file_rel: str) -> str | None:
         for variant in (

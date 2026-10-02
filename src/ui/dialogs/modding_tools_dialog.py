@@ -1,7 +1,6 @@
 """Non-modal Modding Tools dialog with Convert DATA, Patch, Merge, Info, Diff tabs."""
 
 import copy
-import json
 import logging
 import os
 import shutil
@@ -51,6 +50,7 @@ from utils.native_integration import (
     get_open_file_names,
     get_save_file_name,
 )
+from utils.path_utils import resolve_execution_runtime, resolve_game_executable
 from utils.process_utils import format_filesystem_error
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ _CSX_FILTER = "Script files (*.csx);;All Files (*)"
 _PATCH_FILTER = "Patch files (*.g3mpatch *.zip *.xdelta *.vcdiff *.csx);;All Files (*)"
 _DATA_PATCH_FILTER = "Data / Patch files (*.win *.ios *.unx *.droid *.g3mpatch *.zip *.xdelta *.vcdiff *.csx);;All Files (*)"
 _ALL_FILTER = "All Files (*)"
-_READY_DATA_TARGETS = ("data.win", "game.ios", "game.win")
+_READY_DATA_TARGETS = ("data.win", "game.ios", "game.unx", "game.win")
 _CONVERT_TARGET_OPTIONS = ("g3mpatch", "xdelta", *_READY_DATA_TARGETS)
 _MONOSPACE_FONT_SIZE_PX = 12
 
@@ -170,7 +170,7 @@ def _warning_id_for_g3mtool_failure(operation: str, details: str) -> str:
         return "xdelta_apply_failed"
     if "g3mpatch" in lower_details or operation == "patch":
         return "g3mpatch_apply_failed"
-    return "legacy_patching_warning"
+    return "patching_warning"
 
 
 def _show_g3mtool_warning_failure(
@@ -258,6 +258,9 @@ def _apply_source_to_data(
             output_path=output,
             progress_callback=progress_callback,
         )
+    if _is_ready_data_source(patch):
+        shutil.copy2(patch, output)
+        return 0, "", ""
     return -1, "", f"Unsupported source patch format: {patch}"
 
 
@@ -330,9 +333,9 @@ def _should_convert_source_to_target(path: str, target_mode: str) -> bool:
         return False
     source_name = os.path.basename(lower_path)
     if target_mode == "g3mpatch":
-        return _is_xdelta_source(path) or _is_csx_source(path)
+        return _is_xdelta_source(path) or _is_csx_source(path) or _is_ready_data_source(path)
     if target_mode == "xdelta":
-        return _is_g3mpatch_source(path) or _is_csx_source(path)
+        return _is_g3mpatch_source(path) or _is_csx_source(path) or _is_ready_data_source(path)
     if target_mode in _READY_DATA_TARGETS:
         if _is_g3mpatch_source(path) or _is_xdelta_source(path) or _is_csx_source(path):
             return True
@@ -1029,7 +1032,8 @@ class _DataConvertWorkerThread(ManagedQThread):
     result_ready = pyqtSignal(bool, str)
 
     def __init__(
-        self, g3m, mod_folder, config_data, game_path, target_mode, parent=None
+        self, g3m, mod_folder, config_data, game_path, target_mode, runtime=None, parent=None,
+        *, game_data_path=None,
     ) -> None:
         super().__init__(parent)
         self._g3m = g3m
@@ -1037,33 +1041,88 @@ class _DataConvertWorkerThread(ManagedQThread):
         self._config_data = copy.deepcopy(config_data)
         self._game_path = game_path
         self._target_mode = target_mode
+        self._runtime = runtime
+        self._game_data_path = game_data_path
 
     def run(self):
         try:
-            from models.game_modes import get_game
-            from utils.mod.config_parser import resolve_mod_file_path
+            from pathlib import Path
+
+            from services.diagnostics.preflight_service import (
+                DiagnosticsPreflightService,
+            )
+            from services.mod_operation_executor import (
+                ModOperationExecutionError,
+                ModOperationExecutor,
+            )
+            from utils.mod.config import (
+                iter_mod_config_leaves,
+                mod_local_relative_path,
+                write_mod_config,
+            )
+            from utils.mod.hashing import sha256_path
+            from utils.mod.legacy_config_migration import migrate_legacy_config
+            from utils.mod.operation_plan import (
+                ModOperationPlan,
+                ModPathContext,
+                build_mod_operation_plan,
+            )
             from utils.mod.version_utils import (
                 create_version_zip,
                 get_unique_version_name,
             )
-            from utils.patching.mod_content_utils import find_data_win
-            from utils.path_utils import find_chapter_resource_dir
 
-            files_data = self._config_data.get("files", {})
-            game = self._config_data.get("game")
-            game_def = get_game(game) if game else None
+            runtime = self._runtime
+            if runtime is None:
+                for candidate in (self._game_path, self._game_data_path):
+                    if not candidate:
+                        continue
+                    candidate_p = Path(candidate)
+                    if any((candidate_p / name).is_file() for name in ("data.win", "game.win")):
+                        runtime = "windows"
+                        break
+                    if (candidate_p / "game.unx").is_file():
+                        runtime = "linux"
+                        break
+                    if (candidate_p / "game.ios").is_file():
+                        runtime = "macos"
+                        break
+
+            config_data = migrate_legacy_config(
+                self._config_data, mod_root_path=self._mod_folder
+            )
+            operation_plan = build_mod_operation_plan(
+                config_data,
+                ModPathContext.create(
+                    mod_path=self._mod_folder,
+                    game_path=self._game_path,
+                    game_data_path=self._game_data_path,
+                    user_path=Path.home(),
+                    runtime=runtime,
+                ),
+            )
+            if operation_plan.has_errors:
+                self.result_ready.emit(False, operation_plan.findings[0].message)
+                return
+            files = config_data.get("files")
+            if not isinstance(files, list):
+                self.result_ready.emit(False, "Invalid files list")
+                return
             items = []
-            for file_key, ch_info in files_data.items():
-                if not isinstance(ch_info, dict):
+            for (_, entry), operation in zip(
+                iter_mod_config_leaves(files),
+                operation_plan.operations,
+                strict=False,
+            ):
+                if operation.type not in {"patch", "overwrite"}:
                     continue
-                data_path = ch_info.get("data_file_path") or ch_info.get(
-                    "data_file_url", ""
-                )
-                if not data_path:
+                if not isinstance(operation.source, Path) or not isinstance(
+                    operation.target, Path
+                ):
                     continue
-                patch_path = resolve_mod_file_path(self._mod_folder, data_path)
-                if not patch_path:
+                if operation.target.suffix.casefold() not in {".win", ".ios", ".unx"}:
                     continue
+                patch_path = str(operation.source)
                 if not _should_convert_source_to_target(patch_path, self._target_mode):
                     continue
                 if not os.path.isfile(patch_path):
@@ -1075,25 +1134,11 @@ class _DataConvertWorkerThread(ManagedQThread):
                         patch_path,
                     )
                     continue
-                tab = game_def.get_tab(file_key) if game_def else None
-                chapter_id = tab.tab_id if tab else file_key
-                resource_dir = find_chapter_resource_dir(self._game_path, chapter_id)
-                if not resource_dir:
-                    continue
-                original = find_data_win(resource_dir, game_id=game)
-                if not original:
-                    self.result_ready.emit(
-                        False,
-                        tr(
-                            "modding_tools.convert_original_not_found",
-                            path=resource_dir,
-                        ),
-                    )
-                    return
+                original = str(operation.target)
                 items.append(
                     (
-                        file_key,
-                        ch_info,
+                        str(operation.index),
+                        entry,
                         patch_rel_path,
                         original,
                     )
@@ -1109,7 +1154,7 @@ class _DataConvertWorkerThread(ManagedQThread):
                 source_key = os.path.normcase(os.path.normpath(patch_rel_path))
                 source_counts[source_key] = source_counts.get(source_key, 0) + 1
 
-            version = self._config_data.get("version", "1.0.0")
+            version = config_data.get("version", "1.0.0")
             version = (version.split("|", 1)[0].strip() if version else "") or "1.0.0"
             version_name = get_unique_version_name(
                 self._mod_folder,
@@ -1120,6 +1165,20 @@ class _DataConvertWorkerThread(ManagedQThread):
             )
 
             with managed_temporary_directory(prefix="g3m_modconv_") as tmp:
+                roots = [(Path(self._game_path).resolve(), Path(tmp) / "game"), (Path.home(), Path(tmp) / "user")]
+                if self._game_data_path:
+                    roots.append((Path(self._game_data_path).resolve(), Path(tmp) / "game_data"))
+                roots.sort(key=lambda pair: len(pair[0].parts), reverse=True)
+                staged_plan = DiagnosticsPreflightService._stage_inputs(operation_plan, tuple(roots))
+
+                def apply_patch(target, source, output):
+                    rc, _, error = _apply_source_to_data(self._g3m, str(target), str(source), str(output))
+                    if rc != 0:
+                        raise ModOperationExecutionError(error)
+                    return True
+
+                executor = ModOperationExecutor(Path(tmp) / "journal", patcher=apply_patch)
+                next_operation = 0
                 converted_mod_folder = os.path.join(tmp, "mod")
                 shutil.copytree(
                     self._mod_folder,
@@ -1171,6 +1230,14 @@ class _DataConvertWorkerThread(ManagedQThread):
                 ):
                     if self.isInterruptionRequested():
                         return
+                    operation_index = int(file_key) - 1
+                    while next_operation < operation_index:
+                        executor.execute(ModOperationPlan((staged_plan.operations[next_operation],), ()), is_cancelled=self.isInterruptionRequested)
+                        next_operation += 1
+                    staged_operation = staged_plan.operations[operation_index]
+                    if not isinstance(staged_operation.target, Path):
+                        continue
+                    staged_target = staged_operation.target
                     patch_path = os.path.join(converted_mod_folder, patch_rel_path)
                     self.progress.emit(
                         tr(
@@ -1187,9 +1254,13 @@ class _DataConvertWorkerThread(ManagedQThread):
                             work_dir,
                             f"modified{os.path.splitext(original)[1] or '.win'}",
                         )
-                        rc, _, err = _apply_source_to_data(
-                            self._g3m, original, patch_path, temp_modified
-                        )
+                        original = os.path.join(work_dir, f"original{staged_target.suffix}")
+                        if not staged_target.is_file():
+                            raise FileNotFoundError(str(staged_target))
+                        shutil.copy2(staged_target, original)
+                        executor.execute(ModOperationPlan((staged_operation,), ()), is_cancelled=self.isInterruptionRequested)
+                        next_operation = operation_index + 1
+                        shutil.copy2(staged_target, temp_modified)
                         if self.isInterruptionRequested():
                             return
                         if _target_is_ready_data(self._target_mode):
@@ -1200,31 +1271,8 @@ class _DataConvertWorkerThread(ManagedQThread):
                             new_path = reserve_output_path(
                                 os.path.dirname(patch_path), new_name, file_key, i
                             )
-                            is_patch_source = (
-                                _is_g3mpatch_source(patch_path)
-                                or _is_xdelta_source(patch_path)
-                                or _is_csx_source(patch_path)
-                            )
-                            if is_patch_source:
-                                if rc != 0:
-                                    self.result_ready.emit(False, err)
-                                    return
-                                shutil.copy2(temp_modified, new_path)
-                            elif _is_ready_data_source(patch_path):
-                                shutil.copy2(patch_path, new_path)
-                            else:
-                                self.result_ready.emit(
-                                    False,
-                                    tr(
-                                        "modding_tools.convert_unsupported_source",
-                                        file=os.path.basename(patch_path),
-                                    ),
-                                )
-                                return
+                            shutil.copy2(temp_modified, new_path)
                         else:
-                            if rc != 0:
-                                self.result_ready.emit(False, err)
-                                return
                             source_key = os.path.normcase(
                                 os.path.normpath(patch_rel_path)
                             )
@@ -1255,25 +1303,35 @@ class _DataConvertWorkerThread(ManagedQThread):
                                 return
                     if os.path.normpath(new_path) != os.path.normpath(patch_path):
                         source_paths_to_remove.add(patch_path)
-                    ch_info["data_file_path"] = os.path.relpath(
+                    ch_info["source"] = "${mod_path}/" + os.path.relpath(
                         new_path, converted_mod_folder
                     ).replace("\\", "/")
+                    ch_info["type"] = (
+                        "overwrite"
+                        if _target_is_ready_data(self._target_mode)
+                        else "patch"
+                    )
+                    if "source_hash" in ch_info:
+                        ch_info["source_hash"] = sha256_path(new_path)
                     converted += 1
 
+                custom_placeholders = config_data.get("placeholders")
+                if not isinstance(custom_placeholders, dict):
+                    custom_placeholders = {}
+                retained_sources = {
+                    os.path.normcase(os.path.abspath(os.path.join(converted_mod_folder, relative)))
+                    for _group, entry in iter_mod_config_leaves(files)
+                    if isinstance(source := entry.get("source"), str)
+                    and (relative := mod_local_relative_path(source, custom_placeholders))
+                }
                 for source_path in source_paths_to_remove:
+                    if os.path.normcase(os.path.abspath(source_path)) in retained_sources:
+                        continue
                     with suppress(OSError):
                         os.remove(source_path)
 
-                from utils.mod.config_parser import build_mod_config_data
-
                 config_path = os.path.join(converted_mod_folder, "mod_config.json")
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(
-                        build_mod_config_data(self._config_data),
-                        f,
-                        indent=2,
-                        ensure_ascii=False,
-                    )
+                write_mod_config(config_path, config_data)
                 create_version_zip(
                     converted_mod_folder,
                     self._mod_folder,
@@ -1318,8 +1376,10 @@ class _BatchDataConvertWorkerThread(ManagedQThread):
         self,
         message: str,
         details: str = "",
-        warning_id: str = "legacy_patching_warning",
+        warning_id: str = "patching_warning",
     ) -> bool:
+        if self.receivers(self.warning_confirmation_needed) == 0:
+            return False
         self._warning_result = True
         self._warning_event.clear()
         event = create_warning_event(
@@ -1340,7 +1400,7 @@ class _BatchDataConvertWorkerThread(ManagedQThread):
             return "merge_failed"
         if "patch" in lower or "g3mpatch" in lower:
             return "g3mpatch_apply_failed"
-        return "legacy_patching_warning"
+        return "patching_warning"
 
     def run(self):
         total = len(self._jobs)
@@ -1372,6 +1432,8 @@ class _BatchDataConvertWorkerThread(ManagedQThread):
                 job["config_data"],
                 job["game_path"],
                 self._target_mode,
+                job.get("runtime"),
+                game_data_path=job.get("game_data_path"),
             )
             result = []
             worker.progress.connect(
@@ -1511,10 +1573,7 @@ class _DataConvertTab(QWidget):
 
     def _scan_mods(self, _idx=0):
         from config.config import MOD_CONFIG_FILENAME
-        from utils.mod.config_parser import (
-            normalize_mod_config_data,
-            resolve_mod_file_path,
-        )
+        from utils.mod.config import iter_mod_config_leaves, load_mod_config
         from utils.path_utils import get_profile_mods_root
 
         self._mod_list.blockSignals(True)
@@ -1539,31 +1598,27 @@ class _DataConvertTab(QWidget):
             if not os.path.isfile(config_path):
                 continue
             try:
-                with open(config_path, encoding="utf-8") as f:
-                    config_data = json.load(f)
-                normalize_mod_config_data(config_data, mod_root_path=folder_path)
+                config_data = load_mod_config(config_path)
             except Exception:
                 logger.debug("Skipping unreadable mod config: %s", config_path)
                 continue
-            files_data = config_data.get("files", {})
-            if not isinstance(files_data, dict):
+            files = config_data.get("files")
+            if not isinstance(files, list):
                 continue
-            has_convertible = False
-            for ch in files_data.values():
-                if not isinstance(ch, dict):
-                    continue
-                url = ch.get("data_file_path") or ch.get("data_file_url", "")
-                if not url:
-                    continue
-
-                source_path = resolve_mod_file_path(folder_path, url)
-                if _should_convert_source_to_target(source_path, target_mode):
-                    has_convertible = True
-                    break
+            has_convertible = any(
+                isinstance(source := entry.get("source"), str)
+                and source.startswith("${mod_path}/")
+                and entry.get("type") in {"patch", "overwrite"}
+                and _should_convert_source_to_target(
+                    os.path.join(folder_path, source.removeprefix("${mod_path}/")),
+                    target_mode,
+                )
+                for _group, entry in iter_mod_config_leaves(files)
+            )
             if not has_convertible:
                 continue
             display = config_data.get("name", folder_name)
-            item = QListWidgetItem(display)
+            item = QListWidgetItem(str(display))
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Unchecked)
             item.setData(Qt.ItemDataRole.UserRole, folder_path)
@@ -1608,17 +1663,17 @@ class _DataConvertTab(QWidget):
             _safe_set_status(self._status_label, tr("errors.g3mtool_not_available"))
             return
         from models.game_modes import get_game
-        from utils.mod.config_parser import normalize_mod_config_data
+        from utils.mod.config import load_mod_config
 
         jobs = []
         game_path_cache = {}
         for item in checked_items:
             mod_folder = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(mod_folder, str) or not mod_folder:
+                continue
             config_path = os.path.join(mod_folder, "mod_config.json")
             try:
-                with open(config_path, encoding="utf-8") as f:
-                    config_data = json.load(f)
-                normalize_mod_config_data(config_data, mod_root_path=mod_folder)
+                config_data = load_mod_config(config_path)
             except Exception as e:
                 _safe_set_status(
                     self._status_label,
@@ -1627,8 +1682,14 @@ class _DataConvertTab(QWidget):
                 return
 
             game = config_data.get("game", "deltarune")
+            if not isinstance(game, str) or not game:
+                _safe_set_status(
+                    self._status_label,
+                    tr("modding_tools.convert_data_failed", error="Invalid game ID"),
+                )
+                return
             if game in game_path_cache:
-                game_def, game_path = game_path_cache[game]
+                game_def, game_path, game_data_path, runtime = game_path_cache[game]
             else:
                 game_def = get_game(game)
                 if not game_def:
@@ -1648,12 +1709,26 @@ class _DataConvertTab(QWidget):
                         ),
                     )
                     return
-                game_path_cache[game] = (game_def, game_path)
+                custom_key = game_def.get_custom_exec_config_key()
+                custom_executable = (
+                    self._app_state.local_config.get(custom_key, "") if custom_key else ""
+                )
+                executable = (
+                    custom_executable
+                    if isinstance(custom_executable, str)
+                    and os.path.isfile(custom_executable)
+                    else resolve_game_executable(game_path, game_def.executable_type)
+                )
+                runtime = resolve_execution_runtime(executable)
+                game_data_path = game_def.get_data_path(self._app_state.local_config)
+                game_path_cache[game] = (game_def, game_path, game_data_path, runtime)
             jobs.append(
                 {
                     "mod_folder": mod_folder,
                     "config_data": config_data,
                     "game_path": game_path,
+                    "game_data_path": game_data_path,
+                    "runtime": runtime,
                     "name": item.text(),
                 }
             )

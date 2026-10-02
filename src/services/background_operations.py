@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from PyQt6.QtCore import QRunnable
+from PyQt6.QtCore import QRunnable, QThread
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,9 @@ class BackgroundOperationManager:
         ] = {}
 
     def retain_thread(self, thread) -> None:
+        if isinstance(thread, QThread):
+            # A Python reference cannot prevent Qt from deleting a parent's children.
+            thread.setParent(None)
         key = id(thread)
         with self._lock:
             if key in self._threads:

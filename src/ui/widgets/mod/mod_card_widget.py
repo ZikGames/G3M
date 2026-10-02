@@ -222,7 +222,7 @@ class ModCardWidget(BaseModWidget):
         self.updated_container = updated_container
         self.updated_label_title = updated_label_title
         containers = [
-            self.author_container,
+            self.authors_container,
             self.category_container,
             updated_container,
             created_container,

@@ -33,7 +33,6 @@ class GameBananaAPI:
 
     def __init__(self) -> None:
         self.base_url = GAMEBANANA_API_BASE
-        self.core_api_base = "https://api.gamebanana.com"
         self.session = get_session()
         self._last_request_time = 0.0
         self._min_request_interval = 0.2
@@ -143,9 +142,7 @@ class GameBananaAPI:
         page=1,
         per_page=20,
         sort="relevant",
-        metadata_cache=None,
         max_retries=2,
-        app_state=None,
         search_string: str | None = None,
     ):
         effective_sort = self._normalize_sort(sort)
@@ -342,6 +339,213 @@ class GameBananaAPI:
     ) -> dict[str, Any]:
         return self._get_mod_file_compatibility(int(mod_id), itemtype=itemtype)
 
+    def resolve_dependency_download(
+        self, dependency_id: str, game: str
+    ) -> dict[str, Any] | None:
+        """Return one deterministic GameBanana download for a operation relation.
+
+        G3M and Deltamod integrations take precedence. For ordinary GameBanana
+        uploads, use the newest available file and let the existing converter
+        decide whether it can be installed automatically.
+        """
+        match = re.fullmatch(r"gb_(mod|wip)_([0-9]+)", dependency_id)
+        if not match:
+            return None
+        kind, raw_id = match.groups()
+        mod_id = int(raw_id)
+        item_type = "Wip" if kind == "wip" else "Mod"
+        compatibility = self.get_supported_files_for_mod(mod_id, item_type)
+        files = compatibility.get("supported_files") or []
+        from utils.mod.utils import sort_gamebanana_files_by_priority
+
+        profile = self.get_mod_profile_page(mod_id, itemtype=item_type) or {}
+        if files:
+            selected = sort_gamebanana_files_by_priority(files)[0]
+        else:
+            raw_files = profile.get("_aFiles", [])
+            raw_files = (
+                list(raw_files.values()) if isinstance(raw_files, dict) else raw_files
+            )
+            available = [
+                item
+                for item in raw_files
+                if isinstance(item, dict)
+                and item.get("_idRow")
+                and item.get("_bHasContents", True)
+                and not item.get("_bIsArchived")
+            ]
+            if not available:
+                return None
+            selected = max(
+                available,
+                key=lambda item: (
+                    self._safe_int(item.get("_tsDateAdded")) or 0,
+                    self._safe_int(item.get("_idRow")) or 0,
+                ),
+            )
+        return self._build_download_resolution(
+            dependency_id, kind, mod_id, game, profile, selected
+        )
+
+    def resolve_mod_update_downloads(
+        self, mod_id: str, game: str
+    ) -> list[dict[str, Any]]:
+        """Return every downloadable file at the newest GameBanana version."""
+        match = re.fullmatch(r"gb_(mod|wip)_([0-9]+)", mod_id)
+        if not match:
+            return []
+        kind, raw_id = match.groups()
+        gamebanana_id = int(raw_id)
+        item_type = "Wip" if kind == "wip" else "Mod"
+        compatibility = self.get_supported_files_for_mod(gamebanana_id, item_type)
+        supported = {
+            str(file.get("id") or file.get("_idRow")): file
+            for file in compatibility.get("supported_files") or []
+            if isinstance(file, dict)
+        }
+        profile = self.get_mod_profile_page(gamebanana_id, itemtype=item_type) or {}
+        raw_files = profile.get("_aFiles", [])
+        raw_files = list(raw_files.values()) if isinstance(raw_files, dict) else raw_files
+        files = self._latest_gamebanana_files(raw_files)
+        return [
+            resolution
+            for file in files
+            if (
+                resolution := self._build_download_resolution(
+                    mod_id,
+                    kind,
+                    gamebanana_id,
+                    game,
+                    profile,
+                    {**file, **supported.get(str(file.get("_idRow")), {})},
+                )
+            )
+        ]
+
+    @staticmethod
+    def _latest_gamebanana_files(raw_files: Any) -> list[dict[str, Any]]:
+        files = [
+            file
+            for file in raw_files or []
+            if isinstance(file, dict)
+            and file.get("_idRow")
+            and file.get("_bHasContents", True)
+            and not file.get("_bIsArchived", False)
+        ]
+        file_versions = [
+            (file, str(file.get("_sVersion") or file.get("version") or "").strip())
+            for file in files
+        ]
+        versioned = [(file, version) for file, version in file_versions if version]
+        if not versioned:
+            return [
+                max(
+                    files,
+                    key=lambda file: (
+                        GameBananaAPI._safe_int(file.get("_tsDateAdded")) or 0,
+                        GameBananaAPI._safe_int(file.get("_idRow")) or 0,
+                    ),
+                )
+            ] if files else []
+        latest = max(
+            (version for _, version in versioned),
+            key=GameBananaAPI._gamebanana_version_key,
+        )
+        latest_key = GameBananaAPI._gamebanana_version_key(latest)
+        latest_files = [
+            file
+            for file, version in versioned
+            if GameBananaAPI._gamebanana_version_key(version) == latest_key
+        ]
+        latest_timestamp = max(
+            (GameBananaAPI._safe_int(file.get("_tsDateAdded")) or 0)
+            for file in latest_files
+        )
+        newer_unversioned = [
+            file
+            for file, version in file_versions
+            if not version
+            and (GameBananaAPI._safe_int(file.get("_tsDateAdded")) or 0)
+            > latest_timestamp
+        ]
+        return sorted(
+            [*latest_files, *newer_unversioned],
+            key=lambda file: GameBananaAPI._safe_int(file.get("_tsDateAdded")) or 0,
+            reverse=True,
+        )
+
+    @staticmethod
+    def _gamebanana_version_key(version: str) -> tuple[int, ...]:
+        parts = [int(part) for part in re.findall(r"\d+", version)]
+        while len(parts) > 1 and parts[-1] == 0:
+            parts.pop()
+        return tuple(parts) or (0,)
+
+    def _build_download_resolution(
+        self,
+        dependency_id: str,
+        kind: str,
+        mod_id: int,
+        game: str,
+        profile: dict[str, Any],
+        selected: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        file_id = selected.get("id") or selected.get("_idRow")
+        download_url = selected.get("download_url") or selected.get("_sDownloadUrl")
+        if not download_url and file_id:
+            download_url = f"https://gamebanana.com/dl/{file_id}"
+        if not download_url or not file_id:
+            return None
+        submitter = profile.get("_aSubmitter")
+        category_data = profile.get("_aRootCategory") or profile.get("_aCategory")
+        category = (
+            category_data.get("_sName") or category_data.get("name")
+            if isinstance(category_data, dict)
+            else category_data if isinstance(category_data, str) else None
+        )
+        return {
+            "id": dependency_id,
+            "display_name": str(profile.get("_sName") or dependency_id),
+            "source_url": str(download_url),
+            "canonical_key": f"gb_{kind}_{mod_id}_{file_id}",
+            "metadata": {
+                "gb_mod_id": mod_id,
+                "item_type": kind,
+                "gb_file_id": file_id,
+                "file_name": selected.get("name") or selected.get("_sFile"),
+                "size_bytes": selected.get("size_bytes") or selected.get("_nFilesize"),
+                "md5": selected.get("md5") or selected.get("_sMd5Checksum"),
+                "timestamp": selected.get("timestamp") or selected.get("_tsDateAdded"),
+                "download_count": selected.get("download_count")
+                or selected.get("_nDownloadCount"),
+                "analysis_state": selected.get("analysis_state")
+                or selected.get("_sAnalysisState"),
+                "analysis_result": selected.get("analysis_result")
+                or selected.get("_sAnalysisResult"),
+                "av_state": selected.get("av_state") or selected.get("_sAvState"),
+                "av_result": selected.get("av_result") or selected.get("_sAvResult"),
+                "compatibility": selected.get("compatibility"),
+                "name": profile.get("_sName"),
+                "authors": (
+                    [submitter.get("_sName")]
+                    if isinstance(submitter, dict) and submitter.get("_sName")
+                    else []
+                ),
+                "version": selected.get("version")
+                or selected.get("_sVersion")
+                or profile.get("_sVersion"),
+                "description": selected.get("description")
+                or selected.get("_sDescription")
+                or profile.get("_sDescription"),
+                "homepage": profile.get("_sProfileUrl")
+                or f"https://gamebanana.com/{'wips' if kind == 'wip' else 'mods'}/{mod_id}",
+                "icon": self.extract_icon(profile.get("_aPreviewMedia")),
+                "tags": self.extract_tags(profile.get("_aTags")),
+                "category": category,
+                "game": game,
+            },
+        }
+
     @staticmethod
     def _safe_int(value: Any) -> int | None:
         try:
@@ -377,7 +581,7 @@ class GameBananaAPI:
         return {
             "id": file_id,
             "name": self._first_value(sources, "_sFile", f"file_{file_id}"),
-            "version": self._first_value(sources, "_sVersion", "1.0.0"),
+            "version": self._first_value(sources, "_sVersion", ""),
             "description": self._first_value(sources, "_sDescription", ""),
             "download_url": self._first_value(sources, "_sDownloadUrl"),
             "size_bytes": size_val or 0,
@@ -703,9 +907,11 @@ class GameBananaAPI:
             id=f"gb_{'wip' if is_wip else 'mod'}_{mod_id}",
             name=gb_data.get("_sName", "Unknown Mod"),
             version=gb_data.get("_sVersion", "") or "1.0.0",
-            author=submitter.get("_sName", "Unknown")
-            if isinstance(submitter, dict)
-            else "Unknown",
+            authors=(
+                [submitter.get("_sName") or "Unknown"]
+                if isinstance(submitter, dict)
+                else ["Unknown"]
+            ),
             description=description,
             game_version="Not specified",
             description_url=gb_data.get("_sTextUrl", ""),
@@ -719,7 +925,6 @@ class GameBananaAPI:
             is_nsfw=is_nsfw,
             has_files=has_files,
             is_wip=is_wip,
-            files={},
             demo_url=None,
             demo_version=None,
             created_date=self.timestamp_to_date(gb_data.get("_tsDateAdded")) or "N/A",

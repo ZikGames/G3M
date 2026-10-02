@@ -11,6 +11,56 @@ from utils.mod.utils import get_mod_id, get_mod_name
 
 class TestUiUtils:
     """Tests for utils."""
+    @pytest.mark.parametrize("direction", ["fade_in", "fade_out"])
+    @pytest.mark.parametrize("preserve_effect", [False, True])
+    def test_fade_finishes_and_releases_animation(self, qtbot, direction, preserve_effect):
+        from PyQt6 import sip
+        from PyQt6.QtWidgets import QWidget
+
+        from ui.utils.ui_utils import UIAnimator
+
+        parent = QWidget()
+        qtbot.addWidget(parent)
+        widget = QWidget(parent)
+        widget._preserve_fade_effect = preserve_effect
+        animation = getattr(UIAnimator, direction)(widget, duration=20)
+        qtbot.waitUntil(lambda: widget._fade_anim is None)
+
+        assert widget.isHidden() == (direction == "fade_out")
+        if preserve_effect:
+            assert widget.graphicsEffect().opacity() == (0.0 if direction == "fade_out" else 1.0)
+        else:
+            assert widget.graphicsEffect() is None
+        qtbot.waitUntil(lambda: sip.isdeleted(animation))
+
+    @pytest.mark.parametrize("direction", ["fade_in", "fade_out"])
+    def test_deleting_parent_during_fade_removes_animation(self, qtbot, direction):
+        from PyQt6 import sip
+        from PyQt6.QtWidgets import QWidget
+
+        from ui.utils.ui_utils import UIAnimator
+
+        parent = QWidget()
+        widget = QWidget(parent)
+        animation = getattr(UIAnimator, direction)(widget, duration=100)
+        sip.delete(parent)
+        assert sip.isdeleted(widget)
+        assert sip.isdeleted(animation)
+        qtbot.wait(150)
+
+    def test_zero_duration_fade_cleans_up(self, qtbot):
+        from PyQt6 import sip
+        from PyQt6.QtWidgets import QWidget
+
+        from ui.utils.ui_utils import UIAnimator
+
+        widget = QWidget()
+        qtbot.addWidget(widget)
+        animation = UIAnimator.fade_out(widget, duration=0)
+        assert widget._fade_anim is None
+        assert widget.graphicsEffect() is None
+        qtbot.waitUntil(lambda: sip.isdeleted(animation))
+
     def test_stop_existing_fade_clears_animation_reference_and_deletes_anim(self, qapp):
         """Checks that stopping existing fade clears animation reference and deletes anim."""
         from PyQt6.QtWidgets import QWidget

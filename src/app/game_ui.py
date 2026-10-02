@@ -130,6 +130,7 @@ def update_settings_library_tab(w):
     update_path_inputs_ui(w)
     update_custom_executable_ui(w, current_game_id)
     update_steam_launch_checkbox_state(w)
+    update_portproton_ui(w)
 
 
 def refill_game_combo(combo, entries, current_game_id: str) -> None:
@@ -220,7 +221,6 @@ def update_steam_launch_checkbox_state(w) -> None:
     has_steam_app = bool(w.app_state.game_mode.steam_app_id)
     w.launch_via_steam_checkbox.setEnabled(has_steam_app and not should_block)
     if not has_steam_app:
-        w.launch_via_steam_checkbox.setChecked(False)
         w.launch_via_steam_checkbox.setToolTip(tr("games.no_steam_app_tooltip"))
     elif should_block:
         w.launch_via_steam_checkbox.setChecked(False)
@@ -649,7 +649,10 @@ def update_path_inputs_ui(w):
 
 
 def update_portproton_ui(w):
-    is_steam_launch = w.app_state.local_config.get("launch_via_steam", False)
+    is_steam_launch = (
+        w.app_state.local_config.get("launch_via_steam", False)
+        and bool(w.app_state.game_mode.steam_app_id)
+    )
     if w.use_portproton_checkbox:
         w.use_portproton_checkbox.setEnabled(not is_steam_launch)
         if is_steam_launch:

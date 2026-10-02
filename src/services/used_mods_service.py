@@ -210,24 +210,6 @@ class UsedModsManager(QObject):
                     f"set_used_mod: Failed to save used mods state: {e}", exc_info=True
                 )
 
-    def set_mods_list(
-        self, chapter_id: str, mods_list: list[Any], save_state: bool = True
-    ) -> None:
-        if not mods_list:
-            if chapter_id in self.used_mods:
-                del self.used_mods[chapter_id]
-        else:
-            self.used_mods[chapter_id] = mods_list
-        self._normalize_stored_steps(chapter_id)
-        self.used_mod_changed.emit(chapter_id)
-        if save_state:
-            try:
-                self.save_used_mods_state()
-            except Exception as e:
-                logger.error(
-                    f"set_mods_list: Failed to save used mods state: {e}", exc_info=True
-                )
-
     def is_mod_used_for_chapter(self, mod_data, chapter_id: str) -> bool:
         if not mod_data or not (mod_id := get_mod_id(mod_data)):
             return False
@@ -607,7 +589,7 @@ class UsedModsManager(QObject):
             tab.tab_id: [
                 m
                 for m in mods_list
-                if hasattr(m, "get_chapter_data") and m.get_chapter_data(tab.tab_id)
+                if m.supports_section(tab.tab_id)
             ]
             for tab in gm.tabs
         }
@@ -625,13 +607,11 @@ class UsedModsManager(QObject):
                 [
                     mod
                     for mod in step
-                    if hasattr(mod, "get_chapter_data")
-                    and mod.get_chapter_data(tab.tab_id)
+                    if mod.supports_section(tab.tab_id)
                 ]
                 for step in default_steps
                 if any(
-                    hasattr(mod, "get_chapter_data")
-                    and mod.get_chapter_data(tab.tab_id)
+                    mod.supports_section(tab.tab_id)
                     for mod in step
                 )
             ]
@@ -678,21 +658,3 @@ class UsedModsManager(QObject):
         if not self.parent_widget:
             return
         update_steam_launch_checkbox_state(self.parent_widget)
-
-    def record_session_playtime(self, seconds: float) -> None:
-        if seconds <= 0:
-            return
-        mod_service = getattr(self.app_state, "mod_service", None)
-        if not mod_service:
-            return
-        active_mod_ids = []
-        seen = set()
-        for mods in self.used_mods.values():
-            for mod in mods:
-                mod_id = get_mod_id(mod)
-                if not mod_id or mod_id in seen or mod_id.startswith("local_"):
-                    continue
-                seen.add(mod_id)
-                active_mod_ids.append(mod_id)
-        if active_mod_ids:
-            mod_service.add_playtime_hours(active_mod_ids, seconds / 3600.0)

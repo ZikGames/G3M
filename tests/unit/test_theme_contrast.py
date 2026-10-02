@@ -4,7 +4,7 @@ from pathlib import Path
 
 from config.config import DEFAULT_COLORS
 
-THEMES_DIR = Path(__file__).resolve().parents[2] / "src" / "assets" / "themes"
+THEMES_DIR = Path(__file__).resolve().parents[2] / "catalog" / "themes"
 
 
 def _luminance(color: str) -> float:

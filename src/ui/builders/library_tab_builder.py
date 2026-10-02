@@ -514,7 +514,15 @@ class LibraryTabBuilder(QObject):
         layout.setSpacing(14)
         modding_tools_btn = create_modding_tools_button(self.app_state)
         downloads_btn = create_downloads_button(self.app_state)
+        update_mods_btn = QPushButton(tr("mod_updates.button", count=0))
+        update_mods_btn.setObjectName("update_mods_button")
+        update_mods_btn.setToolTip(tr("mod_updates.tooltip"))
+        update_mods_btn.setSizePolicy(
+            QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
+        )
+        update_mods_btn.setVisible(False)
         search_btn = create_search_button(self.app_state)
+        layout.addWidget(update_mods_btn)
         layout.addWidget(modding_tools_btn)
         layout.addWidget(downloads_btn)
         layout.addWidget(search_btn)
@@ -522,6 +530,7 @@ class LibraryTabBuilder(QObject):
             {
                 "library_downloads_button": downloads_btn,
                 "library_modding_tools_button": modding_tools_btn,
+                "update_mods_button": update_mods_btn,
                 "library_search_button": search_btn,
             }
         )

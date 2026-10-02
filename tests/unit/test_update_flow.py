@@ -10,18 +10,19 @@ from unittest.mock import Mock
 from config.config import APP_VERSION
 
 
-def test_get_update_info_returns_platform_specific_payload(app_state):
+def test_get_update_info_returns_platform_specific_payload(app_state, monkeypatch):
     """Checks that getting update info returns platform specific payload."""
     from services.updatecheck_service import UpdateChecker
 
     app_state.global_settings = {
         "launcher_files": {
             "version": "9.9.9",
-            "urls": {"linux": "https://example.com/g3m.tar.gz"},
+            "urls": {"linux-x86_64": "https://example.com/g3m.tar.gz"},
             "message": "Update",
         }
     }
     checker = UpdateChecker(app_state=app_state, feedback_service=Mock())
+    monkeypatch.setattr("services.updatecheck_service.ARCH", "x86_64")
 
     update_info = checker.get_update_info(system="Linux", beta_enabled=False)
 
@@ -42,13 +43,26 @@ def test_get_update_info_skips_current_version(app_state):
     app_state.global_settings = {
         "launcher_files": {
             "version": APP_VERSION,
-            "urls": {"linux": "https://example.com/g3m.tar.gz"},
+            "urls": {"linux-x86_64": "https://example.com/g3m.tar.gz"},
         }
     }
     checker = UpdateChecker(app_state=app_state, feedback_service=feedback_service)
 
     assert checker.get_update_info(system="Linux", beta_enabled=False) is None
     feedback_service.update_status.assert_called_once()
+
+
+def test_get_platform_key_normalizes_windows_and_linux_arm64(app_state, monkeypatch):
+    """Update URLs use the native architecture for every supported system."""
+    from services.updatecheck_service import UpdateChecker
+
+    checker = UpdateChecker(app_state=app_state, feedback_service=Mock())
+    monkeypatch.setattr("services.updatecheck_service.ARCH", "AMD64")
+    assert checker._get_platform_key("Windows") == "windows-x86_64"
+    monkeypatch.setattr("services.updatecheck_service.ARCH", "aarch64")
+    assert checker._get_platform_key("Linux") == "linux-arm64"
+    monkeypatch.setattr("services.updatecheck_service.ARCH", "arm64")
+    assert checker._get_platform_key("Darwin") == "macos-arm64"
 
 
 def test_check_for_updates_suppresses_status_update_failure_on_error(app_state, monkeypatch):
@@ -178,8 +192,8 @@ def test_announce_poll_warning_failure_returns_false(monkeypatch, caplog):
     assert "Update presenter: warning dialog failed" in caplog.text
 
 
-def test_windows_installer_forced_exit_is_logged(app_state, monkeypatch, caplog):
-    """Checks that the updater logs before using os._exit after launching installer."""
+def test_windows_installer_waits_for_clean_launcher_exit(app_state, monkeypatch, tmp_path):
+    """The elevated helper starts setup only after the launcher has exited."""
     from services import updatecheck_service
     from services.updatecheck_service import UpdateChecker
 
@@ -198,24 +212,48 @@ def test_windows_installer_forced_exit_is_logged(app_state, monkeypatch, caplog)
             )
         ),
     )
-    timer_callbacks = []
-
-    class _Timer:
-        daemon = False
-
-        def __init__(self, _delay, callback) -> None:
-            timer_callbacks.append(callback)
-
-        def start(self):
-            return None
-
-    monkeypatch.setattr(updatecheck_service.threading, "Timer", _Timer)
-    exit_mock = Mock()
-    monkeypatch.setattr(updatecheck_service.os, "_exit", exit_mock)
+    monkeypatch.setattr(updatecheck_service.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(updatecheck_service.time, "monotonic_ns", lambda: 1)
 
     assert checker._launch_windows_installer("C:/Temp/extracted") is True
-    with caplog.at_level(logging.INFO):
-        timer_callbacks[0]()
+    script_path = tmp_path / f"g3m_updater_{os.getpid()}_1.cmd"
+    script = script_path.read_text(encoding="ascii")
+    shell_execute = sys.modules["ctypes"].windll.shell32.ShellExecuteW
+    assert shell_execute.call_args.args == (
+        None,
+        "runas",
+        os.environ.get("COMSPEC", "cmd.exe"),
+        f'/d /c ""{script_path}" "C:/Temp/G3M-Installer.exe" "C:/Temp""',
+        "C:/Temp",
+        0,
+    )
+    assert f'set "G3M_PID={os.getpid()}"' in script
+    assert 'set "INSTALLER=%~1"' in script
+    assert 'set "UPDATE_DIR=%~2"' in script
+    assert "C:/Temp/G3M-Installer.exe" not in script
+    assert ":wait_for_g3m" in script
+    assert 'start "" /wait "%INSTALLER%"' in script
+    assert 'rmdir /s /q "%UPDATE_DIR%"' in script
+    assert not hasattr(checker, "_force_exit_after_installer_launch")
 
-    exit_mock.assert_called_once_with(0)
-    assert "Forced process exit after launching updater installer" in caplog.text
+
+def test_windows_update_keeps_installer_staging_for_its_helper(
+    app_state, monkeypatch, tmp_path
+):
+    """The helper, not the update worker, owns cleanup after setup starts."""
+    from services import updatecheck_service
+    from services.updatecheck_service import UpdateChecker
+
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    checker = UpdateChecker(app_state=app_state, feedback_service=Mock())
+    checker._download_archive = Mock(return_value=str(staging_dir / "update.zip"))
+    checker._extract_archive = Mock()
+    checker._launch_windows_installer = Mock(return_value=True)
+    monkeypatch.setattr(updatecheck_service.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(updatecheck_service.tempfile, "mkdtemp", lambda **_kwargs: str(staging_dir))
+
+    checker._update_worker({"version": "9.9.9"})
+
+    checker._launch_windows_installer.assert_called_once_with(str(staging_dir / "extracted"))
+    assert staging_dir.is_dir()

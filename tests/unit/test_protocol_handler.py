@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 from app.protocol_handler import (
     _enqueue_g3m_url,
+    _local_protocol_path,
     _parse_g3m_url,
     handle_one_click_install,
 )
@@ -21,6 +22,19 @@ class TestProtocolHandler:
         url = "g3m://http://example.com/mod.zip"
         result = _parse_g3m_url(url)
         assert result == "http://example.com/mod.zip"
+
+    def test_parse_g3m_url_valid_local_file(self, tmp_path):
+        archive = tmp_path / "mod.zip"
+        archive.write_bytes(b"archive")
+
+        assert _local_protocol_path(archive.as_uri()) == str(archive)
+
+    @patch("app.protocol_handler.os.path.isfile")
+    @patch("app.protocol_handler.os.name", "nt")
+    def test_local_protocol_path_rejects_network_share_before_probe(self, is_file):
+        assert _local_protocol_path("file:////server/share/mod.zip") is None
+
+        is_file.assert_not_called()
 
     def test_parse_legacy_protocol_url(self):
         """Checks that parsing legacy protocol url still works."""
@@ -213,6 +227,24 @@ class TestProtocolHandler:
         call_args = w.downloads_manager.enqueue_with_feedback.call_args
         assert call_args[1]['display_name'] == 'mod.zip'
         assert call_args[1]['source_url'] == 'https://example.com/mod.zip'
+
+    @patch('ui.dialogs.confirm_external_download_dialog.ConfirmExternalDownloadDialog')
+    @patch('app.protocol_handler.tr')
+    def test_enqueue_g3m_url_local_file_success(self, mock_tr, mock_dialog, tmp_path):
+        mock_tr.side_effect = lambda key, *args: key
+        mock_dialog.return_value.exec.return_value = True
+        archive = tmp_path / "local mod.zip"
+        archive.write_bytes(b"archive")
+        w = Mock()
+        w.feedback_service = Mock()
+        w.app_state = Mock()
+        w.downloads_manager = Mock()
+
+        _enqueue_g3m_url(w, f"g3m://{archive.as_uri()}")
+
+        call_args = w.downloads_manager.enqueue_with_feedback.call_args
+        assert call_args[1]['source_kind'].value == 'local_file'
+        assert call_args[1]['source_file_path'] == str(archive)
 
     @patch('ui.dialogs.confirm_external_download_dialog.ConfirmExternalDownloadDialog')
     @patch('app.protocol_handler.tr')

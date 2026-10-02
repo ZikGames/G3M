@@ -10,12 +10,15 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from types import SimpleNamespace
 
-from models.execution_plan import LaunchPlan
 from models.game_modes import get_game
 from services.background_operations import background_operations
 from services.game_detection_service import (
@@ -31,12 +34,15 @@ from services.plugins.shortcut_service import (
     build_headless_plugin_runtime,
     execute_shortcut_plugin_hook,
 )
+from utils.mod.archive import ArchiveVirtualPath
 from utils.native_integration import open_url_native
 from utils.path_utils import (
     find_chapter_resource_dir,
     get_profile_mods_root,
     get_user_data_root,
+    resolve_execution_runtime,
     resolve_game_executable,
+    safe_profile_name,
 )
 from utils.process_utils import (
     build_external_process_env,
@@ -44,8 +50,6 @@ from utils.process_utils import (
     resolve_portproton_command,
     resolve_wine_command,
 )
-
-logger = logging.getLogger(__name__)
 
 logger = logging.getLogger("shortcut_runner")
 
@@ -94,6 +98,7 @@ def _load_config() -> dict:
 def _find_mod_source_dir(mod_id: str, local_config: dict) -> str | None:
     """Resolve a mod id to its root directory on disk."""
     from config.config import MOD_CONFIG_FILENAME
+    from utils.mod.config import load_mod_config
 
     mods_dir = get_profile_mods_root(local_config.get("active_profile", "Default"))
     if not os.path.isdir(mods_dir):
@@ -105,97 +110,190 @@ def _find_mod_source_dir(mod_id: str, local_config: dict) -> str | None:
         config_path = os.path.join(folder_path, MOD_CONFIG_FILENAME)
         if os.path.isfile(config_path):
             try:
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = json.load(f)
-                if isinstance(cfg, dict):
-                    from utils.mod.config_parser import normalize_mod_config_data
-
-                    normalize_mod_config_data(cfg, mod_root_path=folder_path)
-                if isinstance(cfg, dict) and cfg.get("id") == mod_id:
+                if load_mod_config(config_path).get("id") == mod_id:
                     return folder_path
-            except Exception as e:
+            except (OSError, ValueError) as error:
                 logger.debug(
-                    f"_find_mod_source_dir: failed to inspect {config_path}: {e}",
+                    "_find_mod_source_dir: failed to inspect %s: %s", config_path, error,
                     exc_info=True,
                 )
-
-    for d in os.listdir(mods_dir):
-        if d == mod_id or d.lower() == mod_id.lower():
-            candidate = os.path.join(mods_dir, d)
-            if os.path.isdir(candidate):
-                return candidate
     return None
 
 
-def _load_installed_mod(mod_id: str, local_config: dict):
-    """Load one installed mod for a headless plan without constructing the GUI."""
-    from models.mod_models import LocalModInfo
-    from utils.mod.config_parser import normalize_mod_config_data
-
-    mod_root = _find_mod_source_dir(mod_id, local_config)
-    if not mod_root:
-        return None
-    config_path = os.path.join(mod_root, "mod_config.json")
-    try:
-        with open(config_path, encoding="utf-8") as handle:
-            config_data = json.load(handle)
-        if not isinstance(config_data, dict):
-            return None
-        normalize_mod_config_data(config_data, mod_root_path=mod_root)
-        return LocalModInfo.from_dict(config_data)
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
-        logger.error('Failed to load mod "%s": %s', mod_id, e, exc_info=True)
-        return None
-
-
-class _HeadlessModService:
-    def __init__(self, local_config: dict) -> None:
-        self._local_config = local_config
-
-    def get_mod_folder_path(self, mod_id: str) -> str | None:
-        return _find_mod_source_dir(mod_id, self._local_config)
-
-
-def _execute_patch_plan(plan, game_path: str, game_mode, local_config: dict):
-    """Execute a shortcut plan through the same patcher used by GUI launches."""
-    from types import SimpleNamespace
-
-    from services.g3mtool_patching_service import G3MToolPatchingService
-
-    app_state = SimpleNamespace(
-        game_mode=game_mode,
-        local_config=local_config,
-        config_dir=os.path.join(get_user_data_root(), "settings"),
+def _execute_operation_plan(
+    mod_ids: tuple[str, ...],
+    game_path: str,
+    game_mode,
+    local_config: dict,
+    *,
+    merge_steps: Sequence[Sequence[str]] = (),
+    legacy_sections: Mapping[str, Sequence[str]] | None = None,
+):
+    """Execute a shortcut plan through strict current configs only."""
+    from services.mod_operation_executor import (
+        ModOperationExecutor,
+        ModOperationJournal,
     )
-    patcher = G3MToolPatchingService(app_state, _HeadlessModService(local_config), None)
-    patcher.set_override_game_path(game_path)
-    patcher._session_manifest_path = os.path.join(app_state.config_dir, "session.lock")
-    cache = {}
+    from services.mod_operation_support import (
+        create_g3mtool_merger,
+        create_g3mtool_patcher,
+        direct_operation_paths_preapproved,
+        format_direct_operation_plan_paths,
+    )
+    from utils.mod.config import load_mod_config
+    from utils.mod.operation_plan import ModPathContext, build_profile_operation_plan
 
-    def resolve(mod_id: str):
-        if mod_id not in cache:
-            cache[mod_id] = _load_installed_mod(mod_id, local_config)
-        return cache[mod_id]
-
-    if not patcher.process_patch_plan(plan, resolve, is_modpack=False):
-        patcher.restore_all_backups()
-        patcher.cleanup(force=True)
+    journal_root = Path(get_user_data_root()) / "settings" / "operation-shortcut-session"
+    if not _recover_shortcut_operation_session(journal_root, ModOperationJournal):
         return None
-    return patcher
-
-
-def _restore_patch_session(patcher) -> None:
-    """Restore a completed/failed shortcut session exactly once."""
-    if patcher is None:
-        return
-    logger.info("Restoring backups...")
+    ordered_ids = tuple(dict.fromkeys(mod_ids))
+    configs: dict[str, dict[str, object]] = {}
+    contexts: dict[str, ModPathContext] = {}
+    execution_runtime = resolve_execution_runtime(
+        _get_executable_path(game_mode, local_config, game_path), platform.system()
+    )
+    for mod_id in ordered_ids:
+        mod_root = _find_mod_source_dir(mod_id, local_config)
+        if not mod_root:
+            logger.error('Current config for shortcut mod "%s" was not found', mod_id)
+            return None
+        config_path = os.path.join(mod_root, "mod_config.json")
+        try:
+            configs[mod_id] = load_mod_config(config_path)
+        except (OSError, ValueError) as error:
+            logger.error('Invalid current shortcut mod "%s": %s', mod_id, error)
+            return None
+        contexts[mod_id] = ModPathContext.create(
+            mod_path=mod_root,
+            game_path=game_path,
+            game_data_path=game_mode.get_data_path(local_config),
+            user_path=Path.home(),
+            runtime=execution_runtime,
+        )
+    operation_plan = build_profile_operation_plan(
+        configs, contexts, ordered_ids, merge_steps=merge_steps
+    )
+    if legacy_sections:
+        operation_plan = _filter_legacy_shortcut_operations(
+            operation_plan, legacy_sections, game_mode.game_id, Path(game_path)
+        )
+    if operation_plan.has_errors:
+        logger.error("Invalid operation shortcut operation: %s", operation_plan.findings[0].message)
+        return None
+    direct_path_details = format_direct_operation_plan_paths(operation_plan)
+    if direct_path_details and not direct_operation_paths_preapproved(local_config):
+        logger.error(
+            "Shortcut operation uses direct absolute paths and requires confirmation in G3M:\n%s\n"
+            "Open G3M, review the mod paths, then disable only this warning if you want "
+            "future shortcuts to use these paths without a prompt.",
+            direct_path_details,
+        )
+        return None
+    patcher: Callable[[Path, Path, Path], bool] | None = None
+    if any(operation.type == "patch" for operation in operation_plan.operations):
+        patcher = create_g3mtool_patcher()
+    merger = create_g3mtool_merger(SimpleNamespace(local_config=local_config))
     try:
-        patcher.restore_all_backups()
-        logger.info("Backups restored successfully")
-    except Exception as e:
-        logger.error("Failed to restore backups: %s", e, exc_info=True)
-    finally:
-        patcher.cleanup(force=True)
+        return ModOperationExecutor(
+            journal_root, patcher=patcher, merger=merger
+        ).execute(operation_plan)
+    except Exception as error:
+        logger.error("shortcut operation execution failed: %s", error, exc_info=True)
+        return None
+
+
+def _filter_legacy_shortcut_operations(
+    operation_plan,
+    legacy_sections: Mapping[str, Sequence[str]],
+    game_id: str,
+    game_path: Path,
+):
+    """Keep legacy chapter shortcut selections scoped to their selected targets."""
+    if game_id != "deltarune":
+        return operation_plan
+    selected_by_mod: dict[str, set[str]] = {}
+    for section_id, mod_ids in legacy_sections.items():
+        section = _canonical_legacy_section(section_id)
+        if section is None:
+            continue
+        for mod_id in mod_ids:
+            selected_by_mod.setdefault(mod_id, set()).add(section)
+    if not selected_by_mod:
+        return operation_plan
+    operations = [
+        operation
+        for operation in operation_plan.operations
+        if _legacy_operation_is_selected(operation, selected_by_mod, game_path)
+    ]
+    excluded_indices = {operation.index for operation in operation_plan.operations} - {
+        operation.index for operation in operations
+    }
+    findings = tuple(
+        finding for finding in operation_plan.findings
+        if finding.operation_index not in excluded_indices
+    )
+    return type(operation_plan)(tuple(operations), findings)
+
+
+def _canonical_legacy_section(section_id: str) -> str | None:
+    if section_id.startswith("chapter_") and section_id[8:].isdecimal():
+        return f"deltarune_{section_id[8:]}"
+    if re.fullmatch(r"deltarune_\d+", section_id):
+        return section_id
+    return None
+
+
+def _legacy_operation_is_selected(operation, selected_by_mod: Mapping[str, set[str]], game_path: Path) -> bool:
+    selected_sections = selected_by_mod.get(operation.mod_id or "")
+    target = operation.target
+    if not selected_sections or not isinstance(target, (Path, ArchiveVirtualPath)):
+        return True
+    target_path = target.archive if isinstance(target, ArchiveVirtualPath) else target
+    try:
+        relative = target_path.relative_to(game_path)
+    except ValueError:
+        return True
+    section = "deltarune_0"
+    target_parts = relative.parts
+    if isinstance(target, ArchiveVirtualPath):
+        target_parts += tuple(part for part in target.member.split("/") if part)
+    for part in target_parts:
+        match = re.fullmatch(r"chapter(\d+)_(?:windows|mac)", part, re.IGNORECASE)
+        if match:
+            section = f"deltarune_{match.group(1)}"
+            break
+    return section in selected_sections
+
+
+def _recover_shortcut_operation_session(journal_root: Path, journal_type) -> bool:
+    """Recover an interrupted shortcut before starting a replacement session."""
+    if not (journal_root / "manifest.json").is_file():
+        return True
+    try:
+        journal = journal_type.load(journal_root)
+        if journal.state not in {"restored", "retired"}:
+            journal.restore()
+        return True
+    except Exception as error:
+        logger.error(
+            "Shortcut recovery needs attention and was not overwritten: %s", error,
+            exc_info=True,
+        )
+        return False
+
+
+def _restore_operation_session(journal) -> bool:
+    """Restore a completed shortcut operation session exactly once."""
+    if journal is None:
+        return True
+    logger.info("Restoring operation session...")
+    try:
+        journal.restore()
+        logger.info("Operation session restored successfully")
+        return True
+    except Exception as error:
+        logger.error("Failed to restore operation session: %s", error, exc_info=True)
+        return False
 
 
 def _get_executable_path(game_mode, local_config: dict, game_path: str) -> str | None:
@@ -307,8 +405,9 @@ def _launch_game(
     command = [launch_target]
     creationflags = 0
     launch_env = build_external_process_env(system=system)
+    execution_runtime = resolve_execution_runtime(launch_target, system)
 
-    if system == "Darwin":
+    if system == "Darwin" and execution_runtime == "macos" and launch_target.endswith(".app"):
         command = ["open", "-W", launch_target]
         try:
             process = subprocess.Popen(command)
@@ -319,7 +418,7 @@ def _launch_game(
             logger.error("Launch failed: %s | raw=%s", friendly_error, e, exc_info=True)
             raise RuntimeError(friendly_error) from e
     else:
-        if system == "Linux" and launch_target.lower().endswith(".exe"):
+        if system != "Windows" and execution_runtime == "windows":
             use_portproton = shortcut_config.get("use_portproton", False)
             if use_portproton:
                 command = [
@@ -390,6 +489,89 @@ def _parse_shortcut_arg(shortcut_arg: str) -> dict:
     return json.loads(shortcut_arg)
 
 
+def _shortcut_mod_ids(shortcut_config: dict) -> tuple[str, ...]:
+    """Read current and legacy shortcut mod selections."""
+    raw_mod_ids = shortcut_config.get("mod_ids")
+    if raw_mod_ids is None:
+        launch_plan = shortcut_config.get("launch_plan")
+        patch_plan = launch_plan.get("patch_plan") if isinstance(launch_plan, Mapping) else None
+        sections = (
+            patch_plan.get("sections", patch_plan.get("chapters", {}))
+            if isinstance(patch_plan, Mapping)
+            else shortcut_config.get("chapter_mods", {})
+        )
+        raw_mod_ids = []
+        if isinstance(sections, Mapping):
+            for _section, values in sorted(sections.items(), key=lambda item: str(item[0])):
+                steps = values if isinstance(values, list) else [values]
+                for step in steps:
+                    mod_ids = step if isinstance(step, list) else [step]
+                    raw_mod_ids.extend(mod_id for mod_id in mod_ids if mod_id not in (None, ""))
+    if not isinstance(raw_mod_ids, list) or any(
+        not isinstance(mod_id, str) or not mod_id for mod_id in raw_mod_ids
+    ):
+        raise ValueError("Shortcut mod_ids must be an array of mod IDs")
+    return tuple(dict.fromkeys(raw_mod_ids))
+
+
+def _shortcut_legacy_sections(shortcut_config: dict) -> dict[str, tuple[str, ...]]:
+    """Return current or legacy shortcut section assignments."""
+    if "section_mod_ids" in shortcut_config:
+        sections = shortcut_config["section_mod_ids"]
+        selected_ids = _shortcut_mod_ids(shortcut_config)
+        if not isinstance(sections, dict) or any(
+            not isinstance(section, str)
+            or (shortcut_config.get("game_id") == "deltarune" and _canonical_legacy_section(section) is None)
+            or not isinstance(mod_ids, list)
+            or any(not isinstance(mod_id, str) or mod_id not in selected_ids for mod_id in mod_ids)
+            for section, mod_ids in sections.items()
+        ):
+            raise ValueError("Shortcut section_mod_ids must contain selected mod IDs")
+        assigned_ids = {mod_id for mod_ids in sections.values() for mod_id in mod_ids}
+        if assigned_ids != set(selected_ids):
+            raise ValueError("Shortcut section_mod_ids must assign every selected mod")
+        return {section: tuple(dict.fromkeys(mod_ids)) for section, mod_ids in sections.items() if mod_ids}
+    if shortcut_config.get("mod_ids") is not None:
+        return {}
+    launch_plan = shortcut_config.get("launch_plan")
+    patch_plan = launch_plan.get("patch_plan") if isinstance(launch_plan, Mapping) else None
+    sections = (
+        patch_plan.get("sections", patch_plan.get("chapters", {}))
+        if isinstance(patch_plan, Mapping)
+        else shortcut_config.get("chapter_mods", {})
+    )
+    if not isinstance(sections, Mapping):
+        return {}
+    selected: dict[str, tuple[str, ...]] = {}
+    for section_id, values in sections.items():
+        if not isinstance(section_id, str):
+            continue
+        steps = values if isinstance(values, list) else [values]
+        mod_ids = tuple(
+            mod_id
+            for step in steps
+            for mod_id in (step if isinstance(step, list) else [step])
+            if isinstance(mod_id, str) and mod_id
+        )
+        if mod_ids:
+            selected[section_id] = mod_ids
+    return selected
+
+
+def _shortcut_merge_steps(
+    shortcut_config: dict, mod_ids: tuple[str, ...]
+) -> tuple[tuple[str, ...], ...]:
+    raw_steps = shortcut_config.get("merge_steps", [])
+    if not isinstance(raw_steps, list) or any(
+        not isinstance(step, list)
+        or any(not isinstance(mod_id, str) or not mod_id for mod_id in step)
+        or any(mod_id not in mod_ids for mod_id in step)
+        for step in raw_steps
+    ):
+        raise ValueError("Shortcut merge_steps must contain selected mod IDs")
+    return tuple(tuple(step) for step in raw_steps if len(step) > 1)
+
+
 def run_shortcut(shortcut_arg: str):
     """Main entry point for headless shortcut execution.
 
@@ -400,9 +582,8 @@ def run_shortcut(shortcut_arg: str):
         "launch_via_steam": false,
         "use_portproton": false,
         "direct_launch_chapter": "",
-        "launch_plan": {"patch_plan": {"sections": {...}}}
+        "mod_ids": ["first-mod", "second-mod"]
       }
-    Legacy ``chapter_mods`` configs remain supported.
     """
     _configure_logging()
     logger.info("=== G3M Shortcut Runner ===")
@@ -413,19 +594,24 @@ def run_shortcut(shortcut_arg: str):
         logger.error(f"Invalid shortcut config: {e}")
         sys.exit(1)
 
-    try:
-        launch_plan = LaunchPlan.from_shortcut_config(shortcut_config)
-    except (TypeError, ValueError) as e:
-        logger.error("Invalid launch plan: %s", e)
+    if not isinstance(shortcut_config, dict):
+        logger.error("Invalid shortcut config")
         sys.exit(1)
-    game_id = launch_plan.game_id
-    is_chapter_mode = launch_plan.chapter_mode
+    game_id = str(shortcut_config.get("game_id") or "")
+    is_chapter_mode = bool(shortcut_config.get("chapter_mode", False))
+    try:
+        mod_ids = _shortcut_mod_ids(shortcut_config)
+        merge_steps = _shortcut_merge_steps(shortcut_config, mod_ids)
+        selected_sections = _shortcut_legacy_sections(shortcut_config)
+    except ValueError as error:
+        logger.error("%s", error)
+        sys.exit(1)
 
     logger.info(
-        "Config: game=%s, chapter_mode=%s, patch_plan=%s",
+        "Config: game=%s, chapter_mode=%s, mod_ids=%s",
         game_id,
         is_chapter_mode,
-        launch_plan.patch_plan.to_dict()["sections"] or "vanilla",
+        mod_ids or "vanilla",
     )
 
     game_mode = get_game(game_id)
@@ -434,10 +620,24 @@ def run_shortcut(shortcut_arg: str):
         sys.exit(1)
 
     local_config = _load_config()
+    profile_name = shortcut_config.get("active_profile")
+    if profile_name is not None:
+        if not isinstance(profile_name, str) or safe_profile_name(profile_name) != profile_name:
+            logger.error("Invalid shortcut profile name")
+            sys.exit(1)
+        local_config["active_profile"] = profile_name
     game_path = game_mode.get_game_path(local_config)
     if not game_path or not os.path.isdir(game_path):
         logger.error(f"Game path not found: {game_path}")
         sys.exit(1)
+    if mod_ids:
+        from services.mod_config_migration_service import migrate_managed_mods
+
+        migration = migrate_managed_mods(
+            get_profile_mods_root(local_config.get("active_profile", "Default"))
+        )
+        for issue in migration.issues:
+            logger.warning("Managed mod migration failed for %s: %s", issue.path, issue.message)
     shortcut_plugin_context = ShortcutPluginContext.from_shortcut_config(
         shortcut_config
     )
@@ -458,25 +658,52 @@ def run_shortcut(shortcut_arg: str):
         shortcut_config,
     ):
         logger.warning("Shortcut launch blocked by a plugin before mod apply")
+        _restore_shortcut_state(
+            runtime_service, shortcut_plugin_context, shortcut_config, None
+        )
         sys.exit(1)
 
-    patcher = None
-    if launch_plan.patch_plan.sections:
-        patcher = _execute_patch_plan(
-            launch_plan.patch_plan, game_path, game_mode, local_config
+    journal = None
+    if mod_ids:
+        journal = _execute_operation_plan(
+            mod_ids,
+            game_path,
+            game_mode,
+            local_config,
+            merge_steps=merge_steps,
+            legacy_sections=selected_sections,
         )
-        if patcher is None:
+        if journal is None:
+            _restore_shortcut_state(
+                runtime_service, shortcut_plugin_context, shortcut_config, None
+            )
             sys.exit(1)
-        logger.info("All chapters patched successfully")
+        logger.info("All selected mod operations applied successfully")
 
-    if not execute_shortcut_plugin_hook(
+    after_apply_hook_succeeded = execute_shortcut_plugin_hook(
         runtime_service,
         "after_mod_apply_before_launch_shortcut",
         shortcut_plugin_context,
         shortcut_config,
-    ):
+    )
+    if journal is not None:
+        try:
+            journal.checkpoint()
+        except Exception as error:
+            logger.error(
+                "Shortcut operation checkpoint failed: %s",
+                error,
+                exc_info=True,
+            )
+            _restore_shortcut_state(
+                runtime_service, shortcut_plugin_context, shortcut_config, journal
+            )
+            sys.exit(1)
+    if not after_apply_hook_succeeded:
         logger.warning("Shortcut launch blocked by a plugin after mod apply")
-        _restore_patch_session(patcher)
+        _restore_shortcut_state(
+            runtime_service, shortcut_plugin_context, shortcut_config, journal
+        )
         sys.exit(1)
 
     logger.info("Launching game...")
@@ -489,22 +716,53 @@ def run_shortcut(shortcut_arg: str):
     else:
         logger.info("Game exited")
 
-    execute_shortcut_plugin_hook(
+    restored = _restore_shortcut_state(
+        runtime_service, shortcut_plugin_context, shortcut_config, journal
+    )
+
+    if launch_failed or not restored:
+        sys.exit(1)
+
+    logger.info("=== Shortcut Runner finished ===")
+
+
+def _restore_shortcut_state(
+    runtime_service,
+    shortcut_plugin_context: ShortcutPluginContext,
+    shortcut_config: dict,
+    journal,
+) -> bool:
+    plugin_restore = bool(
+        journal is not None
+        and runtime_service is not None
+        and shortcut_plugin_context.enabled
+        and runtime_service.has_enabled_hook("before_restore_after_exit_shortcut")
+    )
+    if plugin_restore:
+        try:
+            journal.verify_deployed()
+        except Exception:
+            logger.exception("Shortcut files changed externally; operation journal retained")
+            return False
+    if not execute_shortcut_plugin_hook(
         runtime_service,
         "before_restore_after_exit_shortcut",
         shortcut_plugin_context,
         shortcut_config,
-    )
-    _restore_patch_session(patcher)
-
-    execute_shortcut_plugin_hook(
+    ):
+        logger.error("Shortcut plugin restoration failed; operation journal retained")
+        return False
+    if plugin_restore:
+        try:
+            journal.checkpoint()
+        except Exception:
+            logger.exception("Shortcut plugin restoration checkpoint failed")
+            return False
+    if _restore_operation_session(journal) is False:
+        return False
+    return execute_shortcut_plugin_hook(
         runtime_service,
         "after_restore_after_exit_shortcut",
         shortcut_plugin_context,
         shortcut_config,
     )
-
-    if launch_failed:
-        sys.exit(1)
-
-    logger.info("=== Shortcut Runner finished ===")

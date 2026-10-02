@@ -4,7 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QPushButton, QTabWidget, QVBoxLayout, QWidget
+from PyQt6.QtGui import QImage
+from PyQt6.QtWidgets import QLabel, QPushButton, QTabWidget, QVBoxLayout, QWidget
 
 from app.dialogs import on_downloads_record_updated
 from controllers.plugins_controller import PluginsController
@@ -60,10 +61,47 @@ def test_plugin_download_button_disables_while_busy(qapp, temp_dir):
         )
     )
 
-    controller._apply_download_button_state(button, entry, True)
+    controller._apply_download_button_state(button, entry)
 
     assert button.isEnabled() is False
     assert button.text() == tr("downloads.status_downloading", progress=37)
+
+
+def test_compatible_legacy_plugin_card_keeps_its_display_metadata(qapp, temp_dir):
+    from models.plugin_models import InstalledPluginRecord, PluginManifest
+
+    controller, _downloads_manager, _catalog = _make_controller(temp_dir)
+    controller.app.plugins_widget = QWidget()
+    image = QImage(1, 1, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.white)
+    assert image.save(f"{temp_dir}/icon.png")
+    plugin = InstalledPluginRecord(
+        manifest=PluginManifest(
+            config_version=0,
+            id="legacy_plugin",
+            name="Legacy Plugin",
+            description="Still visible",
+            author="Author",
+            version="1.0.0",
+            api_version=">=1.1.0",
+            entry="",
+            icon="icon.png",
+        ),
+        path=temp_dir,
+        status="broken",
+        compatible=True,
+    )
+
+    card = controller._build_installed_card(plugin)
+
+    labels = card.findChildren(QLabel)
+    assert "Legacy Plugin" in [label.text() for label in labels]
+    assert "Still visible" in [label.text() for label in labels]
+    assert not card.findChildren(QLabel, "warningText")
+    assert any(
+        label.pixmap() is not None and not label.pixmap().isNull()
+        for label in labels
+    )
 
 
 def test_plugin_download_button_allows_incompatible_api(qapp, temp_dir):
@@ -80,14 +118,14 @@ def test_plugin_download_button_allows_incompatible_api(qapp, temp_dir):
     )
     button = QPushButton()
 
-    controller._apply_download_button_state(button, entry, False)
+    controller._apply_download_button_state(button, entry)
 
     assert button.isEnabled() is True
     assert button.text() == tr("plugins.action_download")
 
 
-def test_incompatible_plugin_download_requires_confirmation(qapp, temp_dir, monkeypatch):
-    """Checks that users can cancel an incompatible Plugin API download."""
+def test_incompatible_plugin_download_starts_without_confirmation(qapp, temp_dir):
+    """Checks that API mismatch does not block a plugin download."""
     controller, _downloads_manager, _catalog = _make_controller(temp_dir)
     controller.downloads_manager.enqueue_with_feedback = Mock()
     entry = CatalogPluginEntry(
@@ -100,46 +138,6 @@ def test_incompatible_plugin_download_requires_confirmation(qapp, temp_dir, monk
         download_link="https://example.com/plugin.zip",
     )
 
-    class FakeMessageBox:
-        Icon = SimpleNamespace(Warning="warning")
-        ButtonRole = SimpleNamespace(AcceptRole="accept")
-        StandardButton = SimpleNamespace(Cancel="cancel")
-        accept_next = False
-
-        def __init__(self, parent=None) -> None:
-            self.accept_button = object()
-            self.clicked = None
-
-        def setIcon(self, icon):  # noqa: N802
-            self.icon = icon
-
-        def setWindowTitle(self, title):  # noqa: N802
-            self.title = title
-
-        def setText(self, text):  # noqa: N802
-            self.text = text
-
-        def addButton(self, *args):  # noqa: N802
-            if len(args) == 2:
-                return self.accept_button
-            return object()
-
-        def setDefaultButton(self, button):  # noqa: N802
-            self.default = button
-
-        def exec(self):
-            self.clicked = self.accept_button if self.accept_next else object()
-
-        def clickedButton(self):  # noqa: N802
-            return self.clicked
-
-    monkeypatch.setattr("controllers.plugins_controller.QMessageBox", FakeMessageBox)
-
-    controller.download_plugin(entry)
-
-    controller.downloads_manager.enqueue_with_feedback.assert_not_called()
-
-    FakeMessageBox.accept_next = True
     controller.download_plugin(entry)
 
     controller.downloads_manager.enqueue_with_feedback.assert_called_once()
@@ -258,33 +256,6 @@ def test_plugin_installed_record_update_scans_on_main_thread(qapp, temp_dir):
     controller.render.assert_called_once()
 
 
-def test_plugin_external_refresh_reuses_existing_main_view_widget(qapp, temp_dir):
-    """Checks that settings refresh does not recreate unchanged plugin main views."""
-    controller, _downloads_manager, _catalog = _make_controller(temp_dir)
-    controller.app.main_tab_widget = QTabWidget()
-    controller.render = Mock()
-    controller._loaded = True
-    plugin = SimpleNamespace(
-        plugin_id="sample_plugin",
-        enabled=True,
-        manifest=SimpleNamespace(
-            name="Sample Plugin",
-            hooks=["main_view"],
-        ),
-    )
-    controller.plugin_runtime_service.list_installed_plugins.return_value = [plugin]
-    widget = QWidget()
-    controller.plugin_runtime_service.get_main_widget.return_value = widget
-
-    controller.refresh_main_tabs()
-    controller.handle_external_refresh()
-
-    controller.plugin_runtime_service.get_main_widget.assert_called_once()
-    assert controller.app.main_tab_widget.indexOf(widget) >= 0
-    assert controller.app.main_tab_widget.count() == 1
-    assert controller.render.call_count == 1
-
-
 def test_plugin_list_render_does_not_detach_removed_cards(qapp, temp_dir):
     """Checks that plugin list refresh cannot flash removed cards as windows."""
     controller, _downloads_manager, _catalog = _make_controller(temp_dir)
@@ -366,7 +337,7 @@ def test_window_download_record_callback_leaves_plugin_refresh_to_controller():
 
     on_downloads_record_updated(window, record)
 
-    window.plugins_ui.handle_external_refresh.assert_not_called()
+    assert window.plugins_ui.mock_calls == []
 
 
 def test_delete_plugin_reports_filesystem_error_with_plugin_path(temp_dir):

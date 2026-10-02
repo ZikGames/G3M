@@ -212,7 +212,6 @@ class SettingsUiController:
     def on_chapter_mode_changed(self, state):
         if not self.app_state.game_mode.is_multi_tab:
             return
-        self.app._previous_mode = getattr(self.app, "current_mode", "normal")
         is_chapter = bool(state)
         mode_changed = (self.app_state.current_mode == "chapter") != is_chapter
         if mode_changed:

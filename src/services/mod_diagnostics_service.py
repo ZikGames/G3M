@@ -1,32 +1,23 @@
-"""Read-only diagnostics for planned mod patching and file overrides."""
+"""Read-only diagnostics for the validated current mod operations."""
 
 from __future__ import annotations
 
-import json
 import os
-import zipfile
-from collections.abc import Callable, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
-from config.config import (
-    ARCHIVE_EXTENSIONS,
-    MOD_TYPE_G3MPATCH,
-    MOD_TYPE_OVERRIDES_ONLY,
-    SKIP_FILES,
+from utils.mod.archive import ArchiveVirtualPath
+from utils.mod.config import ModConfigValidationError
+from utils.mod.operation_plan import (
+    ModPathContext,
+    PlanFinding,
+    build_mod_operation_plan,
 )
-from utils.mod.utils import get_mod_id, get_mod_name
-from utils.patching import mod_content_utils as mod_content
-from utils.patching.file_override_utils import (
-    PATCH_FILE_EXTENSIONS,
-    iter_configured_override_entries,
-)
-from utils.patching.mod_resolve_utils import (
-    get_mod_configured_data_file,
-    get_mod_configured_extra_file_entries,
-    get_mod_source_dir,
-    get_target_dir,
-    has_mod_configured_chapter_entry,
+from utils.mod.relations import (
+    RelationFinding,
+    analyze_mod_relations,
+    recommend_mod_arrangement,
 )
 
 
@@ -50,6 +41,8 @@ class DiagnosticIssue:
     target_path: str = ""
     resource: str = ""
     recommendation: str = ""
+    code: str = ""
+    field_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -88,539 +81,206 @@ class DiagnosticsReport:
     file_impacts: tuple[FileImpact, ...]
     data_impacts: tuple[DataImpact, ...]
     issues: tuple[DiagnosticIssue, ...]
-
-
-class _NullLogger:
-    def debug(self, *_args, **_kwargs) -> None:
-        return
-
-    def warning(self, *_args, **_kwargs) -> None:
-        return
-
-    def info(self, *_args, **_kwargs) -> None:
-        return
+    recommended_steps: tuple[tuple[str, ...], ...] = ()
 
 
 class ModDiagnosticsService:
-    """Builds diagnostics reports without mutating game or mod files."""
+    """Build diagnostics from the same plan used to run selected mods."""
 
-    def __init__(
-        self,
-        app_state,
-        mod_service,
-        *,
-        target_dir_resolver: Callable[..., str | None] | None = None,
-        logger=None,
-    ) -> None:
+    def __init__(self, app_state, mod_service) -> None:
         self.app_state = app_state
         self.mod_service = mod_service
-        self._target_dir_resolver = cast(
-            Callable[..., str | None], target_dir_resolver or get_target_dir
-        )
-        self._logger = logger or _NullLogger()
 
-    def build_report(self, section_mods: dict[str, list[Any]]) -> DiagnosticsReport:
+    def build_operation_report(
+        self,
+        configs: Mapping[str, Mapping[str, object]],
+        steps: Sequence[Sequence[str]],
+        path_contexts: Mapping[str, ModPathContext],
+    ) -> DiagnosticsReport:
         file_impacts: list[FileImpact] = []
         data_impacts: list[DataImpact] = []
         issues: list[DiagnosticIssue] = []
-        selected_mod_ids = set()
+        selected_ids = tuple(dict.fromkeys(mod_id for step in steps for mod_id in step))
 
-        for section_id, mods in (section_mods or {}).items():
-            target_dir = self._resolve_target_dir(section_id)
-            if not target_dir:
+        for mod_id in selected_ids:
+            config = configs.get(mod_id)
+            context = path_contexts.get(mod_id)
+            if config is None or context is None:
                 issues.append(
                     DiagnosticIssue(
-                        severity="error",
-                        title="Target folder not found",
-                        explanation=f"Game target folder for {section_id} is not configured or does not exist.",
-                        recommendation="Check the game path in settings.",
+                        "error",
+                        "Selected mod is unavailable",
+                        f"G3M cannot resolve the current configuration or paths for {mod_id}.",
+                        (mod_id,),
+                        recommendation="Refresh the library or remove the unavailable mod from the profile.",
                     )
                 )
                 continue
-            target_data_path = mod_content.find_data_win(
-                target_dir,
-                game_id=getattr(
-                    getattr(self.app_state, "game_mode", None), "game_id", ""
-                ),
-            )
-            for mod_data in mods or []:
-                mod_id = str(get_mod_id(mod_data) or "")
-                selected_mod_ids.add(mod_id)
-                data_impacts.extend(
-                    self._collect_data_impacts(
-                        section_id, mod_data, target_dir, target_data_path, issues
+            name = str(config.get("name") or mod_id)
+            try:
+                plan = build_mod_operation_plan(config, context)
+            except ModConfigValidationError as error:
+                issues.extend(
+                    DiagnosticIssue(
+                        issue.severity,
+                        f"{issue.path}: {issue.code.replace('_', ' ')}",
+                        f"{name}: {issue.message}",
+                        (mod_id,),
+                        recommendation=issue.correction,
+                        code=issue.code,
+                        field_path=issue.path,
+                    )
+                    for issue in error.issues
+                )
+                continue
+            issues.extend(self._plan_issue(name, mod_id, finding) for finding in plan.findings)
+            for operation in plan.operations:
+                if operation.type == "info":
+                    continue
+                section = "/".join(operation.group_path) or "global"
+                source = str(operation.source)
+                target = operation.target
+                target_text = str(target) if target is not None else ""
+                if operation.type == "patch":
+                    data_impacts.append(
+                        DataImpact(
+                            section,
+                            mod_id,
+                            name,
+                            source,
+                            "patch",
+                            target_text or None,
+                            False,
+                            notes=("The patch backend validates this operation during preflight.",),
+                        )
+                    )
+                    continue
+                target_path = target.archive if isinstance(target, ArchiveVirtualPath) else target
+                existing = bool(target_path and target_path.exists())
+                target_root = str(target_path.parent) if target_path else ""
+                target_relative = target_path.name if target_path else ""
+                file_impacts.append(
+                    FileImpact(
+                        section,
+                        mod_id,
+                        name,
+                        source,
+                        target_root,
+                        target_relative,
+                        target_text,
+                        "modify" if existing else "add",
+                        existing,
+                        not operation.source_is_directory,
+                        (operation.type,),
                     )
                 )
-                file_impacts.extend(
-                    self._collect_file_impacts(section_id, mod_data, target_dir, issues)
-                )
 
-        file_impacts, conflict_issues = self._mark_file_conflicts(file_impacts)
-        issues.extend(conflict_issues)
-        data_overlap_issues = self._find_opaque_data_overlaps(data_impacts)
-        issues.extend(data_overlap_issues)
-        summary = DiagnosticsSummary(
-            selected_mods=len([mod_id for mod_id in selected_mod_ids if mod_id]),
-            new_files=sum(1 for impact in file_impacts if impact.operation == "add")
-            + sum(
-                counts.get("new", 0)
-                for impact in data_impacts
-                for counts in impact.resource_summary.values()
-            ),
-            modified_files=sum(
-                1
-                for impact in file_impacts
-                if impact.operation in {"modify", "replace"}
-            )
-            + len(data_impacts),
-            conflicts=len(conflict_issues) + len(data_overlap_issues),
-            data_files=len(data_impacts),
-            deep_analyzable_data_files=sum(
-                1 for impact in data_impacts if impact.deep_analysis_available
-            ),
-            issues=len(issues),
-        )
-        return DiagnosticsReport(
-            summary=summary,
-            file_impacts=tuple(file_impacts),
-            data_impacts=tuple(data_impacts),
-            issues=tuple(issues),
-        )
-
-    def _resolve_target_dir(self, section_id: str) -> str | None:
-        try:
-            return self._target_dir_resolver(
-                section_id,
-                self.app_state,
-                self._logger,
-            )
-        except TypeError:
-            return self._target_dir_resolver(section_id)
-
-    def _collect_data_impacts(
-        self,
-        section_id: str,
-        mod_data,
-        target_dir: str,
-        target_data_path: str | None,
-        issues: list[DiagnosticIssue],
-    ) -> list[DataImpact]:
-        patch_path = get_mod_configured_data_file(
-            mod_data,
-            section_id,
-            self.mod_service,
-            self.app_state,
-            self._logger,
-        )
-        mod_source_dir = get_mod_source_dir(
-            mod_data, section_id, self.mod_service, self.app_state, self._logger
-        )
-        patch_type = MOD_TYPE_OVERRIDES_ONLY
-        if patch_path and os.path.exists(patch_path):
-            patch_path, patch_type = mod_content.classify_patch_file(patch_path)
-        elif mod_source_dir:
-            patch_path, patch_type = self._classify_mod_source(mod_source_dir)
-        elif patch_path:
+        relation_findings = analyze_mod_relations(configs, steps)
+        issues.extend(self._relation_issue(finding) for finding in relation_findings)
+        arrangement = recommend_mod_arrangement(configs, steps)
+        if arrangement.feasible and arrangement.steps != tuple(tuple(step) for step in steps if step):
             issues.append(
                 DiagnosticIssue(
-                    severity="error",
-                    title="Configured DATA patch is missing",
-                    explanation=f"{get_mod_name(mod_data)} references a missing DATA patch.",
-                    affected_mods=(get_mod_name(mod_data),),
-                    target_path=patch_path,
-                    recommendation="Reinstall or edit the mod files.",
+                    "warning",
+                    "Recommended dependency arrangement",
+                    "The active dependencies can be arranged without violating a declared conflict.",
+                    tuple(mod_id for step in arrangement.steps for mod_id in step),
+                    recommendation="Apply the recommended priority steps before launching.",
+                    code="dependency_arrangement_recommended",
+                    field_path="dependencies",
                 )
             )
-        if patch_type == MOD_TYPE_OVERRIDES_ONLY:
-            return []
-        manifest = self._read_g3mpatch_manifest(patch_path) if patch_path else {}
-        return [
-            DataImpact(
-                section_id=section_id,
-                mod_id=str(get_mod_id(mod_data) or ""),
-                mod_name=get_mod_name(mod_data),
-                patch_path=patch_path,
-                patch_type=patch_type,
-                target_data_path=target_data_path
-                or os.path.join(target_dir, "data.win"),
-                deep_analysis_available=patch_type == MOD_TYPE_G3MPATCH,
-                manifest=manifest,
-                resource_summary=self._resource_summary_from_manifest(manifest),
-                resource_entries=self._resource_entries_from_manifest(manifest),
-                notes=()
-                if patch_type == MOD_TYPE_G3MPATCH
-                else ("Deep resource analysis is only available for .g3mpatch files.",),
-            )
-        ]
+        file_impacts, file_conflicts = self._mark_file_conflicts(file_impacts)
+        issues.extend(file_conflicts)
+        data_conflicts = self._data_conflicts(data_impacts)
+        issues.extend(data_conflicts)
+        summary = DiagnosticsSummary(
+            selected_mods=len(selected_ids),
+            new_files=sum(impact.operation == "add" for impact in file_impacts),
+            modified_files=sum(impact.operation == "modify" for impact in file_impacts) + len(data_impacts),
+            conflicts=len(file_conflicts) + len(data_conflicts) + sum(finding.code == "conflict_active" for finding in relation_findings),
+            data_files=len(data_impacts),
+            issues=len(issues),
+        )
+        return DiagnosticsReport(summary, tuple(file_impacts), tuple(data_impacts), tuple(issues), arrangement.steps if arrangement.feasible else ())
 
-    def _classify_mod_source(self, mod_source_dir: str) -> tuple[str | None, str]:
-        return mod_content.classify_mod_directory(mod_source_dir)
+    @staticmethod
+    def unavailable_report(message: str) -> DiagnosticsReport:
+        issue = DiagnosticIssue("error", "Current configuration is unavailable", message, recommendation="Refresh the library and resolve the highlighted migration error.")
+        return DiagnosticsReport(DiagnosticsSummary(issues=1), (), (), (issue,))
 
-    def _collect_file_impacts(
-        self,
-        section_id: str,
-        mod_data,
-        target_dir: str,
-        issues: list[DiagnosticIssue],
-    ) -> list[FileImpact]:
-        mod_source_dir = get_mod_source_dir(
-            mod_data, section_id, self.mod_service, self.app_state, self._logger
-        )
-        if not mod_source_dir:
-            return []
-        has_config_entry = has_mod_configured_chapter_entry(
-            mod_data,
-            section_id,
-            self.mod_service,
-            self.app_state,
-            self._logger,
-        )
-        configured_paths = (
-            get_mod_configured_extra_file_entries(
-                mod_data,
-                section_id,
-                self.mod_service,
-                self.app_state,
-                self._logger,
-            )
-            if has_config_entry
-            else None
-        )
-        if configured_paths is not None:
-            mod_root_dir = self.mod_service.get_mod_folder_path(get_mod_id(mod_data))
-            return self._collect_configured_file_impacts(
-                section_id,
-                mod_data,
-                target_dir,
-                mod_root_dir or mod_source_dir,
-                configured_paths,
-                issues,
-            )
-        return self._collect_directory_file_impacts(
-            section_id, mod_data, target_dir, mod_source_dir
+    @staticmethod
+    def _plan_issue(name: str, mod_id: str, finding: PlanFinding) -> DiagnosticIssue:
+        return DiagnosticIssue(
+            finding.severity,
+            f"Operation {finding.operation_index}: {finding.code.replace('_', ' ')}",
+            f"{name}: {finding.message}",
+            (mod_id,),
+            recommendation="Fix the listed source or target before launching.",
+            code=finding.code,
         )
 
-    def _collect_configured_file_impacts(
-        self,
-        section_id: str,
-        mod_data,
-        target_dir: str,
-        mod_root_dir: str,
-        configured_paths: Sequence[str | dict[str, str]],
-        issues: list[DiagnosticIssue],
-    ) -> list[FileImpact]:
-        game_id = self._resolve_mod_game_id(mod_data)
-        from models.game_modes import get_game
-
-        game = get_game(game_id or "") or self.app_state.game_mode
-        data_dir = game.get_data_path(self.app_state.local_config) if game else ""
-        impacts: list[FileImpact] = []
-        for entry in iter_configured_override_entries(
-            mod_root_dir, configured_paths, section_id, game_id, data_dir
-        ):
-            source = entry["source"]
-            target_root = entry.get("target_root")
-            if target_root is None:
-                target_root = target_dir
-            elif not target_root:
-                target_label = (
-                    "game data folder"
-                    if entry["target"] == "game_data_folder"
-                    else "custom target folder"
-                )
-                issues.append(
-                    DiagnosticIssue(
-                        severity="error",
-                        title=f"{target_label.capitalize()} is not configured",
-                        explanation=(
-                            f"{get_mod_name(mod_data)} has an extra file "
-                            f"targeting the {target_label}."
-                        ),
-                        affected_mods=(get_mod_name(mod_data),),
-                        recommendation=(
-                            "Set the game data folder in Settings."
-                            if entry["target"] == "game_data_folder"
-                            else "Choose an existing custom target folder."
-                        ),
-                    )
-                )
-                continue
-            if entry["target"] == "custom" and not os.path.isdir(target_root):
-                issues.append(
-                    DiagnosticIssue(
-                        severity="error",
-                        title="Custom target folder is unavailable",
-                        explanation=(
-                            f"{get_mod_name(mod_data)} targets {target_root}, "
-                            "which does not exist on this computer."
-                        ),
-                        affected_mods=(get_mod_name(mod_data),),
-                        recommendation="Choose an existing local folder or use a portable target.",
-                    )
-                )
-                continue
-            target_relative = entry["target_relative"]
-            if entry["is_directory"]:
-                if not os.path.isdir(source):
-                    issues.append(
-                        self._missing_issue(mod_data, source, is_directory=True)
-                    )
-                    continue
-                for root, _dirs, files in os.walk(source, followlinks=False):
-                    rel_root = os.path.relpath(root, source)
-                    for file_name in files:
-                        if os.path.islink(os.path.join(root, file_name)):
-                            continue
-                        if file_name.lower() in SKIP_FILES:
-                            continue
-                        rel_file = (
-                            file_name
-                            if rel_root == "."
-                            else os.path.join(rel_root, file_name)
-                        )
-                        impacts.append(
-                            self._make_file_impact(
-                                section_id,
-                                mod_data,
-                                os.path.join(root, file_name),
-                                target_root,
-                                os.path.join(target_relative.rstrip("/"), rel_file),
-                            )
-                        )
-                continue
-            if not os.path.isfile(source):
-                issues.append(self._missing_issue(mod_data, source, is_directory=False))
-                continue
-            impacts.append(
-                self._make_file_impact(
-                    section_id,
-                    mod_data,
-                    source,
-                    target_root,
-                    target_relative,
-                )
-            )
-        return impacts
-
-    def _collect_directory_file_impacts(
-        self, section_id: str, mod_data, target_dir: str, mod_source_dir: str
-    ) -> list[FileImpact]:
-        impacts: list[FileImpact] = []
-        for root, _dirs, files in os.walk(mod_source_dir):
-            for file_name in files:
-                if file_name.lower() in SKIP_FILES:
-                    continue
-                source_path = os.path.join(root, file_name)
-                lower = source_path.lower()
-                if lower.endswith(PATCH_FILE_EXTENSIONS) or lower.endswith(
-                    ARCHIVE_EXTENSIONS
-                ):
-                    continue
-                if (
-                    mod_content.classify_patch_file(source_path)[1]
-                    != MOD_TYPE_OVERRIDES_ONLY
-                ):
-                    continue
-                rel_path = os.path.relpath(source_path, mod_source_dir)
-                impacts.append(
-                    self._make_file_impact(
-                        section_id, mod_data, source_path, target_dir, rel_path
-                    )
-                )
-        return impacts
-
-    def _make_file_impact(
-        self,
-        section_id: str,
-        mod_data,
-        source_path: str,
-        target_root: str,
-        target_relative_path: str,
-    ) -> FileImpact:
-        target_relative_path = os.path.normpath(target_relative_path)
-        target_path = os.path.normpath(os.path.join(target_root, target_relative_path))
-        existing = os.path.exists(target_path)
-        lower = source_path.lower()
-        notes = ()
-        analyzable = True
-        if lower.endswith(ARCHIVE_EXTENSIONS):
-            notes = ("Archive contents are not expanded during quick diagnostics.",)
-            analyzable = False
-        return FileImpact(
-            section_id=section_id,
-            mod_id=str(get_mod_id(mod_data) or ""),
-            mod_name=get_mod_name(mod_data),
-            source_path=source_path,
-            target_root=target_root,
-            target_relative_path=target_relative_path,
-            target_path=target_path,
-            operation="modify" if existing else "add",
-            existing=existing,
-            analyzable=analyzable,
-            notes=notes,
+    @staticmethod
+    def _relation_issue(finding: RelationFinding) -> DiagnosticIssue:
+        return DiagnosticIssue(
+            finding.severity,
+            finding.code.replace("_", " ").capitalize(),
+            f"{finding.mod_id} and {finding.related_id}: {finding.message}",
+            (finding.mod_id, finding.related_id),
+            recommendation="Review the profile's enabled mods and priority steps.",
+            code=finding.code,
+            field_path="dependencies" if finding.code.startswith("dependency") else "conflicts",
         )
 
+    @staticmethod
     def _mark_file_conflicts(
-        self, impacts: list[FileImpact]
+        impacts: list[FileImpact],
     ) -> tuple[list[FileImpact], list[DiagnosticIssue]]:
         by_target: dict[str, list[FileImpact]] = {}
         for impact in impacts:
-            by_target.setdefault(
-                os.path.normcase(os.path.abspath(impact.target_path)), []
-            ).append(impact)
-        conflicts = {
-            key: group
-            for key, group in by_target.items()
-            if len({impact.mod_id for impact in group}) > 1
-        }
+            by_target.setdefault(os.path.normcase(os.path.abspath(impact.target_path)), []).append(impact)
+        conflicts = [group for group in by_target.values() if len({impact.mod_id for impact in group}) > 1]
         if not conflicts:
             return impacts, []
-        conflict_keys = set(conflicts)
-        updated = [
+        paths = {os.path.normcase(os.path.abspath(group[0].target_path)) for group in conflicts}
+        marked = [
             FileImpact(
                 **{
                     **impact.__dict__,
-                    "operation": "conflict"
-                    if os.path.normcase(os.path.abspath(impact.target_path))
-                    in conflict_keys
-                    else impact.operation,
+                    "operation": "conflict" if os.path.normcase(os.path.abspath(impact.target_path)) in paths else impact.operation,
                 }
             )
             for impact in impacts
         ]
         issues = [
             DiagnosticIssue(
-                severity="error",
-                title="File conflict",
-                explanation="Multiple selected mods write to the same target path.",
-                affected_mods=tuple(impact.mod_name for impact in group),
+                "error",
+                "File conflict",
+                "Multiple selected mods write to the same target path.",
+                tuple(impact.mod_name for impact in group),
                 target_path=group[0].target_path,
                 recommendation="Disable one mod for this run or adjust priority if overwriting is intended.",
+                code="file_conflict",
             )
-            for group in conflicts.values()
+            for group in conflicts
         ]
-        return updated, issues
+        return marked, issues
 
     @staticmethod
-    def _find_opaque_data_overlaps(
-        impacts: list[DataImpact],
-    ) -> list[DiagnosticIssue]:
+    def _data_conflicts(impacts: list[DataImpact]) -> list[DiagnosticIssue]:
         by_target: dict[str, list[DataImpact]] = {}
         for impact in impacts:
-            target = impact.target_data_path or impact.section_id
-            by_target.setdefault(os.path.normcase(os.path.abspath(target)), []).append(
-                impact
-            )
+            by_target.setdefault(os.path.normcase(os.path.abspath(impact.target_data_path or impact.section_id)), []).append(impact)
         return [
             DiagnosticIssue(
-                severity="warning",
-                title="DATA merge requires verification",
-                explanation=(
-                    "Multiple DATA patches target the same file, and at least one cannot "
-                    "be inspected at resource level. Quick diagnostics cannot confirm "
-                    "that their code and resource references are compatible."
-                ),
-                affected_mods=tuple(impact.mod_name for impact in group),
+                "warning",
+                "DATA patch sequence requires verification",
+                "Multiple DATA patches target the same file. Run the actual-result preflight before launching.",
+                tuple(impact.mod_name for impact in group),
                 target_path=group[0].target_data_path or "",
-                recommendation=(
-                    "Run Analyze Actual Launch Result and review every reported merge "
-                    "conflict before launching."
-                ),
+                recommendation="Run Analyze Actual Launch Result and review the reported file changes.",
+                code="data_overlap",
             )
             for group in by_target.values()
             if len({impact.mod_id for impact in group}) > 1
-            and any(not impact.deep_analysis_available for impact in group)
         ]
-
-    @staticmethod
-    def _missing_issue(mod_data, path: str, *, is_directory: bool) -> DiagnosticIssue:
-        kind = "directory" if is_directory else "file"
-        return DiagnosticIssue(
-            severity="error",
-            title=f"Missing extra {kind}",
-            explanation=f"{get_mod_name(mod_data)} references an extra {kind} that does not exist.",
-            affected_mods=(get_mod_name(mod_data),),
-            target_path=path,
-            recommendation="Reinstall the mod or remove the missing entry from its config.",
-        )
-
-    @staticmethod
-    def _read_g3mpatch_manifest(path: str | None) -> dict[str, Any]:
-        if not path:
-            return {}
-        try:
-            with zipfile.ZipFile(path) as archive:
-                with archive.open("g3mpatch.json") as handle:
-                    data = json.loads(handle.read().decode("utf-8"))
-                return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-
-    @staticmethod
-    def _resource_summary_from_manifest(
-        manifest: dict[str, Any],
-    ) -> dict[str, dict[str, int]]:
-        resources = manifest.get("resources") if isinstance(manifest, dict) else None
-        if not isinstance(resources, dict):
-            return {}
-        summary: dict[str, dict[str, int]] = {}
-        for resource_type, value in resources.items():
-            if not isinstance(value, dict):
-                continue
-            changed = value.get("changed") or value.get("Changed") or []
-            new = value.get("new") or value.get("New") or []
-            deleted = value.get("deleted") or value.get("Deleted") or []
-            summary[str(resource_type)] = {
-                "changed": len(changed)
-                if isinstance(changed, list)
-                else int(bool(changed)),
-                "new": len(new) if isinstance(new, list) else int(bool(new)),
-                "deleted": len(deleted)
-                if isinstance(deleted, list)
-                else int(bool(deleted)),
-            }
-        return summary
-
-    @staticmethod
-    def _resource_entries_from_manifest(
-        manifest: dict[str, Any],
-    ) -> tuple[dict[str, Any], ...]:
-        resources = manifest.get("resources") if isinstance(manifest, dict) else None
-        if not isinstance(resources, dict):
-            return ()
-        entries: list[dict[str, Any]] = []
-        for resource_type, value in resources.items():
-            if not isinstance(value, dict):
-                continue
-            for operation in ("new", "changed", "deleted"):
-                items = value.get(operation) or value.get(operation.capitalize()) or []
-                if not isinstance(items, list):
-                    continue
-                for item in items:
-                    if isinstance(item, dict):
-                        name = str(item.get("name") or "")
-                        raw_files = item.get("files") or []
-                        files = (
-                            raw_files.values()
-                            if isinstance(raw_files, dict)
-                            else raw_files
-                        )
-                    else:
-                        name = str(item)
-                        files = []
-                    entries.append(
-                        {
-                            "type": str(resource_type),
-                            "operation": operation,
-                            "name": name,
-                            "files": tuple(str(file) for file in files if file),
-                        }
-                    )
-        return tuple(entries)
-
-    @staticmethod
-    def _resolve_mod_game_id(mod_data) -> str | None:
-        game = getattr(mod_data, "game", None)
-        if isinstance(mod_data, dict):
-            game = mod_data.get("game")
-        return str(game).strip().lower() if game else None

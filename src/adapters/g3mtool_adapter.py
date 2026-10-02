@@ -104,19 +104,6 @@ class G3MToolManager:
             return tr("errors.custom_g3mtool_not_found", path=custom_path)
         return tr("errors.g3mtool_not_available")
 
-    def get_version(self) -> str | None:
-        """Return the bundled G3MTool version string."""
-        g3mtool_path = self.refresh_executable()
-        if not g3mtool_path:
-            return None
-        returncode, stdout, stderr = self._run([g3mtool_path, "--version"])
-        if returncode != 0:
-            if stderr:
-                logger.debug("G3MTool version command failed: %s", stderr.strip())
-            return None
-        version = (stdout or "").strip().splitlines()
-        return version[0].strip() if version else None
-
     @staticmethod
     def _unavailable_result(message: str | None = None) -> tuple[int, str, str]:
         return (-1, "", message or tr("errors.g3mtool_not_available"))
@@ -207,13 +194,15 @@ class G3MToolManager:
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> tuple[int, str, str]:
         """Call g3mtool patch batch apply <original> <patches...> --out-dir <dir>."""
-        cmd = ["patch", "batch", "apply", original_data_win, *patch_paths]
-        cmd.extend(["--out-dir", output_dir])
-        if continue_on_error:
-            cmd.append("--continue-on-error")
-        if include_xdelta_fallback:
-            cmd.append("--xdelta-fallback")
-        return self._run_command(cmd, progress_callback=progress_callback)
+        return self._batch_patch_command(
+            "apply",
+            original_data_win,
+            patch_paths,
+            output_dir,
+            continue_on_error,
+            include_xdelta_fallback,
+            progress_callback,
+        )
 
     def batch_create_patches(
         self,
@@ -225,7 +214,27 @@ class G3MToolManager:
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> tuple[int, str, str]:
         """Call g3mtool patch batch create <original> <modified...> --out-dir <dir>."""
-        cmd = ["patch", "batch", "create", original_data_win, *modified_files]
+        return self._batch_patch_command(
+            "create",
+            original_data_win,
+            modified_files,
+            output_dir,
+            continue_on_error,
+            include_xdelta_fallback,
+            progress_callback,
+        )
+
+    def _batch_patch_command(
+        self,
+        action: str,
+        original_data_win: str,
+        paths: list[str],
+        output_dir: str,
+        continue_on_error: bool,
+        include_xdelta_fallback: bool,
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> tuple[int, str, str]:
+        cmd = ["patch", "batch", action, original_data_win, *paths]
         cmd.extend(["--out-dir", output_dir])
         if continue_on_error:
             cmd.append("--continue-on-error")
@@ -300,16 +309,8 @@ class G3MToolManager:
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> tuple[int, str, str]:
         """Call g3mtool xpatch apply <original> <patch> <output> for xdelta/vcdiff patches."""
-        cmd = [
-            "xpatch",
-            "apply",
-            original_file,
-            patch_path,
-            output_path,
-        ]
-        return self._run_command(
-            cmd,
-            progress_callback=progress_callback,
+        return self._xpatch_command(
+            "apply", original_file, patch_path, output_path, progress_callback
         )
 
     def xpatch_create(
@@ -320,15 +321,20 @@ class G3MToolManager:
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> tuple[int, str, str]:
         """Call g3mtool xpatch create <original> <modified> <output>."""
-        cmd = [
-            "xpatch",
-            "create",
-            original_file,
-            modified_file,
-            output_path,
-        ]
+        return self._xpatch_command(
+            "create", original_file, modified_file, output_path, progress_callback
+        )
+
+    def _xpatch_command(
+        self,
+        action: str,
+        original_file: str,
+        input_path: str,
+        output_path: str,
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> tuple[int, str, str]:
         return self._run_command(
-            cmd,
+            ["xpatch", action, original_file, input_path, output_path],
             progress_callback=progress_callback,
         )
 
@@ -344,21 +350,6 @@ class G3MToolManager:
         cmd = ["patch", "create", original_file, modified_file, output_path]
         if include_xdelta_fallback:
             cmd.append("--xdelta-fallback")
-        return self._run_command(
-            cmd,
-            progress_callback=progress_callback,
-        )
-
-    def validate_patch(
-        self,
-        patch_path: str,
-        data_file: str | None = None,
-        progress_callback: Callable[[int, str], None] | None = None,
-    ) -> tuple[int, str, str]:
-        """Call g3mtool patch validate <patch> [--data <file>]."""
-        cmd = ["patch", "validate", patch_path]
-        if data_file:
-            cmd.extend(["--data", data_file])
         return self._run_command(
             cmd,
             progress_callback=progress_callback,

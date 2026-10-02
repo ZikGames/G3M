@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from helpers import FailingSignal
-from PyQt6.QtCore import QSize
 
 from workers.background_loader_worker import BgLoader
 from workers.changelog_worker import FetchChangelogWorker
 
 
 def test_background_loader_suppresses_emit_failure(caplog):
-    worker = BgLoader("missing.png", QSize(1, 1))
+    worker = BgLoader("missing.png")
     worker.loaded = FailingSignal()
 
     worker.run()

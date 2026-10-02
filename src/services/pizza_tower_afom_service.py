@@ -10,9 +10,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from config.config import CYOP_AFOM_TAG
-from services.migration_service import build_extra_file_entry
-from utils.file_utils import get_unique_mod_dir, remove_archive_extension, save_json
-from utils.mod.config_parser import build_mod_config_data
+from utils.file_utils import get_unique_mod_dir, remove_archive_extension
+from utils.mod.config import (
+    MOD_CONFIG_TAGS,
+    MOD_CONFIG_VERSION,
+    parse_mod_config,
+    write_mod_config,
+)
 
 
 @dataclass(slots=True)
@@ -76,6 +80,8 @@ class PizzaTowerAFOMService:
             source_file_path=source_file_path,
             metadata=metadata,
         )
+        config_data = self._build_config_data(mod_name, metadata)
+        parse_mod_config(config_data)
         target_mod_dir = os.path.join(mods_dir, get_unique_mod_dir(mods_dir, mod_name))
         os.makedirs(target_mod_dir, exist_ok=True)
 
@@ -88,9 +94,8 @@ class PizzaTowerAFOMService:
                 dirs_exist_ok=True,
             )
 
-        config_data = self._build_config_data(mod_name, metadata)
         config_path = os.path.join(target_mod_dir, "mod_config.json")
-        save_json(config_path, build_mod_config_data(config_data), indent=2)
+        write_mod_config(config_path, config_data)
         return target_mod_dir
 
     @staticmethod
@@ -150,22 +155,39 @@ class PizzaTowerAFOMService:
             else f"local_afom_{uuid.uuid4().hex[:8]}"
         )
         config_data: dict[str, Any] = {
+            "config_version": MOD_CONFIG_VERSION,
             "id": mod_id,
             "name": mod_name,
             "game": "pizzatower",
-            "author": str(metadata.get("author") or "Unknown"),
             "version": str(metadata.get("version") or "1.0.0"),
+            "authors": [
+                str(name).strip()
+                for name in metadata.get("authors", [])
+                if isinstance(metadata.get("authors"), list)
+                if str(name).strip()
+            ]
+            or ["Unknown"],
             "tags": [CYOP_AFOM_TAG],
-            "files": {
-                "pizzatower": {
-                    "extra_files": [
-                        build_extra_file_entry("towers/", "game_data_folder")
-                    ],
+            "files": [
+                {
+                    "source": "${mod_path}/towers/",
+                    "target": "${game_data_path}/towers/",
+                    "type": "extract",
                 }
-            },
+            ],
         }
-        for field_name in ("description", "icon", "homepage", "tags"):
+        for field_name in ("description", "icon", "homepage"):
             value = metadata.get(field_name)
             if value not in (None, "", [], {}):
                 config_data[field_name] = value
+        tags = metadata.get("tags")
+        if isinstance(tags, list):
+            config_data["tags"] = list(
+                dict.fromkeys(
+                    [
+                        CYOP_AFOM_TAG,
+                        *(tag for tag in tags if isinstance(tag, str) and tag in MOD_CONFIG_TAGS),
+                    ]
+                )
+            )
         return config_data

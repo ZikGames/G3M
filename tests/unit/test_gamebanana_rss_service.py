@@ -6,8 +6,10 @@ import pytest
 from services.gamebanana_rss_service import (
     _MAX_RESPONSE_BYTES,
     fetch_gamebanana_rss,
+    fetch_rss_feed,
     merge_gamebanana_feeds,
     parse_gamebanana_rss,
+    parse_rss_feed,
 )
 
 
@@ -41,6 +43,44 @@ def test_rss_parser_ignores_content_injected_around_document():
     assert [(item.title, item.content_type) for item in items] == [
         ("Valid item", "tools")
     ]
+
+
+def test_generic_rss_parser_allows_only_https_cards_and_images():
+    items = parse_rss_feed(
+        b"""<rss><items>
+        <item><title>Safe</title><link>https://example.com/post</link>
+        <image>https://example.com/image.png</image></item>
+        <item><title>Unsafe</title><link>http://example.com/post</link></item>
+        </items></rss>""",
+        feed_id="plugin:news:updates",
+        feed_name="Plugin news",
+    )
+
+    assert [(item.title, item.image_url, item.game_name) for item in items] == [
+        ("Safe", "https://example.com/image.png", "Plugin news")
+    ]
+
+
+def test_generic_rss_fetch_uses_same_bounded_request_settings():
+    response = Mock()
+    response.iter_content.return_value = [
+        b"<rss><items><item><title>News</title>",
+        b"<link>https://example.com/news</link></item></items></rss>",
+    ]
+    session = Mock()
+    session.get.return_value = response
+
+    items = fetch_rss_feed(
+        session,
+        "https://example.com/feed.xml",
+        feed_id="plugin:news:updates",
+        feed_name="News",
+    )
+
+    session.get.assert_called_once_with(
+        "https://example.com/feed.xml", timeout=15, stream=True
+    )
+    assert [item.title for item in items] == ["News"]
 
 
 def test_featured_feeds_are_interleaved_by_native_rank():

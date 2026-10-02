@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class GameMonitorWorker(QObject):
+    game_detected = pyqtSignal(bool)
     finished = pyqtSignal(bool)
 
     _POLL_INTERVAL_SECONDS = GAME_PROCESS_POLL_SECONDS
@@ -82,6 +83,14 @@ class GameMonitorWorker(QObject):
                 "GameMonitorWorker: failed to emit finished: %s", e, exc_info=True
             )
 
+    def _safe_game_detected(self) -> None:
+        try:
+            self.game_detected.emit(self.vanilla_mode)
+        except Exception as e:
+            logger.warning(
+                "GameMonitorWorker: failed to emit game_detected: %s", e, exc_info=True
+            )
+
     @pyqtSlot()
     def run(self):
         try:
@@ -118,6 +127,7 @@ class GameMonitorWorker(QObject):
                 self._safe_finished()
                 return
 
+            self._safe_game_detected()
             missing_checks = 0
             while missing_checks < self._EXIT_CONFIRMATION_CHECKS:
                 if self._is_interruption_requested():

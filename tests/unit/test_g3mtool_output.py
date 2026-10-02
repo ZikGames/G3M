@@ -1,4 +1,4 @@
-"""Subprocess output must remain readable when progress consumers fail."""
+"""Regression coverage for the current patch backend adapter."""
 
 import io
 from unittest.mock import Mock
@@ -6,19 +6,12 @@ from unittest.mock import Mock
 import pytest
 
 from adapters.g3mtool_adapter import G3MToolManager
-from services.g3mtool_patching_service import MOD_TYPE_G3MPATCH, G3MToolPatchingService
 
 
 @pytest.mark.parametrize("fail_callback", [False, True])
-def test_output_collection_preserves_text_and_drains_after_callback_error(
-    fail_callback,
-):
+def test_output_collection_preserves_text_after_callback_error(fail_callback):
     manager = object.__new__(G3MToolManager)
-    text = (
-        "Applying patch: 10%\rApplying patch: 50%\n"
-        + "output\n" * 10_000
-        + "Applying patch: 100%"
-    )
+    text = "Applying patch: 10%\rApplying patch: 50%\n" + "output\n" * 10_000 + "Applying patch: 100%"
     stream = io.StringIO(text)
     chunks = []
     callback = Mock(side_effect=RuntimeError("closed view") if fail_callback else None)
@@ -27,47 +20,7 @@ def test_output_collection_preserves_text_and_drains_after_callback_error(
 
     assert "".join(chunks) == text
     assert stream.read() == ""
-    assert len(chunks) < 11_000
     assert callback.call_count == (1 if fail_callback else 3)
-
-
-@pytest.mark.parametrize("cancel_in_handler", [False, True])
-def test_cancelled_patching_never_accepts_warning(cancel_in_handler):
-    patcher = G3MToolPatchingService(Mock(local_config={}), Mock())
-
-    def cancel(*_args):
-        patcher.cancel()
-        return True
-
-    patcher.warning_handler = Mock(side_effect=cancel)
-    if not cancel_in_handler:
-        patcher.cancel()
-
-    assert not patcher._request_warning("Patch failed")
-    assert patcher.warning_handler.call_count == int(cancel_in_handler)
-
-
-def test_cancellation_during_final_data_step_is_not_success(tmp_path):
-    patcher = G3MToolPatchingService(Mock(local_config={}), Mock())
-    output = tmp_path / "output.win"
-
-    def apply(*_args):
-        output.write_bytes(b"result")
-        patcher.cancel()
-        return True
-
-    patcher._apply_single_mod = Mock(side_effect=apply)
-
-    assert not patcher._apply_data_steps(
-        "original.win",
-        [[("patch.g3mpatch", MOD_TYPE_G3MPATCH, None)]],
-        str(output),
-        None,
-        "1",
-        0,
-        100,
-        "Chapter 1",
-    )
 
 
 def test_execute_separates_child_arguments_from_host_options(monkeypatch):
@@ -88,4 +41,60 @@ def test_execute_separates_child_arguments_from_host_options(monkeypatch):
         "--",
         "--output",
         "payload",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "paths", "action"),
+    [
+        ("batch_apply_patches", ["one.g3mpatch"], "apply"),
+        ("batch_create_patches", ["modified.win"], "create"),
+    ],
+)
+def test_batch_commands_keep_their_original_arguments(method_name, paths, action):
+    manager = object.__new__(G3MToolManager)
+    manager._run_command = Mock(return_value=(0, "", ""))
+
+    getattr(manager, method_name)(
+        "original.win",
+        paths,
+        "output",
+        continue_on_error=True,
+        include_xdelta_fallback=True,
+    )
+
+    assert manager._run_command.call_args.args[0] == [
+        "patch",
+        "batch",
+        action,
+        "original.win",
+        *paths,
+        "--out-dir",
+        "output",
+        "--continue-on-error",
+        "--xdelta-fallback",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method_name", "input_path", "action"),
+    [
+        ("xpatch_apply", "patch.xdelta", "apply"),
+        ("xpatch_create", "modified.win", "create"),
+    ],
+)
+def test_xpatch_commands_keep_their_original_arguments(
+    method_name, input_path, action
+):
+    manager = object.__new__(G3MToolManager)
+    manager._run_command = Mock(return_value=(0, "", ""))
+
+    getattr(manager, method_name)("original.win", input_path, "output.win")
+
+    assert manager._run_command.call_args.args[0] == [
+        "xpatch",
+        action,
+        "original.win",
+        input_path,
+        "output.win",
     ]

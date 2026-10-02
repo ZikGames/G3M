@@ -1,0 +1,60 @@
+{
+  "themes": [
+    {
+      "id": "CLEANG3M",
+      "name": "CLEANG3M",
+      "description": "CLEANG3M theme for G3M.",
+      "author": "G3M",
+      "version": "1.0.0",
+      "icon": "https://raw.githubusercontent.com/y114git/G3M/main/src/assets/images/logo.png",
+      "homepage": "https://github.com/y114git/G3M/tree/main/catalog/themes/CLEANG3M",
+      "download_link": "https://raw.githubusercontent.com/y114git/G3M/main/catalog/themes/CLEANG3M.zip",
+      "tags": [
+        "minimalist"
+      ]
+    },
+    {
+      "id": "DELTAG3M",
+      "name": "DELTAG3M",
+      "description": "DELTAG3M theme for G3M.",
+      "author": "G3M",
+      "version": "1.0.0",
+      "icon": "https://raw.githubusercontent.com/y114git/G3M/main/catalog/themes/DELTAG3M/custom_logo.png",
+      "homepage": "https://github.com/y114git/G3M/tree/main/catalog/themes/DELTAG3M",
+      "download_link": "https://raw.githubusercontent.com/y114git/G3M/main/catalog/themes/DELTAG3M.zip",
+      "tags": [
+        "game_inspired",
+        "animated",
+        "with_sound"
+      ]
+    },
+    {
+      "id": "PIZZAG3M",
+      "name": "PIZZAG3M",
+      "description": "PIZZAG3M theme for G3M.",
+      "author": "G3M",
+      "version": "1.0.0",
+      "icon": "https://raw.githubusercontent.com/y114git/G3M/main/catalog/themes/PIZZAG3M/custom_logo.png",
+      "homepage": "https://github.com/y114git/G3M/tree/main/catalog/themes/PIZZAG3M",
+      "download_link": "https://raw.githubusercontent.com/y114git/G3M/main/catalog/themes/PIZZAG3M.zip",
+      "tags": [
+        "game_inspired",
+        "with_sound"
+      ]
+    },
+    {
+      "id": "SUGARYG3M",
+      "name": "SUGARYG3M",
+      "description": "SUGARYG3M theme for G3M.",
+      "author": "G3M",
+      "version": "1.0.0",
+      "icon": "https://raw.githubusercontent.com/y114git/G3M/main/catalog/themes/SUGARYG3M/custom_logo.png",
+      "homepage": "https://github.com/y114git/G3M/tree/main/catalog/themes/SUGARYG3M",
+      "download_link": "https://raw.githubusercontent.com/y114git/G3M/main/catalog/themes/SUGARYG3M.zip",
+      "tags": [
+        "game_inspired",
+        "with_sound"
+      ]
+    }
+  ]
+}

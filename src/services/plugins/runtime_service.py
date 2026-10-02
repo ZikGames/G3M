@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+from dataclasses import replace
 from typing import Any
+from urllib.parse import urlparse
 
 from models.plugin_models import (
+    PLUGIN_API_VERSION,
     InstalledPluginRecord,
+    PluginCommunityFeed,
     PluginContext,
+    PluginLaunchAction,
+    PluginLaunchOption,
     PluginManifest,
     PluginSettingsAccessor,
     PluginTaskRuntime,
@@ -16,9 +23,12 @@ from models.plugin_models import (
 )
 from services.localization_service import localization_service
 from services.plugins.support import (
+    UNSUPPORTED_LEGACY_PLUGIN_HOOKS,
     PluginValidationError,
+    is_version_compatible,
     is_version_newer,
     load_manifest,
+    load_manifest_display_metadata,
     load_plugin_factory,
     load_plugin_langs,
     resolve_plugin_path,
@@ -38,9 +48,6 @@ class PluginRuntimeService:
         settings_service,
         profile_service,
         game_registry_service,
-        customization_service,
-        used_mods_service,
-        downloads_manager,
         plugin_state_service,
         plugin_catalog_service,
         plugins_dir: str,
@@ -50,9 +57,6 @@ class PluginRuntimeService:
         self.settings_service = settings_service
         self.profile_service = profile_service
         self.game_registry_service = game_registry_service
-        self.customization_service = customization_service
-        self.used_mods_service = used_mods_service
-        self.downloads_manager = downloads_manager
         self.plugin_state_service = plugin_state_service
         self.plugin_catalog_service = plugin_catalog_service
         self.plugins_dir = plugins_dir
@@ -91,7 +95,12 @@ class PluginRuntimeService:
                     and catalog_entry.version
                     and is_version_newer(catalog_entry.version, manifest.version)
                 )
-                error = ""
+                compatible = is_version_compatible(
+                    PLUGIN_API_VERSION, manifest.api_version
+                ) and not UNSUPPORTED_LEGACY_PLUGIN_HOOKS.intersection(manifest.hooks)
+                error = "" if compatible else format_plugin_error(
+                    "plugin_incompatible", plugin_id=manifest.id
+                )
                 status = "installed"
                 installed[manifest.id] = InstalledPluginRecord(
                     manifest=manifest,
@@ -100,28 +109,76 @@ class PluginRuntimeService:
                     enabled=self.plugin_state_service.is_enabled(manifest.id),
                     is_local=is_local,
                     error=error,
-                    compatible=True,
+                    compatible=compatible,
                     update_available=update_available,
                     catalog_entry=catalog_entry,
                 )
             except Exception as e:
                 plugin_id = name
-                logger.error("PluginRuntimeService: failed to scan %s: %s", name, e, exc_info=True)
+                manifest = None
+                try:
+                    preview = load_manifest_display_metadata(manifest_path)
+                    if re.fullmatch(r"[a-z0-9_]+", preview.id):
+                        manifest = preview
+                        plugin_id = manifest.id
+                        for code, strings in load_plugin_langs(plugin_dir).items():
+                            localization_service.merge_plugin_strings(
+                                manifest.id, code, strings
+                            )
+                except Exception as preview_error:
+                    logger.debug(
+                        "PluginRuntimeService: could not read display metadata for %s: %s",
+                        name,
+                        preview_error,
+                    )
+                if isinstance(e, PluginValidationError):
+                    logger.info(
+                        "PluginRuntimeService: skipped invalid plugin %s: %s",
+                        name,
+                        e,
+                    )
+                else:
+                    logger.error(
+                        "PluginRuntimeService: failed to scan %s: %s",
+                        name,
+                        e,
+                        exc_info=True,
+                    )
+                manifest = manifest or PluginManifest(
+                    config_version=1,
+                    id=plugin_id,
+                    name=plugin_id,
+                    description="",
+                    author="",
+                    version="",
+                    api_version="",
+                    entry="",
+                )
+                catalog_entry = self.plugin_catalog_service.get_entry(
+                    plugin_id,
+                    load_if_needed=should_resolve_catalog,
+                )
+                install_meta = self.plugin_state_service.get_install_meta(plugin_id)
+                compatible = is_version_compatible(
+                    PLUGIN_API_VERSION, manifest.api_version
+                )
                 installed[plugin_id] = InstalledPluginRecord(
-                    manifest=PluginManifest(
-                        config_version=1,
-                        id=plugin_id,
-                        name=plugin_id,
-                        description="",
-                        author="",
-                        version="",
-                        api_version="",
-                        entry="",
-                    ),
+                    manifest=manifest,
                     path=plugin_dir,
                     status="broken",
+                    enabled=self.plugin_state_service.is_enabled(plugin_id),
+                    is_local=(
+                        install_meta.get("source") == "manual"
+                        or catalog_entry is None
+                    ),
                     error=format_plugin_error(e, plugin_id=plugin_id, details=plugin_dir),
-                    compatible=False,
+                    compatible=compatible,
+                    update_available=bool(
+                        catalog_entry
+                        and catalog_entry.version
+                        and is_version_newer(catalog_entry.version, manifest.version)
+                    ),
+                    catalog_entry=catalog_entry,
                 )
         self._installed = installed
         self.reload_enabled_plugins()
@@ -154,9 +211,6 @@ class PluginRuntimeService:
             settings_service=self.settings_service,
             profile_service=self.profile_service,
             game_registry_service=self.game_registry_service,
-            customization_service=self.customization_service,
-            used_mods_service=self.used_mods_service,
-            downloads_manager=self.downloads_manager,
             localization_service=localization_service,
             plugin_settings=PluginSettingsAccessor(plugin_id, self.plugin_state_service),
             task_runtime=task_runtime,
@@ -168,16 +222,16 @@ class PluginRuntimeService:
             plugin_id=plugin_id,
             host_context=context,
             app_state=self.app_state,
-            feedback_service=context.feedback_service,
-            customization_service=self.customization_service,
-            localization_service=localization_service,
-            plugin_settings=context.plugin_settings,
         )
 
     def _load_instance(self, plugin_id: str, *, enable: bool) -> Any:
         record = self._installed.get(plugin_id)
-        if not record or not record.compatible:
+        if not record:
             raise PluginValidationError("plugin_not_available")
+        if record.status == "broken":
+            raise PluginValidationError("plugin_not_available")
+        if not record.compatible:
+            raise PluginValidationError("plugin_incompatible")
         if not record.manifest:
             raise PluginValidationError("missing_manifest")
         if plugin_id in self._instances:
@@ -205,34 +259,52 @@ class PluginRuntimeService:
         desired_ids = {
             plugin_id
             for plugin_id, record in self._installed.items()
-            if record.enabled and record.compatible
+            if record.enabled and record.compatible and record.status != "broken"
         }
-        for plugin_id in active_ids - desired_ids:
+        pruned_ids: set[str] = set()
+        while True:
+            unavailable = {
+                plugin_id for plugin_id in desired_ids
+                if (manifest := self._installed[plugin_id].manifest) is not None
+                and any(
+                    relation == "require" and dependency_id not in desired_ids
+                    for dependency_id, relation in manifest.relations.items()
+                )
+            }
+            if not unavailable:
+                break
+            desired_ids.difference_update(unavailable)
+            pruned_ids.update(unavailable)
+        for plugin_id in sorted((active_ids | pruned_ids) - desired_ids):
             self.disable_plugin(plugin_id, persist=False)
-        for plugin_id in desired_ids:
+            if plugin_id in pruned_ids:
+                record = self._installed[plugin_id]
+                record.status = "broken"
+                record.error = format_plugin_error("missing_dependencies", plugin_id=plugin_id)
+        pending = set(desired_ids)
+        while pending:
+            plugin_id = next(
+                (candidate for candidate in sorted(pending) if not self._relation_errors(candidate)[0]),
+                None,
+            )
+            if plugin_id is None:
+                for blocked_id in pending:
+                    self.disable_plugin(blocked_id, persist=False)
+                    record = self._installed[blocked_id]
+                    record.status = "broken"
+                    record.error = format_plugin_error("missing_dependencies", plugin_id=blocked_id)
+                break
+            pending.remove(plugin_id)
             try:
                 self._load_instance(plugin_id, enable=True)
-                self._apply_game_registry_hook(plugin_id)
             except Exception as e:
                 logger.error("PluginRuntimeService: failed to load %s: %s", plugin_id, e, exc_info=True)
+                self.disable_plugin(plugin_id, persist=False)
                 record = self._installed.get(plugin_id)
                 if record:
                     record.status = "broken"
                     record.error = format_plugin_error(e, plugin_id=plugin_id, details=record.path)
-        self._enabled_instances = {
-            plugin_id for plugin_id in desired_ids
-            if plugin_id in self._instances
-        }
-
-    def _apply_game_registry_hook(self, plugin_id: str) -> None:
-        plugin = self._instances.get(plugin_id)
-        if not plugin or not hasattr(plugin, "contribute_game_definitions"):
-            return
-        with_context = self._build_context(plugin_id)
-        try:
-            plugin.contribute_game_definitions(with_context)
-        except Exception as e:
-            logger.debug("PluginRuntimeService: game_registry hook failed for %s: %s", plugin_id, e, exc_info=True)
+        self._enabled_instances.intersection_update(desired_ids)
 
     def _relation_errors(self, plugin_id: str) -> tuple[list[str], list[str]]:
         record = self._installed.get(plugin_id)
@@ -242,7 +314,10 @@ class PluginRuntimeService:
         conflicts: list[str] = []
         for dep_id, relation in record.manifest.relations.items():
             dep = self._installed.get(dep_id)
-            if relation == "require" and (not dep or not dep.enabled or not dep.compatible):
+            if relation == "require" and (
+                not dep or not dep.enabled or not dep.compatible or dep.status == "broken"
+                or dep_id not in self._enabled_instances
+            ):
                 missing.append(dep_id)
             if relation == "conflict" and dep and dep.enabled:
                 conflicts.append(dep_id)
@@ -266,7 +341,6 @@ class PluginRuntimeService:
         record.status = "enabled"
         try:
             self._load_instance(plugin_id, enable=True)
-            self._apply_game_registry_hook(plugin_id)
             return True, ""
         except Exception as e:
             record.status = "broken"
@@ -281,7 +355,7 @@ class PluginRuntimeService:
             self.plugin_state_service.set_enabled(plugin_id, False)
         if record:
             record.enabled = False
-            if record.compatible:
+            if record.status != "broken":
                 record.status = "installed"
         instance = self._instances.pop(plugin_id, None)
         if (
@@ -304,11 +378,15 @@ class PluginRuntimeService:
         hook_name: str,
         task_runtime: PluginTaskRuntime | None,
         *args,
+        target_plugin_id: str | None = None,
+        raise_errors: bool = False,
         **kwargs,
     ) -> list[Any]:
         results: list[Any] = []
         method_name = f"on_{hook_name}"
         for plugin_id, instance in list(self._instances.items()):
+            if target_plugin_id is not None and plugin_id != target_plugin_id:
+                continue
             record = self._installed.get(plugin_id)
             if not record or not record.enabled:
                 continue
@@ -329,17 +407,191 @@ class PluginRuntimeService:
                 if record:
                     record.error = format_plugin_error(e, plugin_id=plugin_id, details=record.path)
                     record.status = "broken"
+                if task_runtime is not None or raise_errors:
+                    raise
         return results
 
-    def has_enabled_hook(self, hook_name: str) -> bool:
+    def has_enabled_hook(
+        self, hook_name: str, *, target_plugin_id: str | None = None
+    ) -> bool:
         method_name = f"on_{hook_name}"
         for plugin_id, instance in self._instances.items():
+            if target_plugin_id is not None and plugin_id != target_plugin_id:
+                continue
             record = self._installed.get(plugin_id)
             if record and record.enabled and hasattr(instance, method_name):
                 return True
         return False
 
+    def get_launch_actions(self) -> list[PluginLaunchAction]:
+        """Return validated actions contributed by currently enabled plugins."""
+        actions: list[PluginLaunchAction] = []
+        for plugin_id, instance in self._instances.items():
+            record = self._installed.get(plugin_id)
+            get_actions = getattr(instance, "get_launch_actions", None)
+            if not record or not record.enabled or not callable(get_actions):
+                continue
+            try:
+                raw_actions = get_actions(self._build_ui_context(plugin_id)) or []
+            except Exception:
+                logger.exception("PluginRuntimeService: launch actions failed for %s", plugin_id)
+                continue
+            if not isinstance(raw_actions, (list, tuple)):
+                continue
+            for raw_action in raw_actions:
+                if isinstance(raw_action, dict):
+                    try:
+                        raw_action = PluginLaunchAction(**raw_action)
+                    except TypeError:
+                        continue
+                if not isinstance(raw_action, PluginLaunchAction):
+                    continue
+                if not all(
+                    isinstance(value, str)
+                    for value in (
+                        raw_action.id,
+                        raw_action.label,
+                        raw_action.description,
+                    )
+                ):
+                    continue
+                if not re.fullmatch(r"[a-z0-9_]+", raw_action.id):
+                    continue
+                if not raw_action.label.strip():
+                    continue
+                actions.append(
+                    replace(
+                        raw_action,
+                        id=f"plugin:{plugin_id}:{raw_action.id}",
+                        plugin_id=plugin_id,
+                    )
+                )
+        return actions
+
+    def get_launch_options(self) -> list[PluginLaunchOption]:
+        """Return validated checkboxes contributed by enabled plugins."""
+        options: list[PluginLaunchOption] = []
+        for plugin_id, instance in self._instances.items():
+            record = self._installed.get(plugin_id)
+            get_options = getattr(instance, "get_launch_options", None)
+            if not record or not record.enabled or not callable(get_options):
+                continue
+            try:
+                raw_options = get_options(self._build_ui_context(plugin_id)) or []
+            except Exception:
+                logger.exception(
+                    "PluginRuntimeService: launch options failed for %s", plugin_id
+                )
+                continue
+            if not isinstance(raw_options, (list, tuple)):
+                continue
+            for raw_option in raw_options:
+                if isinstance(raw_option, dict):
+                    try:
+                        raw_option = PluginLaunchOption(**raw_option)
+                    except TypeError:
+                        continue
+                if not isinstance(raw_option, PluginLaunchOption):
+                    continue
+                if not all(
+                    isinstance(value, str)
+                    for value in (
+                        raw_option.id,
+                        raw_option.label,
+                        raw_option.description,
+                        raw_option.disabled_reason,
+                    )
+                ) or not isinstance(raw_option.checked, bool) or not isinstance(
+                    raw_option.enabled, bool
+                ):
+                    continue
+                if not re.fullmatch(r"[a-z0-9_]+", raw_option.id):
+                    continue
+                if not raw_option.label.strip():
+                    continue
+                options.append(
+                    replace(
+                        raw_option,
+                        id=f"plugin:{plugin_id}:{raw_option.id}",
+                        plugin_id=plugin_id,
+                    )
+                )
+        return options
+
+    def set_launch_option(self, option: PluginLaunchOption, checked: bool) -> bool:
+        """Send a launch-menu checkbox change to its owning plugin."""
+        if not isinstance(option, PluginLaunchOption) or not isinstance(checked, bool):
+            return False
+        prefix = f"plugin:{option.plugin_id}:"
+        if not option.plugin_id or not option.id.startswith(prefix):
+            return False
+        record = self._installed.get(option.plugin_id)
+        instance = self._instances.get(option.plugin_id)
+        handler = getattr(instance, "on_launch_option_changed", None)
+        if not record or not record.enabled or not callable(handler):
+            return False
+        try:
+            return handler(
+                self._build_ui_context(option.plugin_id),
+                option.id.removeprefix(prefix),
+                checked,
+            ) is not False
+        except Exception:
+            logger.exception(
+                "PluginRuntimeService: launch option change failed for %s",
+                option.plugin_id,
+            )
+            return False
+
+    def get_community_feeds(self) -> list[PluginCommunityFeed]:
+        """Return validated HTTPS RSS feeds from currently enabled plugins."""
+        feeds: list[PluginCommunityFeed] = []
+        for plugin_id, instance in self._instances.items():
+            record = self._installed.get(plugin_id)
+            get_feeds = getattr(instance, "get_community_feeds", None)
+            if not record or not record.enabled or not callable(get_feeds):
+                continue
+            try:
+                raw_feeds = get_feeds(self._build_ui_context(plugin_id)) or []
+            except Exception:
+                logger.exception("PluginRuntimeService: community feeds failed for %s", plugin_id)
+                continue
+            if not isinstance(raw_feeds, (list, tuple)):
+                continue
+            for raw_feed in raw_feeds:
+                if isinstance(raw_feed, dict):
+                    try:
+                        raw_feed = PluginCommunityFeed(**raw_feed)
+                    except TypeError:
+                        continue
+                if not isinstance(raw_feed, PluginCommunityFeed):
+                    continue
+                if not all(
+                    isinstance(value, str)
+                    for value in (raw_feed.id, raw_feed.label, raw_feed.url)
+                ):
+                    continue
+                parsed_url = urlparse(raw_feed.url)
+                if (
+                    not re.fullmatch(r"[a-z0-9_]+", raw_feed.id)
+                    or not raw_feed.label.strip()
+                    or parsed_url.scheme != "https"
+                    or not parsed_url.hostname
+                ):
+                    continue
+                feeds.append(
+                    replace(
+                        raw_feed,
+                        id=f"plugin:{plugin_id}:{raw_feed.id}",
+                        plugin_id=plugin_id,
+                    )
+                )
+        return feeds
+
     def get_settings_widget(self, plugin_id: str, parent=None):
+        record = self._installed.get(plugin_id)
+        if not record or record.status == "broken" or not record.compatible:
+            return None
         try:
             plugin = self._instances.get(plugin_id)
             if plugin is None:
@@ -347,15 +599,13 @@ class PluginRuntimeService:
             if hasattr(plugin, "create_settings_widget"):
                 return plugin.create_settings_widget(self._build_ui_context(plugin_id), parent)
         except Exception as e:
-            logger.error(
-                "PluginRuntimeService: settings widget failed for %s: %s",
-                plugin_id,
-                e,
-                exc_info=True,
-            )
+            self._report_widget_failure(plugin_id, record, "settings", e)
         return None
 
     def get_main_widget(self, plugin_id: str, parent=None):
+        record = self._installed.get(plugin_id)
+        if not record or record.status == "broken" or not record.compatible:
+            return None
         try:
             plugin = self._instances.get(plugin_id)
             if plugin is None:
@@ -363,22 +613,24 @@ class PluginRuntimeService:
             if hasattr(plugin, "create_main_widget"):
                 return plugin.create_main_widget(self._build_ui_context(plugin_id), parent)
         except Exception as e:
-            logger.error(
-                "PluginRuntimeService: main widget failed for %s: %s",
-                plugin_id,
-                e,
-                exc_info=True,
-            )
+            self._report_widget_failure(plugin_id, record, "main", e)
         return None
 
-    def get_navigation_actions(self, plugin_id: str) -> list[dict[str, Any]]:
-        plugin = self._instances.get(plugin_id)
-        record = self._installed.get(plugin_id)
-        if plugin is None or not record or not record.enabled:
-            return []
-        if hasattr(plugin, "contribute_navigation_actions"):
-            return plugin.contribute_navigation_actions(self._build_ui_context(plugin_id)) or []
-        return []
+    def _report_widget_failure(self, plugin_id: str, record, widget: str, error: Exception) -> None:
+        record.status = "broken"
+        record.error = format_plugin_error(error, plugin_id=plugin_id, details=record.path)
+        logger.warning(
+            "PluginRuntimeService: %s widget unavailable for %s: %s",
+            widget,
+            plugin_id,
+            record.error,
+        )
+        logger.debug(
+            "PluginRuntimeService: %s widget traceback for %s",
+            widget,
+            plugin_id,
+            exc_info=True,
+        )
 
     def run_settings_action(self, plugin_id: str, action_id: str, parent=None) -> Any:
         try:

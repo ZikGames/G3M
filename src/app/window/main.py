@@ -23,10 +23,12 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QProgressBar,
     QPushButton,
     QSizePolicy,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -132,13 +134,13 @@ class AppWindow(QWidget):
     search_display: Any
     game_launch: Any
     settings_ui: Any
-    plugins_ui: Any
+    catalog_ui: Any
     search_tab_builder: Any
     settings_builder: Any
     refresh_controller: Any
     mods_browser_tab: QWidget
     library_tab: QWidget
-    plugins_tab: QWidget
+    catalog_tab: QWidget
     mods_browser_scroll: Any
     mod_list_widget: Any
     sort_combo: Any
@@ -597,10 +599,27 @@ class AppWindow(QWidget):
         self.progress_bar.setVisible(False)
         self.action_frame = QHBoxLayout()
         self.shortcut_button = QPushButton(tr("buttons.shortcut"))
-        self.action_button = QPushButton(tr("status.please_wait"))
+        self.action_button = QToolButton()
+        self.action_button.setObjectName("action_button")
+        self.action_button.setText(tr("status.please_wait"))
         self.action_button.setEnabled(False)
-        self.action_button.setMinimumWidth(200)
+        self.action_button.setMinimumWidth(230)
+        self.shortcut_button.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
+        self.action_button.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed
+        )
+        self.action_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextOnly
+        )
+        self.action_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.action_button.clicked.connect(self.game_launch.on_action_button_click)
+        self.launch_mode_menu = QMenu(self.action_button)
+        self.action_button.setMenu(self.launch_mode_menu)
+        self.game_launch.setup_launch_mode_menu(
+            self.launch_mode_menu, self.action_button
+        )
         self.app_state.is_installing = False
         self.pending_updates = []
         self.community_button = QPushButton(tr("ui.community_button"))
@@ -608,9 +627,12 @@ class AppWindow(QWidget):
 
         self.community_button.clicked.connect(lambda: open_community_dialog(self))
         self.shortcut_button.clicked.connect(self._on_shortcut_button_click)
-        self.action_frame.addWidget(self.shortcut_button)
-        self.action_frame.addWidget(self.action_button)
-        self.action_frame.addWidget(self.community_button)
+        self.community_button.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
+        self.action_frame.addWidget(self.shortcut_button, 1)
+        self.action_frame.addWidget(self.action_button, 1)
+        self.action_frame.addWidget(self.community_button, 1)
         self.app_state.action_button_text_changed.connect(self._set_action_button_text)
         self.app_state.action_button_enabled_changed.connect(
             self._set_action_button_enabled
@@ -636,7 +658,6 @@ class AppWindow(QWidget):
             "library_sort_ascending", True
         )
         self.app_state.library_search_text = ""
-        self._previous_mode = "normal"
         setup_library_tab(self)
 
         self._num_main_tabs_visible = 0
@@ -651,7 +672,6 @@ class AppWindow(QWidget):
         if self._num_main_tabs_visible == 0:
             self._show_empty_main_tabs_placeholder()
 
-        self.previous_tab_index = 0
         from app.tab.handler import handle_tab_changed
 
         self.main_tab_widget.currentChanged.connect(
@@ -665,8 +685,8 @@ class AppWindow(QWidget):
         from app.settings_setup import setup_settings_tab
 
         setup_settings_tab(self)
-        if hasattr(self, "plugins_ui") and self.plugins_ui:
-            self.plugins_ui.refresh_main_tabs()
+        if hasattr(self, "catalog_ui") and self.catalog_ui:
+            self.catalog_ui.refresh_main_tabs()
         self._restore_last_active_main_tab()
         self.search_display.update_filtered_mods()
         self.tab_widget = self.main_tab_widget
@@ -707,7 +727,6 @@ class AppWindow(QWidget):
             saved_index = 0
         saved_index = max(0, min(saved_index, self.main_tab_widget.count() - 1))
         self.main_tab_widget.setCurrentIndex(saved_index)
-        self.previous_tab_index = saved_index
 
     def _on_mods_loaded(self):
         on_mods_loaded(self)
@@ -1453,14 +1472,14 @@ class AppWindow(QWidget):
         ):
             return
         if (
-            hasattr(self, "plugins_ui")
-            and self.plugins_ui
+            hasattr(self, "catalog_ui")
+            and self.catalog_ui
             and getattr(self.app_state, "is_settings_view", False)
             and hasattr(self, "settings_tab_widget")
-            and hasattr(self, "plugins_tab")
-            and self.settings_tab_widget.currentWidget() is self.plugins_tab
+            and hasattr(self, "catalog_tab")
+            and self.settings_tab_widget.currentWidget() is self.catalog_tab
         ):
-            self.plugins_ui.ensure_loaded(force_refresh=True)
+            self.catalog_ui.ensure_loaded(force_refresh=True)
         if hasattr(self, "theme") and self.theme:
             self.theme.init_theme_list()
         if not is_initial and self.app_state.has_internet:

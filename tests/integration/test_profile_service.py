@@ -44,12 +44,42 @@ def test_mod_steps_are_profile_scoped():
     assert is_profile_key("mod_steps_deltarune")
 
 
+@pytest.mark.parametrize("filename", ["export.zip", "Default.json"])
+def test_export_rejects_destination_in_source_profile(profile_service, filename):
+    profile_service.initialize()
+    profile_dir = profile_service._profile_dir("Default")
+    profile_path = profile_service._profile_path("Default")
+    original = profile_path.read_bytes()
+
+    assert not profile_service.export("Default", str(profile_dir / filename))
+    assert profile_path.read_bytes() == original
+    assert not (profile_dir / "export.zip").exists()
+
+
 def _profile_dir(profiles_dir, name):
     return os.path.join(profiles_dir, name)
 
 
 def _profile_json(profiles_dir, name):
     return os.path.join(_profile_dir(profiles_dir, name), f"{name}.json")
+
+
+def _write_mod(profile_dir, folder, mod_id, game):
+    mod_dir = os.path.join(profile_dir, folder)
+    os.makedirs(mod_dir)
+    with open(os.path.join(mod_dir, "mod_config.json"), "w", encoding="utf-8") as file:
+        json.dump(
+            {
+                "config_version": "2.0.0",
+                "id": mod_id,
+                "name": mod_id,
+                "version": "1.0.0",
+                "authors": [],
+                "game": game,
+                "files": [],
+            },
+            file,
+        )
 
 
 class TestProfileInitialization:
@@ -187,7 +217,7 @@ class TestProfileSummary:
     def test_get_profile_summary(self, profile_service, profiles_dir):
         """Checks that getting profile summary."""
         profile_service.initialize()
-        os.makedirs(os.path.join(_profile_dir(profiles_dir, "Default"), "mod_a"))
+        _write_mod(_profile_dir(profiles_dir, "Default"), "mod_a", "mod_a", "deltarune")
         summary = profile_service.get_profile_summary("Default")
         assert summary["name"] == "Default"
         assert summary["game"] == "deltarune"
@@ -196,8 +226,8 @@ class TestProfileSummary:
         assert summary["game_mod_count"] == 1
         assert summary["total_mod_count"] == 1
 
-    def test_summary_counts_individual_mods(self, profile_service):
-        """Checks that summary counts individual mods."""
+    def test_summary_counts_installed_mods_by_unique_id(self, profile_service):
+        """Profile references cannot inflate the visible installed-mod count."""
         profile_service.initialize()
         profile_service.create("multi")
         profile_service._write_profile(
@@ -211,9 +241,18 @@ class TestProfileSummary:
                 "used_mods_undertale": {"ut": ["mod_x", "mod_y"]},
             },
         )
+        mod_dir = profile_service._profile_dir("multi")
+        for folder, mod_id, game in (
+            ("delta_a", "delta_a", "deltarune"),
+            ("delta_b", "delta_b", "deltarune"),
+            ("delta_c", "delta_c", "deltarune"),
+            ("delta_c_copy", "delta_c", "deltarune"),
+            ("undertale", "undertale", "undertale"),
+        ):
+            _write_mod(mod_dir, folder, mod_id, game)
         summary = profile_service.get_profile_summary("multi")
-        assert summary["game_mod_count"] == 4
-        assert summary["total_mod_count"] == 6
+        assert summary["game_mod_count"] == 3
+        assert summary["total_mod_count"] == 4
 
 
 class TestSaveActiveMerge:

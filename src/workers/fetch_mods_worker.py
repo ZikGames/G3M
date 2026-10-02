@@ -127,7 +127,6 @@ class FetchModsThread(ManagedQThread):
                                     page=page,
                                     per_page=GAMEBANANA_PER_PAGE,
                                     sort=sort,
-                                    app_state=self.app_state,
                                 )
                                 if not mods_data:
                                     break
@@ -197,7 +196,7 @@ class FetchModsThread(ManagedQThread):
             if app_state and hasattr(app_state, "all_mods"):
                 for mod in app_state.all_mods:
                     mod_id = get_mod_id(mod)
-                    if mod_id and hasattr(mod, "files") and mod.files:
+                    if mod_id and getattr(mod, "sections", None) is not None:
                         existing_mods_with_files[mod_id] = mod
             all_mods_filtered = []
             for mod in all_mods:
@@ -214,8 +213,8 @@ class FetchModsThread(ManagedQThread):
                 ):
                     if mod_id in existing_mods_with_files:
                         existing_mod = existing_mods_with_files[mod_id]
-                        if hasattr(existing_mod, "files") and existing_mod.files:
-                            mod.files = existing_mod.files
+                        if getattr(existing_mod, "sections", None) is not None:
+                            mod.sections = existing_mod.sections
                     elif mod_id in installed_mods_with_files:
                         installed_mod_config = installed_mods_with_files[mod_id]
                         if installed_mod_config.get("files"):
@@ -225,8 +224,8 @@ class FetchModsThread(ManagedQThread):
                                     temp_mod = mod_service.create_mod_object_from_info(
                                         installed_mod_config, []
                                     )
-                                    if hasattr(temp_mod, "files") and temp_mod.files:
-                                        mod.files = temp_mod.files
+                                    if getattr(temp_mod, "sections", None) is not None:
+                                        mod.sections = temp_mod.sections
                                 except Exception as e:
                                     logger.debug(
                                         f"Failed to load files for installed mod {mod_id}: {e}"
@@ -234,8 +233,8 @@ class FetchModsThread(ManagedQThread):
                     all_mods_filtered.append(mod)
                 elif mod_id and mod_id in existing_mods_with_files:
                     existing_mod = existing_mods_with_files[mod_id]
-                    if hasattr(existing_mod, "files") and existing_mod.files:
-                        mod.files = existing_mod.files
+                    if getattr(existing_mod, "sections", None) is not None:
+                        mod.sections = existing_mod.sections
                     all_mods_filtered.append(mod)
                 elif mod_id and mod_id in installed_mods_with_files:
                     installed_mod_config = installed_mods_with_files[mod_id]
@@ -244,8 +243,8 @@ class FetchModsThread(ManagedQThread):
                         temp_mod = mod_service.create_mod_object_from_info(
                             installed_mod_config, []
                         )
-                        if hasattr(temp_mod, "files") and temp_mod.files:
-                            mod.files = temp_mod.files
+                        if getattr(temp_mod, "sections", None) is not None:
+                            mod.sections = temp_mod.sections
                         all_mods_filtered.append(mod)
                     else:
                         all_mods_filtered.append(mod)

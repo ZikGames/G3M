@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -15,12 +16,19 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from services.g3mtool_patching_service import G3MToolPatchingService
 from services.localization_service import tr
 from utils.native_integration import open_path_native
 from utils.process_utils import format_filesystem_error
 
 logger = logging.getLogger(__name__)
+
+
+def _report_counts(content: str) -> tuple[int, int]:
+    def count(label: str) -> int:
+        matches = re.findall(rf"(?i)(?:total\s+)?{label}\s*[:=]\s*(\d+)", content)
+        return max((int(value) for value in matches), default=0)
+
+    return count(r"conflicts?"), count(r"auto[- ]?resolved?")
 
 
 class ConflictsDialog(QDialog):
@@ -46,9 +54,7 @@ class ConflictsDialog(QDialog):
         try:
             with open(self.report_md_path, encoding="utf-8") as f:
                 self._md_content = f.read()
-            self._conflicts_count, self._auto_resolved = (
-                G3MToolPatchingService._parse_conflict_counts(self._md_content)
-            )
+            self._conflicts_count, self._auto_resolved = _report_counts(self._md_content)
         except Exception:
             self._md_content = ""
 

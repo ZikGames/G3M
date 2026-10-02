@@ -321,9 +321,6 @@ class LogViewerDialog(QDialog):
         """
         self.setStyleSheet(base + extra)
 
-    def apply_styles(self) -> None:
-        self.refresh_theme()
-
     @override
     def closeEvent(self, event) -> None:
         self._poll_timer.stop()

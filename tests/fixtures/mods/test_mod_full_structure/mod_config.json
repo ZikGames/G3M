@@ -1,24 +1,29 @@
 {
-    "config_version": "1.0.0",
-    "id": "local_test_mod_full_structure",
-    "name": "Test Mod Full Structure",
-    "version": "1.0.0",
-    "author": "Test Author",
-    "description": "A test mod with full structure for testing mod system",
-    "game": "deltarune",
-    "game_version": "1.0.0",
-    "files": {
-        "deltarune_0": {
-            "description": "Menu modification",
-            "data_file_path": "data.win"
-        },
-        "deltarune_1": {
-            "description": "Chapter 1 modification",
-            "data_file_path": "data.win"
-        },
-        "deltarune_2": {
-            "description": "Chapter 2 modification",
-            "data_file_path": "data.win"
-        }
+  "config_version": "2.0.0",
+  "id": "local_test_mod_full_structure",
+  "name": "Test Mod Full Structure",
+  "version": "1.0.0",
+  "authors": [
+    "Test Author"
+  ],
+  "game": "deltarune",
+  "description": "A test mod with full structure for testing mod system",
+  "game_version": "1.0.0",
+  "files": [
+    {
+      "source": "${mod_path}/chapter_0/patch.xdelta",
+      "target": "${game_path}/data.win",
+      "type": "patch"
+    },
+    {
+      "source": "${mod_path}/chapter_1/patch.xdelta",
+      "target": "${game_path}/chapter1_windows/data.win",
+      "type": "patch"
+    },
+    {
+      "source": "${mod_path}/chapter_2/patch.xdelta",
+      "target": "${game_path}/chapter2_windows/data.win",
+      "type": "patch"
     }
+  ]
 }

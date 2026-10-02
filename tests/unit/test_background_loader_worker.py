@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize
-
 from workers.background_loader_worker import BgLoader
 
 
 def test_background_loader_emits_fallback_for_malformed_path(qapp):
-    worker = BgLoader(None, QSize(640, 480))
+    worker = BgLoader(None)
     loaded = []
     worker.loaded.connect(lambda payload: loaded.append(payload))
 

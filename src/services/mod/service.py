@@ -5,7 +5,6 @@ import os
 import shutil
 import threading
 import time
-from types import SimpleNamespace
 from typing import Any
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -13,33 +12,31 @@ from PyQt6.QtCore import QObject, pyqtSignal
 import models.mod_models as mod_models
 from config.config import MOD_CONFIG_FILENAME
 from models.exceptions import ModUninstallationError
-from models.mod_models import BrowserModInfo, LocalModInfo, ModFileData
+from models.mod_models import BrowserModInfo, LocalModInfo, get_mod_authors
 from services.localization_service import tr
 from services.migration_service import migrate_mod_metadata
+from services.mod_config_migration_service import (
+    ModConfigMigrationIssue,
+    migrate_managed_mods,
+)
 from utils.file_utils import (
-    get_chapter_folder_name,
     load_json,
-    normalize_chapter_id,
     save_json,
 )
-from utils.mod.config_parser import (
-    build_mod_config_data,
-    normalize_mod_config_data,
-    parse_extra_file_entries_raw,
-    resolve_local_icon_path,
-    resolve_mod_file_path,
+from utils.mod.config import (
+    MOD_CONFIG_VERSION,
+    config_has_files_for_section,
+    load_mod_config,
+    write_mod_config,
 )
 from utils.mod.scan_utils import (
     ModFolderInfo,
-    cleanup_corrupted_mods,
-    normalize_mod_cache,
     scan_mods_directory,
 )
 from utils.mod.utils import (
     get_mod_id,
     get_mod_name,
     resolve_mod_icon,
-    sort_gamebanana_files_by_priority,
 )
 from utils.process_utils import format_filesystem_error
 from workers.install.url_install_worker import UrlInstallThread
@@ -71,7 +68,26 @@ class ModManager(QObject):
         self._mods_cache_valid = False
         self._scan_thread: ModScanThread | None = None
         self._scan_in_progress = False
-        self._corrupted_cleanup_done = False
+        self.migration_issues: tuple[ModConfigMigrationIssue, ...] = ()
+
+    def _migrate_owned_mods(self) -> None:
+        report = migrate_managed_mods(self.app_state.mods_dir)
+        if report.configs or report.snapshots:
+            self.invalidate_mods_cache()
+        if report.issues != self.migration_issues:
+            self.migration_issues = report.issues
+            if report.issues:
+                issue = report.issues[0]
+                self.status_changed.emit(
+                    tr(
+                        "status.mod_migration_failed",
+                        count=len(report.issues),
+                        details=f"{issue.path.name}: {issue.message}",
+                    ),
+                    "status_error",
+                )
+        for issue in report.issues:
+            logger.warning("Could not migrate %s: %s", issue.path, issue.message)
 
     def _safe_show_feedback_message(
         self, level: str, title: str, message: str = ""
@@ -146,6 +162,7 @@ class ModManager(QObject):
                     folder_path = mod_info_dict.get("folder_path", "")
                     folder_name = mod_info_dict.get("folder_name", "")
                     config_mtime = mod_info_dict.get("config_mtime", 0.0)
+                    config_digest = mod_info_dict.get("config_digest", "")
                     effective_id = (
                         mod_info_dict.get("id")
                         or config_data.get("id")
@@ -162,6 +179,7 @@ class ModManager(QObject):
                         folder_name=folder_name,
                         config_data=config_data,
                         config_mtime=config_mtime,
+                        config_digest=config_digest,
                     )
                     cache[effective_id] = mod_info
                     mod_name = config_data.get("name", "")
@@ -196,7 +214,7 @@ class ModManager(QObject):
             "id": mod_id,
             "name": config_data.get("name", default_name),
             "version": config_data.get("version", "1.0.0"),
-            "author": config_data.get("author", tr("defaults.unknown")),
+            "authors": get_mod_authors(config_data, tr("defaults.unknown")),
             "description": config_data.get("description", tr("defaults.no_description")),
             "game_version": config_data.get(
                 "game_version", tr("defaults.not_specified")
@@ -211,11 +229,6 @@ class ModManager(QObject):
     def _get_mods_cache(self, use_async: bool = False) -> dict[str, ModFolderInfo]:
         with self._cache_lock:
             if self._mods_cache_valid:
-                normalized_cache = normalize_mod_cache(self._mods_cache)
-                if len(normalized_cache) != len(self._mods_cache) or any(
-                    isinstance(v, dict) for v in self._mods_cache.values()
-                ):
-                    self._mods_cache = normalized_cache
                 return self._mods_cache.copy()
             if (
                 use_async
@@ -241,9 +254,7 @@ class ModManager(QObject):
         if not os.path.exists(self.app_state.mods_dir):
             os.makedirs(self.app_state.mods_dir, exist_ok=True)
             return False
-        if not self._corrupted_cleanup_done:
-            cleanup_corrupted_mods(self.app_state.mods_dir)
-            self._corrupted_cleanup_done = True
+        self._migrate_owned_mods()
         try:
             cache = self._get_mods_cache(use_async=False)
         except Exception as e:
@@ -286,7 +297,7 @@ class ModManager(QObject):
 
             def _sync_mod_icon(existing_mod, config_data, mod_id):
                 mod_folder_path = self.get_mod_folder_path(mod_id)
-                local_icon = resolve_local_icon_path(config_data, mod_folder_path)
+                local_icon = resolve_mod_icon(config_data, mod_folder_path)
                 if local_icon and local_icon != (
                     getattr(existing_mod, "icon", None)
                     or getattr(existing_mod, "icon_path", None)
@@ -296,62 +307,26 @@ class ModManager(QObject):
                     if hasattr(existing_mod, "update_metadata"):
                         existing_mod.update_metadata({"icon": local_icon})
 
-            def _refresh_local_mod_files(existing_mod, config_data, mod_id):
-                mod_folder_path = self.get_mod_folder_path(mod_id)
-                refreshed_files: dict[str, ModFileData] = {}
-                try:
-                    self._parse_local_chapter_files(
-                        SimpleNamespace(files=refreshed_files),
-                        config_data,
-                        mod_id,
-                        mod_folder_path,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"load_local_mods: Failed to refresh local files for mod {mod_id}: {e}",
-                        exc_info=True,
-                    )
-                    return
-                existing_mod.files = refreshed_files
+            def _refresh_local_mod_sections(existing_mod, config_data):
+                existing_mod.sections = self._operation_sections(config_data)
 
-            def _try_update_mod_files(
-                existing_mod, config_data, mod_id, replace_in_list=False
-            ):
-                files_data = config_data.get("files")
-                if files_data:
-                    try:
-                        if isinstance(files_data, dict):
-                            new_mod = self.create_mod_object_from_info(
-                                config_data, self.app_state.all_mods
-                            )
-                            if replace_in_list:
-                                for i, mod in enumerate(self.app_state.all_mods):
-                                    if get_mod_id(mod) == mod_id:
-                                        self.app_state.all_mods[i] = new_mod
-                                        break
-                            elif hasattr(new_mod, "files") and new_mod.files:
-                                existing_mod.files = new_mod.files
-                            elif hasattr(existing_mod, "files"):
-                                existing_mod.files = {}
-                        else:
-                            logger.debug(
-                                f"load_local_mods: Skipping mod {mod_id} with empty/invalid files data"
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            f"load_local_mods: Failed to load files for mod {mod_id}: {e}",
-                            exc_info=True,
-                        )
+            def _refresh_local_mod(existing_mod, config_data, mod_id):
+                if isinstance(existing_mod, LocalModInfo):
+                    _refresh_local_mod_sections(existing_mod, config_data)
+                metadata = {
+                    **config_data,
+                    "authors": get_mod_authors(config_data, tr("defaults.unknown")),
+                }
                 for field in (
                     "name",
-                    "author",
+                    "authors",
                     "description",
                     "version",
                     "game",
                     "game_version",
                     "homepage",
                 ):
-                    val = config_data.get(field)
+                    val = metadata.get(field)
                     if val:
                         setattr(existing_mod, field, val)
                 _sync_mod_icon(existing_mod, config_data, mod_id)
@@ -368,24 +343,22 @@ class ModManager(QObject):
                     if mod_id in existing_mod_ids:
                         existing_mod = _find_mod_by_id(mod_id)
                         if existing_mod:
-                            _try_update_mod_files(existing_mod, config_data, mod_id)
+                            _refresh_local_mod(existing_mod, config_data, mod_id)
                     continue
                 if mod_id in existing_mod_ids:
                     existing_mod = _find_mod_by_id(mod_id)
                     if existing_mod:
-                        _try_update_mod_files(
-                            existing_mod, config_data, mod_id, replace_in_list=True
-                        )
+                        _refresh_local_mod(existing_mod, config_data, mod_id)
                     continue
                 try:
                     mod_folder_path = self.get_mod_folder_path(mod_id)
-                    icon_path = resolve_local_icon_path(config_data, mod_folder_path)
+                    icon_path = resolve_mod_icon(config_data, mod_folder_path) or ""
                     safe_mod_info = self._build_safe_mod_info(
                         mod_id, config_data, icon_path
                     )
                     mod = LocalModInfo(**safe_mod_info)
-                    self._parse_chapter_files(mod, config_data, mod_id)
-                    self._append_mod_if_valid(mod, mod_id)
+                    mod.sections = self._operation_sections(config_data)
+                    self._append_mod_if_valid(mod, mod_id, config_data)
                 except Exception as e:
                     logger.warning(
                         f"Failed to create LocalModInfo for installed mod {mod_id}: {e}",
@@ -398,22 +371,7 @@ class ModManager(QObject):
                 if mod_id in existing_mod_ids:
                     existing_mod = _find_mod_by_id(mod_id)
                     if existing_mod:
-                        for field in (
-                            "name",
-                            "author",
-                            "description",
-                            "version",
-                            "game",
-                            "game_version",
-                            "homepage",
-                        ):
-                            setattr(
-                                existing_mod,
-                                field,
-                                config_data.get(field, getattr(existing_mod, field)),
-                            )
-                        _refresh_local_mod_files(existing_mod, config_data, mod_id)
-                        _sync_mod_icon(existing_mod, config_data, mod_id)
+                        _refresh_local_mod(existing_mod, config_data, mod_id)
                         if hasattr(existing_mod, "update_metadata"):
                             existing_mod.update_metadata(config_data)
                     continue
@@ -422,9 +380,9 @@ class ModManager(QObject):
                     mod_folder_path = getattr(
                         mod_info_from_cache, "folder_path", None
                     ) or self.get_mod_folder_path(mod_id)
-                    icon_path = resolve_local_icon_path(
+                    icon_path = resolve_mod_icon(
                         config_data, mod_folder_path or self.get_mod_folder_path(mod_id)
-                    )
+                    ) or ""
                     safe_mod_info = self._build_safe_mod_info(
                         mod_id,
                         config_data,
@@ -433,10 +391,8 @@ class ModManager(QObject):
                         tags=["local"],
                     )
                     mod = LocalModInfo(**safe_mod_info)
-                    self._parse_local_chapter_files(
-                        mod, config_data, mod_id, mod_folder_path
-                    )
-                    self._append_mod_if_valid(mod, mod_id)
+                    mod.sections = self._operation_sections(config_data)
+                    self._append_mod_if_valid(mod, mod_id, config_data)
                 except Exception as e:
                     logger.warning(f"Failed to build LocalModInfo: {e}")
                     continue
@@ -461,21 +417,6 @@ class ModManager(QObject):
                                 f"load_local_mods: Failed to load downloads from API for mod {mod_id_attr}: {e}"
                             )
             metadata = self._read_metadata()
-            cleanup_files = metadata.get("mod_files_to_cleanup", [])
-            cleanup_dirs = metadata.get("mod_dirs_to_cleanup", [])
-            for items, remover, kind in [
-                (cleanup_files, os.remove, "file"),
-                (cleanup_dirs, shutil.rmtree, "dir"),
-            ]:
-                for p in items:
-                    try:
-                        if os.path.exists(p):
-                            remover(p)
-                    except Exception as e:
-                        logger.warning(
-                            f"load_local_mods: failed to remove cleanup {kind} {p}: {e}",
-                            exc_info=True,
-                        )
             if "mod_files_to_cleanup" in metadata or "mod_dirs_to_cleanup" in metadata:
                 metadata.pop("mod_files_to_cleanup", None)
                 metadata.pop("mod_dirs_to_cleanup", None)
@@ -487,75 +428,30 @@ class ModManager(QObject):
             return False
 
     @staticmethod
-    def _validate_files_data(config_data: dict, mod_id: str) -> dict:
-        files_data = config_data.get("files", {})
-        if not isinstance(files_data, dict):
-            logger.warning(
-                f"load_local_mods: Invalid files_data type for mod {mod_id}, expected dict, got {type(files_data).__name__}"
-            )
-            return {}
-        return files_data
+    def _operation_sections(config_data: dict) -> frozenset[str]:
+        """Expose strict operation targets to library filtering without legacy file data."""
+        from models.game_modes import get_game
 
-    def _parse_chapter_files(self, mod, config_data: dict, mod_id: str):
-        files_data = self._validate_files_data(config_data, mod_id)
         game = config_data.get("game")
-        for file_key, ch_info in list(files_data.items()):
-            if not isinstance(ch_info, dict):
-                logger.debug(
-                    f"load_local_mods: Skipping invalid chapter info for mod {mod_id}, file_key={file_key}"
-                )
-                continue
-            try:
-                normalized_key = normalize_chapter_id(file_key, game)
-                extra_files_list = parse_extra_file_entries_raw(
-                    ch_info.get("extra_files", [])
-                )
-                mod.files[normalized_key] = ModFileData(
-                    description=ch_info.get("description"),
-                    data_file_path=ch_info.get("data_file_path")
-                    or ch_info.get("data_file_url"),
-                    extra_files=extra_files_list,
-                )
-            except Exception as e:
-                logger.warning(
-                    f"load_local_mods: Failed to process chapter data for mod {mod_id}, file_key={file_key}: {e}",
-                    exc_info=True,
-                )
+        game_definition = get_game(game) if isinstance(game, str) else None
+        section_ids = (
+            [tab.tab_id for tab in game_definition.tabs]
+            if game_definition is not None
+            else [game]
+        )
+        return frozenset(
+            section_id
+            for section_id in section_ids
+            if isinstance(section_id, str)
+            and config_has_files_for_section(config_data, section_id)
+        )
 
-    def _parse_local_chapter_files(
-        self, mod, config_data: dict, mod_id: str, mod_folder_path: str
-    ):
-        files_data = self._validate_files_data(config_data, mod_id)
-        game = config_data.get("game")
-        for file_key, ch_info in list(files_data.items()):
-            if not isinstance(ch_info, dict):
-                logger.warning(
-                    f"load_local_mods: ch_info is not a dict for mod {mod_id}, file_key={file_key}, skipping"
-                )
-                continue
-            normalized_key = normalize_chapter_id(file_key, game)
-            data_file_path = ""
-            stored_data_path = ch_info.get("data_file_path") or ch_info.get(
-                "data_file_url"
-            )
-            if stored_data_path:
-                data_file_path = resolve_mod_file_path(mod_folder_path, stored_data_path)
-            extra_files = parse_extra_file_entries_raw(
-                ch_info.get("extra_files", []),
-                mod_root_path=mod_folder_path if mod_folder_path else None,
-            )
-            mod.files[normalized_key] = ModFileData(
-                description=ch_info.get("description") or config_data.get("description", ""),
-                data_file_path=data_file_path,
-                extra_files=extra_files,
-            )
-
-    def _append_mod_if_valid(self, mod, mod_id: str):
-        if mod.files:
+    def _append_mod_if_valid(self, mod, mod_id: str, config_data: dict | None = None):
+        if (config_data or {}).get("config_version") == MOD_CONFIG_VERSION:
             self.app_state.append_mod(mod)
         else:
             logger.debug(
-                f"Skipping mod {mod_id} ({mod.name}): game={mod.game}, has_files={bool(mod.files)}"
+                f"Skipping mod {mod_id} ({mod.name}): config is not current"
             )
 
     def get_mod_config(self, mod_id: str) -> dict:
@@ -570,26 +466,16 @@ class ModManager(QObject):
             return ""
         mod_info = self._get_mods_cache().get(mod_id)
         if mod_info:
-            folder_path = (
-                mod_info.get("folder_path", "")
-                if isinstance(mod_info, dict)
-                else mod_info.folder_path
-            )
+            folder_path = mod_info.folder_path
             if folder_path and os.path.isdir(folder_path):
                 return folder_path
         for cached_info in self._get_mods_cache().values():
-            folder_path = (
-                cached_info.get("folder_path", "")
-                if isinstance(cached_info, dict)
-                else cached_info.folder_path
-            )
-            config_data = (
-                cached_info.get("config_data", {})
-                if isinstance(cached_info, dict)
-                else cached_info.config_data
-            )
-            if config_data.get("id") == mod_id and folder_path and os.path.isdir(folder_path):
-                return folder_path
+            if (
+                cached_info.config_data.get("id") == mod_id
+                and cached_info.folder_path
+                and os.path.isdir(cached_info.folder_path)
+            ):
+                return cached_info.folder_path
         for folder_name, folder_path, _, config_data in self._iter_mod_configs():
             if config_data.get("id") != mod_id:
                 continue
@@ -600,40 +486,6 @@ class ModManager(QObject):
                 if os.path.isdir(candidate):
                     return candidate
         return ""
-
-    @staticmethod
-    def resolve_gamebanana_file(mod_info, api, selected_file=None) -> dict | None:
-        from utils.mod.utils import get_gamebanana_id, parse_gamebanana_mod_id
-
-        if selected_file:
-            return selected_file
-        files = sort_gamebanana_files_by_priority(
-            getattr(mod_info, "gamebanana_supported_files", []) or []
-        )
-        if files:
-            mod_info.gamebanana_supported_files = files
-            return files[0]
-        try:
-            gb_type, gb_id = parse_gamebanana_mod_id(get_gamebanana_id(mod_info))
-            if not gb_id:
-                return None
-            itemtype = "Wip" if gb_type == "wip" else "Mod"
-            compat = api.get_supported_files_for_mod(int(gb_id), itemtype=itemtype)
-            files = sort_gamebanana_files_by_priority(
-                compat.get("supported_files") or []
-            )
-            if files:
-                mod_info.gamebanana_supported_files = files
-                mod_info.gamebanana_compatibility_checked = compat.get(
-                    "compatibility_checked", False
-                )
-                return files[0]
-        except Exception as e:
-            mod_id = get_mod_id(mod_info) or "unknown"
-            logger.warning(
-                f"ModManager: Failed to resolve GameBanana file for mod {mod_id}: {e}"
-            )
-        return None
 
     def install_from_url(self, url: str):
         if self.app_state.is_installing:
@@ -798,8 +650,8 @@ class ModManager(QObject):
             self._write_metadata(metadata)
 
     def _resolve_mod_info_from_cache(
-        self, cache: dict, mod_id: str, mod_name: str | None
-    ):
+        self, cache: dict[str, ModFolderInfo], mod_id: str, mod_name: str | None
+    ) -> ModFolderInfo | None:
         """Find mod info in cache by id, then by name variants."""
         mod_info = cache.get(mod_id)
         if mod_info:
@@ -817,27 +669,13 @@ class ModManager(QObject):
                 )
                 return cache[mapped_mod_id]
         for cached_mod_id, cached_info in cache.items():
-            cached_folder = (
-                cached_info.folder_name
-                if hasattr(cached_info, "folder_name")
-                else cached_info.get("folder_name")
-                if isinstance(cached_info, dict)
-                else None
-            )
-            if cached_folder == mod_name:
+            if cached_info.folder_name == mod_name:
                 logger.info(
                     f"delete_mod_files: Found mod by folder name: {mod_name}, id: {cached_mod_id}"
                 )
                 return cached_info
         for cached_mod_id, cached_info in cache.items():
-            config_data = (
-                cached_info.config_data
-                if hasattr(cached_info, "config_data")
-                else cached_info.get("config_data", {})
-                if isinstance(cached_info, dict)
-                else {}
-            )
-            if config_data.get("name", "") == mod_name:
+            if cached_info.config_data.get("name", "") == mod_name:
                 logger.info(
                     f"delete_mod_files: Found mod by config name: {mod_name}, id: {cached_mod_id}"
                 )
@@ -919,13 +757,11 @@ class ModManager(QObject):
         if not mod_info:
             return "install"
         config_data = mod_info.config_data
-        file_key = normalize_chapter_id(chapter_id, config_data.get("game"))
-        files_data = config_data.get("files", {})
-        if file_key in files_data:
-            file_info = files_data[file_key]
-            if file_info.get("data_file_path") or file_info.get("extra_files"):
-                return "ready"
-        return "install"
+        return (
+            "ready"
+            if config_has_files_for_section(config_data, chapter_id)
+            else "install"
+        )
 
     def mod_has_update_available(self, mod_data) -> bool:
         try:
@@ -972,22 +808,7 @@ class ModManager(QObject):
             mod_info = cache.get(mod_id)
             if not mod_info:
                 return False
-            files_data = mod_info.config_data.get("files", {})
-            if files_data:
-                return (
-                    normalize_chapter_id(chapter_id, mod_info.config_data.get("game"))
-                    in files_data
-                )
-            folder_name = (
-                get_chapter_folder_name(chapter_id)
-                if "_" in str(chapter_id)
-                else "universal"
-            )
-            for name in (folder_name, "universal"):
-                folder = os.path.join(mod_info.folder_path, name)
-                if os.path.exists(folder):
-                    return len(os.listdir(folder)) > 0
-            return True
+            return config_has_files_for_section(mod_info.config_data, chapter_id)
         except Exception as e:
             logger.warning(f"mod_has_files_for_chapter: exception: {e}", exc_info=True)
             return True
@@ -1049,13 +870,6 @@ class ModManager(QObject):
                 except Exception as e:
                     logger.error(f"add_playtime_hours: failed to write metadata: {e}")
 
-    def get_playtime_hours(self, mod_id: str) -> float:
-        metadata = self._read_metadata()
-        entry = metadata.get(mod_id, {})
-        if not isinstance(entry, dict):
-            return 0.0
-        return self._normalize_playtime_hours(entry.get("playtime_hours", 0))
-
     def _on_url_install_finished(self, success: bool, message: str):
         self.app_state.is_installing = False
         finished_task = self.app_state.current_task
@@ -1085,7 +899,8 @@ class ModManager(QObject):
             "added_date": mod_info.get("added_date"),
             "last_updated": mod_info.get("last_updated"),
         }
-        normalize_mod_config_data(mod_info)
+        if mod_info.get("config_version") != MOD_CONFIG_VERSION:
+            return None
         mod_info.update(
             {
                 key: value
@@ -1095,34 +910,25 @@ class ModManager(QObject):
         )
         if not (mod_id and isinstance(mod_id, str) and mod_id.startswith("gb_")):
             mod_info.pop(self._BROWSER_ONLY_DATE_FIELD, None)
-        files_data = mod_info.get("files", {})
-        if files_data:
-            from utils.mod.config_parser import normalize_files_data
-
-            mod_info["files"] = normalize_files_data(
-                files_data, mod_info.get("game")
-            )
         if all_mods:
             for mod in all_mods:
                 existing_mod_id = get_mod_id(mod)
                 if (
                     existing_mod_id == mod_id
                     and isinstance(mod, mod_models.LocalModInfo)
-                    and hasattr(mod, "files")
-                    and mod.files
                 ):
                     refreshed_mod = mod_models.LocalModInfo.from_dict(mod_info)
                     for attr in (
                         "name",
                         "version",
-                        "author",
+                        "authors",
                         "description",
                         "game",
                         "game_version",
                         "icon",
                         "tags",
                         "homepage",
-                        "files",
+                        "sections",
                         "added_date",
                         "last_updated",
                     ):
@@ -1148,12 +954,7 @@ class ModManager(QObject):
             if not os.path.exists(config_path):
                 continue
             try:
-                config_data = load_json(config_path, persist_normalized=False)
-                if config_data and isinstance(config_data, dict):
-                    normalize_mod_config_data(
-                        config_data, mod_root_path=folder_path
-                    )
-                    yield folder_name, folder_path, config_path, config_data
+                yield folder_name, folder_path, config_path, load_mod_config(config_path)
             except Exception as e:
                 logger.warning(
                     f"_iter_mod_configs: failed to read {config_path}: {e}",
@@ -1166,6 +967,10 @@ class ModManager(QObject):
             self.app_state.mods_dir
         ):
             return installed_mods
+        with self._cache_lock:
+            needs_migration = not self._mods_cache_valid
+        if needs_migration:
+            self._migrate_owned_mods()
         cache_snapshot: dict[str, ModFolderInfo] | None = None
         with self._cache_lock:
             if self._mods_cache_valid and self._mods_cache:
@@ -1200,7 +1005,6 @@ class ModManager(QObject):
                 else ""
             )
             cfg = dict(config_data)
-            normalize_mod_config_data(cfg, mod_root_path=mod_folder_path)
             cfg.pop(self._BROWSER_ONLY_DATE_FIELD, None)
             if mod_folder_path:
                 resolved_icon = resolve_mod_icon(cfg, mod_folder_path)
@@ -1215,14 +1019,8 @@ class ModManager(QObject):
             for cached_mod_id, info in cache_snapshot.items():
                 config_data = {}
                 try:
-                    if isinstance(info, ModFolderInfo):
-                        config_data = info.config_data or {}
-                        folder_name = info.folder_name
-                    elif isinstance(info, dict):
-                        config_data = info.get("config_data", {}) or {}
-                        folder_name = info.get("folder_name", "")
-                    else:
-                        continue
+                    config_data = info.config_data or {}
+                    folder_name = info.folder_name
                     _append_from_config(config_data, folder_name)
                 except Exception as e:
                     config_read_errors = True
@@ -1259,11 +1057,11 @@ class ModManager(QObject):
     def migrate_metadata_from_local_configs(self) -> bool:
         mods_metadata = self._read_metadata()
         updated = False
-        for folder_name, _, config_path, config_data in self._iter_mod_configs():
+        for folder_name, _folder_path, config_path, config_data in self._iter_mod_configs():
             try:
                 changed = migrate_mod_metadata(config_data, mods_metadata)[1]
                 if changed:
-                    save_json(config_path, build_mod_config_data(config_data), indent=4)
+                    write_mod_config(config_path, config_data)
                     updated = True
             except Exception as e:
                 logger.warning(

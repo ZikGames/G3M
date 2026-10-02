@@ -1,211 +1,120 @@
-"""Data models for local mod configs and browser-only mod metadata."""
+"""Models for installed current configs and remote mod metadata."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from services.migration_service import (
-    LEGACY_DESCRIPTION_KEY,
-    LEGACY_ICON_KEY,
-    build_extra_file_entry,
-)
+
+def _metadata_value[T](data: dict[str, Any], key: str, default: T) -> T:
+    value = data.get(key)
+    if value not in (None, "", [], {}):
+        return cast(T, value)
+    metadata = data.get("metadata")
+    value = metadata.get(key) if isinstance(metadata, dict) else None
+    return cast(T, value) if value not in (None, "", [], {}) else default
 
 
-@dataclass(init=False)
-class ModFileData:
-    """File data for a game content section (chapter, whole game, etc.)."""
-
-    description: str | None
-    data_file_path: str | None
-    extra_files: list[dict[str, str]]
-
-    def __init__(
-        self,
-        description: str | None = None,
-        data_file_path: str | None = None,
-        extra_files: Sequence[str | dict[str, str]] | None = None,
-        *,
-        data_file_url: str | None = None,
-    ) -> None:
-        self.description = description
-        self.data_file_path = data_file_path or data_file_url
-        self.extra_files = []
-        for value in extra_files or []:
-            if isinstance(value, str) and value:
-                self.extra_files.append(build_extra_file_entry(value))
-            elif isinstance(value, dict):
-                file_path = str(value.get("file_path") or value.get("url") or "")
-                if file_path:
-                    self.extra_files.append(
-                        build_extra_file_entry(
-                            file_path,
-                            str(
-                                value.get("target")
-                                or value.get("status")
-                                or "game_folder"
-                            ),
-                            str(value.get("target_path") or ""),
-                        )
-                    )
-
-    @property
-    def data_file_url(self) -> str | None:
-        return self.data_file_path
-
-    @data_file_url.setter
-    def data_file_url(self, value: str | None) -> None:
-        self.data_file_path = value
-
-    def is_valid(self) -> bool:
-        return bool(self.data_file_path or self.extra_files)
+def get_mod_authors(data: dict[str, Any], default: str = "") -> list[str]:
+    """Return the current config's canonical author list."""
+    authors = _metadata_value(data, "authors", [])
+    if isinstance(authors, list):
+        names = [name.strip() for name in authors if isinstance(name, str) and name.strip()]
+        if names:
+            return names
+    return [default] if default else []
 
 
-def _parse_files_dict(data_dict: dict[str, Any]) -> dict[str, ModFileData]:
-    files_dict: dict[str, ModFileData] = {}
-    raw_files = data_dict.get("files")
-    if not isinstance(raw_files, dict):
-        return files_dict
-    for key, value in raw_files.items():
-        if isinstance(value, dict):
-            extra_files = value.get("extra_files", [])
-            value = value.copy()
-            value.pop("data_file_version", None)
-            if isinstance(extra_files, dict):
-                extra_iterable = extra_files.values()
-            elif isinstance(extra_files, (list, tuple, set)):
-                extra_iterable = extra_files
-            else:
-                extra_iterable = []
-            value["extra_files"] = list(extra_iterable)
-            files_dict[key] = ModFileData(
-                description=value.get("description"),
-                data_file_path=value.get("data_file_path")
-                or value.get("data_file_url"),
-                extra_files=value.get("extra_files", []),
-            )
-        elif isinstance(value, ModFileData):
-            files_dict[key] = value
-    return files_dict
+def format_mod_authors(authors: Iterable[object]) -> str:
+    """Format canonical author names for display."""
+    return ", ".join(
+        name.strip() for name in authors if isinstance(name, str) and name.strip()
+    )
 
 
-def _get_metadata_value[T](data_dict: dict[str, Any], key: str, default: T) -> T:
-    if key in data_dict and data_dict.get(key) not in (None, "", [], {}):
-        return cast(T, data_dict.get(key))
-    metadata = data_dict.get("metadata")
-    if isinstance(metadata, dict):
-        return cast(T, metadata.get(key, default))
-    return default
+def _config_sections(data: dict[str, Any]) -> frozenset[str]:
+    from utils.mod.config import MOD_CONFIG_VERSION, config_has_files_for_section
+
+    if data.get("config_version") != MOD_CONFIG_VERSION:
+        return frozenset()
+    from models.game_modes import get_game
+
+    game = str(data.get("game") or "")
+    definition = get_game(game)
+    section_ids = [tab.tab_id for tab in definition.tabs] if definition else [game]
+    return frozenset(
+        section_id
+        for section_id in section_ids
+        if section_id and config_has_files_for_section(data, section_id)
+    )
 
 
 @dataclass
 class BaseModInfo:
-    """Shared mod data used by both installed mods and browser results."""
+    """Shared visible metadata; installed content is described only by its config."""
 
     id: str
     name: str
     version: str
-    author: str
+    authors: list[str]
     description: str
     game: str
     game_version: str = ""
     icon: str | None = None
     tags: list[str] = field(default_factory=list)
     homepage: str | None = None
-    files: dict[str, ModFileData] = field(default_factory=dict)
+    sections: frozenset[str] | None = None
     playtime_hours: float = 0.0
 
-    @staticmethod
-    def _parse_common_fields(data_dict: dict[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def _common_fields(cls, data: dict[str, Any], *, remote: bool) -> dict[str, Any]:
         from services.localization_service import tr
 
         return {
-            "id": _get_metadata_value(data_dict, "id", ""),
-            "name": _get_metadata_value(data_dict, "name", "Unknown Mod"),
-            "version": _get_metadata_value(data_dict, "version", "1.0.0"),
-            "author": _get_metadata_value(data_dict, "author", tr("defaults.unknown")),
-            "description": _get_metadata_value(
-                data_dict,
-                "description",
-                data_dict.get(
-                    LEGACY_DESCRIPTION_KEY, tr("status.no_description_status")
-                ),
-            ),
-            "game": _get_metadata_value(data_dict, "game", "deltarune"),
-            "game_version": _get_metadata_value(
-                data_dict, "game_version", tr("defaults.not_specified")
-            ),
-            "icon": _get_metadata_value(
-                data_dict, "icon", data_dict.get(LEGACY_ICON_KEY)
-            ),
-            "tags": _get_metadata_value(data_dict, "tags", []),
-            "homepage": _get_metadata_value(data_dict, "homepage", None),
-            "files": _parse_files_dict(data_dict),
+            "id": _metadata_value(data, "id", ""),
+            "name": _metadata_value(data, "name", "Unknown Mod"),
+            "version": _metadata_value(data, "version", "1.0.0"),
+            "authors": get_mod_authors(data, tr("defaults.unknown")),
+            "description": _metadata_value(data, "description", tr("status.no_description_status")),
+            "game": _metadata_value(data, "game", "deltarune"),
+            "game_version": _metadata_value(data, "game_version", tr("defaults.not_specified")),
+            "icon": _metadata_value(data, "icon", None),
+            "tags": _metadata_value(data, "tags", []),
+            "homepage": _metadata_value(data, "homepage", None),
+            "sections": None if remote else _config_sections(data),
         }
 
-    def get_file_data(self, chapter_id: str) -> ModFileData | None:
-        """Get file data by the normalized content section id."""
-        return self.files.get(chapter_id)
-
-    def get_chapter_data(self, chapter_id: str) -> ModFileData | None:
-        """Get file data by tab_id. Uses game registry for correct key lookup."""
-        from models.game_modes import get_game
-        from utils.file_utils import normalize_chapter_id
-
-        game_def = get_game(self.game)
-        if game_def:
-            tab = game_def.get_tab(chapter_id)
-            if tab:
-                result = self.files.get(tab.tab_id) or self.files.get(tab.files_key)
-                if result:
-                    return result
-        normalized_id = normalize_chapter_id(chapter_id, self.game)
-        result = self.files.get(normalized_id) or self.files.get(chapter_id)
-        if not result and game_def and len(game_def.tabs) == 1:
-            result = self.files.get("0")
-        return result
+    def supports_section(self, section_id: str) -> bool:
+        """Remote listings are not constrained until their package is imported."""
+        return self.sections is None or section_id in self.sections
 
     def is_gamebanana_mod(self) -> bool:
-        return bool(
-            self.id
-            and isinstance(self.id, str)
-            and (self.id.startswith("gb_mod_") or self.id.startswith("gb_wip_"))
-        )
+        return self.id.startswith(("gb_mod_", "gb_wip_"))
 
     def get_gamebanana_mod_id(self) -> str | None:
         from utils.mod.utils import parse_gamebanana_mod_id
 
-        _, mod_id = parse_gamebanana_mod_id(self.id)
-        return mod_id
+        return parse_gamebanana_mod_id(self.id)[1]
 
 
 @dataclass
 class LocalModInfo(BaseModInfo):
-    """Installed/local mod representation built from local config plus local metadata."""
-
     added_date: str | None = None
     last_updated: str | None = None
 
-    def is_valid_for_demo(self) -> bool:
-        return self.game == "deltarunedemo" and bool(
-            self.files and (self.files.get("deltarunedemo") or self.files.get("demo"))
-        )
-
     @classmethod
-    def from_dict(cls, data_dict: dict[str, Any]) -> LocalModInfo:
+    def from_dict(cls, data: dict[str, Any]) -> LocalModInfo:
         return cls(
-            **cls._parse_common_fields(data_dict),
-            playtime_hours=data_dict.get("playtime_hours", 0.0),
-            added_date=data_dict.get("added_date"),
-            last_updated=data_dict.get("last_updated"),
+            **cls._common_fields(data, remote=False),
+            playtime_hours=data.get("playtime_hours", 0.0),
+            added_date=data.get("added_date"),
+            last_updated=data.get("last_updated"),
         )
 
 
 @dataclass
 class BrowserModInfo(BaseModInfo):
-    """Mods Browser representation with remote catalog metadata."""
-
     description_url: str = ""
     downloads: int | None = None
     like_count: int | None = None
@@ -225,36 +134,28 @@ class BrowserModInfo(BaseModInfo):
     gamebanana_compatibility_checked: bool = False
     has_full_metadata: bool = False
 
-    def is_valid_for_demo(self) -> bool:
-        return self.game == "deltarunedemo" and bool(
-            (self.files and (self.files.get("deltarunedemo") or self.files.get("demo")))
-            or (self.demo_url and self.demo_version)
-        )
-
     @classmethod
-    def from_dict(cls, data_dict: dict[str, Any]) -> BrowserModInfo:
+    def from_dict(cls, data: dict[str, Any]) -> BrowserModInfo:
         return cls(
-            **cls._parse_common_fields(data_dict),
-            description_url=_get_metadata_value(data_dict, "description_url", ""),
-            downloads=data_dict.get("downloads"),
-            like_count=data_dict.get("like_count"),
-            hide_mod=data_dict.get("hide_mod", False),
-            ban_status=data_dict.get("ban_status", False),
-            is_nsfw=data_dict.get("is_nsfw", False),
-            has_files=data_dict.get("has_files", True),
-            is_wip=data_dict.get("is_wip", False),
-            demo_url=data_dict.get("demo_url"),
-            demo_version=data_dict.get("demo_version"),
-            created_date=data_dict.get("created_date"),
-            last_updated=data_dict.get("last_updated"),
-            screenshots_url=data_dict.get("screenshots_url", []),
-            full_description=data_dict.get("full_description"),
-            gamebanana_category=data_dict.get("gamebanana_category"),
-            gamebanana_supported_files=data_dict.get("gamebanana_supported_files", []),
-            gamebanana_compatibility_checked=data_dict.get(
-                "gamebanana_compatibility_checked", False
-            ),
-            has_full_metadata=data_dict.get("has_full_metadata", False),
+            **cls._common_fields(data, remote=True),
+            description_url=_metadata_value(data, "description_url", ""),
+            downloads=data.get("downloads"),
+            like_count=data.get("like_count"),
+            hide_mod=data.get("hide_mod", False),
+            ban_status=data.get("ban_status", False),
+            is_nsfw=data.get("is_nsfw", False),
+            has_files=data.get("has_files", True),
+            is_wip=data.get("is_wip", False),
+            demo_url=data.get("demo_url"),
+            demo_version=data.get("demo_version"),
+            created_date=data.get("created_date"),
+            last_updated=data.get("last_updated"),
+            screenshots_url=data.get("screenshots_url", []),
+            full_description=data.get("full_description"),
+            gamebanana_category=data.get("gamebanana_category"),
+            gamebanana_supported_files=data.get("gamebanana_supported_files", []),
+            gamebanana_compatibility_checked=data.get("gamebanana_compatibility_checked", False),
+            has_full_metadata=data.get("has_full_metadata", False),
         )
 
 

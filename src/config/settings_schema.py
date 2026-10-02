@@ -66,7 +66,12 @@ DEFAULT_APP_SETTINGS = {
     "downloads_no_auto_use": False,
     "downloads_delete_after_use": False,
     "downloads_save_local_imports": False,
+    "hide_update_mods_button": False,
+    "automatic_mod_updates": False,
+    "automatic_mod_updates_replace_current": False,
+    "automatic_mod_updates_scope": "profile",
     "onboarding_completed": False,
+    "launch_mode": "launch",
 }
 
 

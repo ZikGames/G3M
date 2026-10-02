@@ -166,7 +166,13 @@ def execute_shortcut_plugin_hook(
 ) -> bool:
     if not runtime_service or not shortcut_context.enabled:
         return True
-    results = runtime_service.execute_hook(hook_name, shortcut_context, *args)
+    try:
+        results = runtime_service.execute_hook_with_runtime(
+            hook_name, None, shortcut_context, *args, raise_errors=True
+        )
+    except Exception:
+        logger.exception("Shortcut plugin hook failed: %s", hook_name)
+        return False
     return not any(result is False for result in results)
 
 
@@ -196,9 +202,6 @@ def build_headless_plugin_runtime(
         app_state,
         _HeadlessFeedbackService(),
         settings_service,
-        SimpleNamespace(),
-        SimpleNamespace(),
-        SimpleNamespace(),
         SimpleNamespace(),
         SimpleNamespace(),
         plugin_state_service,

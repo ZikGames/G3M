@@ -11,6 +11,7 @@ from PyQt6.QtCore import (
     QPropertyAnimation,
     QThread,
     QTimer,
+    pyqtSlot,
 )
 from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
@@ -125,6 +126,34 @@ def safe_stop_thread(thread, timeout=2000, blocking=True):
             )
 
 
+class _FadeAnimation(QPropertyAnimation):
+    """Keep completion handling inside the animation's Qt lifetime."""
+
+    def __init__(self, widget: QWidget, effect: QGraphicsOpacityEffect, *, hide: bool) -> None:
+        super().__init__(effect, b"opacity", widget)
+        self._hide = hide
+        self._preserve = bool(getattr(widget, "_preserve_fade_effect", False))
+        self.finished.connect(self._finish)
+
+    @pyqtSlot()
+    def _finish(self) -> None:
+        widget = cast(Any, self.parent())
+        if getattr(widget, "_fade_anim", None) is not self:
+            self.deleteLater()
+            return
+        if self._hide:
+            widget.hide()
+        if self._preserve:
+            effect = self.targetObject()
+            if isinstance(effect, QGraphicsOpacityEffect):
+                effect.setOpacity(0.0 if self._hide else 1.0)
+        else:
+            widget.setGraphicsEffect(None)
+            widget._fade_effect = None
+        widget._fade_anim = None
+        self.deleteLater()
+
+
 class UIAnimator:
     """Helper class for applying UI animations."""
 
@@ -133,10 +162,6 @@ class UIAnimator:
         if not app_state:
             return True
         return not app_state.local_config.get("disable_animations", False)
-
-    @staticmethod
-    def _preserve_fade_effect(widget: QWidget) -> bool:
-        return bool(getattr(widget, "_preserve_fade_effect", False))
 
     @staticmethod
     def _stop_existing_fade(widget: QWidget) -> None:
@@ -185,7 +210,6 @@ class UIAnimator:
         should_show = (
             widget.parent() is not None or type(widget).__name__ == "AnimatedToolTip"
         )
-        preserve_effect = UIAnimator._preserve_fade_effect(widget)
 
         if not UIAnimator._animations_enabled(app_state):
             widget.setWindowOpacity(1.0)
@@ -203,7 +227,7 @@ class UIAnimator:
         effect = UIAnimator._get_opacity_effect(widget)
         effect.setOpacity(0.0)
 
-        anim = QPropertyAnimation(effect, b"opacity", widget)
+        anim = _FadeAnimation(widget, effect, hide=False)
         anim.setDuration(duration)
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
@@ -211,20 +235,9 @@ class UIAnimator:
 
         dynamic_widget = cast(Any, widget)
 
-        def cleanup():
-            if preserve_effect:
-                effect.setOpacity(1.0)
-            else:
-                if hasattr(widget, "setGraphicsEffect"):
-                    widget.setGraphicsEffect(None)
-                dynamic_widget._fade_effect = None
-            dynamic_widget._fade_anim = None
-
-        anim.finished.connect(cleanup)
-        anim.start(QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
-
         dynamic_widget._fade_effect = effect
         dynamic_widget._fade_anim = anim
+        anim.start(QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
         return anim
 
     @staticmethod
@@ -232,7 +245,6 @@ class UIAnimator:
         widget: QWidget, duration: int = 200, app_state=None
     ) -> QPropertyAnimation | None:
         """Fade out a widget by animating opacity."""
-        preserve_effect = UIAnimator._preserve_fade_effect(widget)
         if not UIAnimator._animations_enabled(app_state):
             widget.hide()
             return None
@@ -241,7 +253,7 @@ class UIAnimator:
         effect = UIAnimator._get_opacity_effect(widget)
         effect.setOpacity(1.0)
 
-        anim = QPropertyAnimation(effect, b"opacity", widget)
+        anim = _FadeAnimation(widget, effect, hide=True)
         anim.setDuration(duration)
         anim.setStartValue(1.0)
         anim.setEndValue(0.0)
@@ -249,21 +261,9 @@ class UIAnimator:
 
         dynamic_widget = cast(Any, widget)
 
-        def cleanup():
-            widget.hide()
-            if preserve_effect:
-                effect.setOpacity(0.0)
-            else:
-                if hasattr(widget, "setGraphicsEffect"):
-                    widget.setGraphicsEffect(None)
-                dynamic_widget._fade_effect = None
-            dynamic_widget._fade_anim = None
-
-        anim.finished.connect(cleanup)
-        anim.start(QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
-
         dynamic_widget._fade_effect = effect
         dynamic_widget._fade_anim = anim
+        anim.start(QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
         return anim
 
     @staticmethod

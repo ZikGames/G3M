@@ -9,7 +9,6 @@ import os
 import re
 import sys
 import zipfile
-from pathlib import Path
 from typing import Any
 
 from models.plugin_models import (
@@ -18,6 +17,11 @@ from models.plugin_models import (
     PluginManifest,
 )
 from services.localization_service import localization_service
+from utils.mod.archive import (
+    ArchiveValidationError,
+    list_archive_members,
+    materialize_archive,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,9 @@ _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 _RANGE_RE = re.compile(r"^(\^|~|>=|<=|>|<)?(.+)$")
 MAX_PLUGIN_ARCHIVE_MEMBERS = 5000
 MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
+UNSUPPORTED_LEGACY_PLUGIN_HOOKS = frozenset({
+    "app_ready", "app_shutdown", "navigation_actions", "game_registry", "background_task",
+})
 
 
 class PluginValidationError(ValueError):
@@ -116,6 +123,31 @@ def _normalized_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def load_manifest_display_metadata(path: str) -> PluginManifest:
+    """Read only safe display fields from an invalid plugin manifest."""
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise PluginValidationError("invalid_manifest")
+
+    def text(key: str) -> str:
+        value = data.get(key)
+        return value.strip() if isinstance(value, str) else ""
+
+    return PluginManifest(
+        config_version=0,
+        id=text("id"),
+        name=text("name"),
+        description=text("description"),
+        author=text("author"),
+        version=text("version"),
+        api_version=text("api_version"),
+        icon=text("icon"),
+        homepage=text("homepage"),
+        entry="",
+    )
+
+
 def load_manifest(path: str) -> PluginManifest:
     with open(path, encoding="utf-8") as handle:
         data = json.load(handle)
@@ -167,7 +199,10 @@ def validate_manifest(manifest: PluginManifest, plugin_dir: str) -> None:
     invalid_tags = [tag for tag in manifest.tags if tag not in PLUGIN_TAGS]
     if invalid_tags:
         raise PluginValidationError("invalid_tags")
-    invalid_hooks = [hook for hook in manifest.hooks if hook not in PLUGIN_HOOKS]
+    invalid_hooks = [
+        hook for hook in manifest.hooks
+        if hook not in PLUGIN_HOOKS and hook not in UNSUPPORTED_LEGACY_PLUGIN_HOOKS
+    ]
     if invalid_hooks:
         raise PluginValidationError("invalid_hooks")
     invalid_relations = [
@@ -209,19 +244,17 @@ def load_plugin_factory(plugin_id: str, entry_path: str):
 
 
 def safe_extract_zip(archive_path: str, target_dir: str) -> None:
-    with zipfile.ZipFile(archive_path) as archive:
-        total_size = 0
-        infos = archive.infolist()
-        if len(infos) > MAX_PLUGIN_ARCHIVE_MEMBERS:
+    try:
+        members = list_archive_members(archive_path)
+        if len(members) > MAX_PLUGIN_ARCHIVE_MEMBERS:
             raise PluginValidationError("archive_too_many_files")
-        for member in infos:
-            total_size += max(0, int(member.file_size or 0))
-            if total_size > MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES:
-                raise PluginValidationError("archive_too_large")
-            member_path = Path(target_dir, member.filename).resolve()
-            if Path(target_dir).resolve() not in member_path.parents and member_path != Path(target_dir).resolve():
-                raise PluginValidationError("path_traversal")
-        archive.extractall(target_dir)
+        if sum(member.size for member in members) > MAX_PLUGIN_ARCHIVE_UNCOMPRESSED_BYTES:
+            raise PluginValidationError("archive_too_large")
+        materialize_archive(archive_path, target_dir)
+    except PluginValidationError:
+        raise
+    except (ArchiveValidationError, OSError, ValueError, zipfile.BadZipFile) as error:
+        raise PluginValidationError("invalid_archive") from error
 
 
 def load_plugin_langs(plugin_dir: str) -> dict[str, dict]:

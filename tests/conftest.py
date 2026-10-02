@@ -49,9 +49,12 @@ def _stop_known_widget_threads(app: QApplication) -> None:
                 if thread.isRunning():
                     thread.requestInterruption()
                     thread.quit()
-                    if not thread.wait(50):
-                        thread.terminate()
-                        thread.wait(50)
+                    if not thread.wait(500):
+                        logging.debug(
+                            "_stop_known_widget_threads: retaining %s until cooperative completion",
+                            type(thread).__name__,
+                        )
+                        continue
                 thread.deleteLater()
             except Exception as e:
                 logging.debug(f'_stop_known_widget_threads: {attr_name}: {e}')
