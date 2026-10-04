@@ -2,7 +2,10 @@
 
 import html
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
+
+import pytest
 
 
 def _make_message_box_stub():
@@ -12,11 +15,15 @@ def _make_message_box_stub():
     box.setIcon = Mock()
     box.setWindowTitle = Mock()
     box.setTextFormat = Mock()
-    box.setText = Mock(side_effect=lambda value: setattr(box, "text", value))
+    box.setText = Mock(side_effect=lambda value: vars(box).__setitem__("text", value))
     box.setStandardButtons = Mock()
     box.setDefaultButton = Mock()
     box.exec = Mock(return_value=box.StandardButton.Yes)
     box.text = ""
+    box.set_localized_title = lambda key, **kwargs: box.setWindowTitle(box.translator(key, **kwargs))
+    box.localize = lambda setter, key, **kwargs: setter(box.translator(key, **kwargs))
+    box.localize_text = lambda control, key, **kwargs: control
+    box.add_localized_button = lambda key, role: box.addButton(box.translator(key), role)
     factory = Mock(return_value=box)
     factory.Icon = box.Icon
     factory.StandardButton = box.StandardButton
@@ -110,7 +117,7 @@ def test_show_message_does_not_escape_plain_apostrophes_to_entities(monkeypatch,
         tr_func=lambda key, **kwargs: {
             "dialogs.warning": "Warning",
             "errors.mod_no_files": "Mod '{mod_name}' has no files to install.",
-        }.get(key, key).format(**kwargs)
+        }.get(key, str(key)).format(**kwargs)
     )
 
     manager.show_message(
@@ -150,3 +157,53 @@ def test_feedback_manager_scoped_translator_localizes_titles_and_messages(
     assert result is True
     box.setWindowTitle.assert_called_once_with("Delete save?")
     assert "Delete permanently?" in box.text
+
+
+@pytest.mark.parametrize("action", ["continue", "cancel", "report"])
+def test_long_patching_warning_keeps_actions_on_screen(monkeypatch, qapp, qtbot, action):
+    from PyQt6.QtCore import QRect, QTimer
+    from PyQt6.QtGui import QScreen
+    from PyQt6.QtWidgets import QMessageBox, QPushButton, QScrollArea
+
+    from services.localization_service import tr
+    from ui.common import feedback as module
+    from ui.common.dialog_theme import DynamicDialog
+
+    class SmallScreenDialog(DynamicDialog):
+        def screen(self):
+            return cast(QScreen, SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 800, 600)))
+
+    monkeypatch.setattr(module, "QDialog", SmallScreenDialog)
+    errors = []
+
+    def interact():
+        dialog = qapp.activeModalWidget()
+        if dialog is None:
+            QTimer.singleShot(10, interact)
+            return
+        try:
+            qtbot.addWidget(dialog)
+            assert dialog.height() <= 520
+            assert dialog.width() <= 760
+            scroll = dialog.findChild(QScrollArea)
+            assert scroll.verticalScrollBar().maximum() > 0
+            assert "line 999" in scroll.widget().text()
+            for button in dialog.findChildren(QPushButton):
+                assert dialog.rect().contains(button.rect().translated(button.mapTo(dialog, button.rect().topLeft())))
+            key = {"continue": "dialogs.patching_warning.continue_button", "cancel": "dialogs.patching_warning.cancel_button", "report": "dialogs.conflicts.open_report"}[action]
+            next(button for button in dialog.findChildren(QPushButton) if button.text() == tr(key)).click()
+        except Exception as error:
+            errors.append(error)
+        finally:
+            if dialog.isVisible():
+                dialog.reject()
+
+    QTimer.singleShot(0, interact)
+    manager = module.FeedbackManager()
+    result, disabled = manager._exec_patching_warning_dialog(
+        "Warning", "<br>".join(f"Report line {index}" for index in range(1000)),
+        QMessageBox.Icon.Warning, True, True,
+    )
+    assert not errors, errors
+    assert result == action
+    assert not disabled

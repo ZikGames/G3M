@@ -23,8 +23,8 @@ def test_fetch_mods_worker_suppresses_emit_failure_after_error(caplog):
         settings_service=None,
     )
     worker = FetchModsThread(context)
-    worker.status = _FailingSignal()
-    worker.result = _FailingSignal()
+    vars(worker)["status"] = _FailingSignal()
+    vars(worker)["result"] = _FailingSignal()
     worker._get_local_mods = lambda: (_ for _ in ()).throw(RuntimeError("local failed"))
 
     worker.run()

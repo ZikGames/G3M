@@ -43,6 +43,7 @@ from services.settings_validation import (
     has_unix_executable_signature,
     validate_windows_executable_path,
 )
+from ui.common.dialog_theme import DynamicMessageBox
 from ui.common.styling import display_hex_to_qt_hex, get_border_radius
 from utils.file_utils import get_file_filter
 from utils.native_integration import (
@@ -64,6 +65,8 @@ logger = logging.getLogger(__name__)
 
 class SettingsManager(QObject):
     """Manages application settings and configuration."""
+
+    profile_service: object | None = None
 
     settings_changed = pyqtSignal()
     language_changed = pyqtSignal(str)
@@ -171,16 +174,12 @@ class SettingsManager(QObject):
         )
 
     def _ask_user_data_root_copy(self, destination: str) -> bool | None:
-        box = QMessageBox(self._dialog_parent())
+        box = DynamicMessageBox(self._dialog_parent())
         box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle(tr("data_root.change_title"))
-        box.setText(tr("data_root.change_question", path=destination))
-        copy_button = box.addButton(
-            tr("data_root.copy_current"), QMessageBox.ButtonRole.AcceptRole
-        )
-        use_button = box.addButton(
-            tr("data_root.use_selected"), QMessageBox.ButtonRole.DestructiveRole
-        )
+        box.set_localized_title("data_root.change_title")
+        box.localize(box.setText, "data_root.change_question", path=destination)
+        copy_button = box.add_localized_button("data_root.copy_current", QMessageBox.ButtonRole.AcceptRole)
+        use_button = box.add_localized_button("data_root.use_selected", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
         box.exec()
         clicked = box.clickedButton()

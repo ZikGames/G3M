@@ -16,7 +16,7 @@ from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from utils.mod.filesystem import DirectoryTraversalError, iter_directory_tree
 from utils.path_utils import resource_path
@@ -49,7 +49,7 @@ def _get_unrar_path() -> str:
 
 
 def _ensure_unrar_available() -> None:
-    import rarfile  # type: ignore[reportMissingImports]
+    import rarfile
 
     bundled = _get_unrar_path()
     if os.path.exists(bundled):
@@ -95,6 +95,8 @@ class ArchiveVirtualPath:
 
 def archive_format(path: str | Path) -> str | None:
     """Return the configured archive format based on its longest extension."""
+    if Path(path).is_dir():
+        return None
     value = os.fspath(path).replace("\\", "/").casefold()
     for suffix in ARCHIVE_SUFFIXES:
         if value.endswith(suffix):
@@ -110,6 +112,8 @@ def split_archive_virtual_path(path: str | Path) -> ArchiveVirtualPath | None:
     for suffix in ARCHIVE_SUFFIXES:
         marker = f"{suffix}/"
         position = lower_value.find(marker)
+        while position >= 0 and Path(value[: position + len(suffix)]).is_dir():
+            position = lower_value.find(marker, position + len(marker))
         if position >= 0:
             candidates.append((position, suffix))
     if not candidates:
@@ -168,7 +172,7 @@ def list_archive_members(path: str | Path) -> tuple[ArchiveMember, ...]:
                 for info in archive.getmembers()
             )
     if format_name == "7z":
-        import py7zr  # type: ignore[reportMissingImports]
+        import py7zr
 
         with py7zr.SevenZipFile(archive_path, mode="r") as archive:
             if archive.needs_password():
@@ -184,7 +188,7 @@ def list_archive_members(path: str | Path) -> tuple[ArchiveMember, ...]:
                 for info in archive.list()
             )
     if format_name == "rar":
-        import rarfile  # type: ignore[reportMissingImports]
+        import rarfile
 
         _ensure_unrar_available()
         with rarfile.RarFile(archive_path) as archive:
@@ -233,14 +237,14 @@ def materialize_archive(path: str | Path, destination: str | Path) -> tuple[Arch
                     _extract_stream(destination_path, member, source)
         return members
     if format_name == "7z":
-        import py7zr  # type: ignore[reportMissingImports]
+        import py7zr
 
         with py7zr.SevenZipFile(archive_path, mode="r") as archive:
             archive.extract(path=destination_path, targets=[member.name for member in members])
         _assert_no_links(destination_path)
         return members
     if format_name == "rar":
-        import rarfile  # type: ignore[reportMissingImports]
+        import rarfile
 
         with rarfile.RarFile(archive_path) as archive:
             for info, member in zip(archive.infolist(), members, strict=True):
@@ -307,7 +311,7 @@ def rebuild_archive(path: str | Path, source: str | Path) -> None:
                 with _open_tar(temporary_path, "w", format_name) as archive:
                     _write_tar_tree(archive, archive_source)
             elif format_name == "7z":
-                import py7zr  # type: ignore[reportMissingImports]
+                import py7zr
 
                 with py7zr.SevenZipFile(temporary_path, mode="w") as archive:
                     _write_7z_tree(archive, archive_source)
@@ -432,13 +436,14 @@ def _open_tar(path: Path, mode: str, format_name: str | None = None):
         ) as archive:
             yield archive
         return
-    tar_mode = "r:*" if mode == "r" else {
+    write_modes: dict[str, Literal["w:", "w:gz", "w:bz2", "w:xz"]] = {
         "tar": "w:",
         "tar-gz": "w:gz",
         "tar-bz2": "w:bz2",
         "tar-xz": "w:xz",
-    }[format_name or "tar"]
-    with tarfile.open(path, tar_mode) as archive:  # type: ignore[reportCallIssue]
+    }
+    tar_mode = "r:*" if mode == "r" else write_modes[format_name or "tar"]
+    with tarfile.open(path, tar_mode) as archive:
         yield archive
 
 

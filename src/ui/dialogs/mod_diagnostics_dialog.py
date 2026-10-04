@@ -9,26 +9,28 @@ import tempfile
 import zipfile
 from collections import defaultdict
 from collections.abc import Iterable
+from contextlib import ExitStack
 from multiprocessing import Process
 from pathlib import Path
 from typing import Any, cast
 
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtCore import QSignalBlocker, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QCloseEvent, QDesktopServices
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLayoutItem,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QScrollBar,
     QSizePolicy,
     QSplitter,
     QTabWidget,
@@ -52,9 +54,11 @@ from services.mod_diagnostics_service import (
 )
 from services.mod_operation_support import collect_profile_operation_inputs
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     get_dialog_theme_values,
 )
+from ui.common.localized_label import LocalizedLabel
 from ui.utils.audio_utils import is_audio_playback_available
 from ui.utils.thread_lifetime import ManagedQThread
 from utils.mod.operation_plan import (
@@ -153,7 +157,7 @@ class DiagnosticsPreflightWorker(ManagedQThread):
             self.failed.emit(str(error))
 
 
-class ModDiagnosticsDialog(QDialog):
+class ModDiagnosticsDialog(DynamicDialog):
     """Non-modal diagnostics and preflight window."""
 
     def __init__(self, app_state, mod_service, used_mods_service, parent=None) -> None:
@@ -244,7 +248,8 @@ class ModDiagnosticsDialog(QDialog):
         self._preflight_progress.setRange(0, 100)
         self._preflight_progress.setValue(0)
         self._preflight_progress.setTextVisible(True)
-        self._preflight_phase = QLabel(tr("diagnostics.actual_analysis_not_run"))
+        self._preflight_phase = LocalizedLabel()
+        self._preflight_phase.set_localized_text("diagnostics.actual_analysis_not_run")
         self._preflight_phase.setWordWrap(True)
         self._run_preflight_btn.clicked.connect(self._run_preflight)
         self._cancel_preflight_btn.clicked.connect(self._cancel_preflight)
@@ -341,7 +346,7 @@ class ModDiagnosticsDialog(QDialog):
         audio_controls = QHBoxLayout()
         self._audio_play_btn = QPushButton(tr("diagnostics.preview_play"))
         self._audio_stop_btn = QPushButton(tr("diagnostics.preview_stop"))
-        self._audio_status = QLabel("")
+        self._audio_status = LocalizedLabel()
         self._audio_play_btn.clicked.connect(self._play_preview_audio)
         self._audio_stop_btn.clicked.connect(self._stop_preview_audio)
         self._audio_play_btn.setEnabled(False)
@@ -445,8 +450,8 @@ class ModDiagnosticsDialog(QDialog):
     def _prepare_tree(tree: QTreeWidget) -> None:
         tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         tree.setTextElideMode(Qt.TextElideMode.ElideNone)
-        tree.header().setStretchLastSection(False)
-        tree.header().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        cast(QHeaderView, tree.header()).setStretchLastSection(False)
+        cast(QHeaderView, tree.header()).setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
 
     def _load_initial_mods(self) -> None:
         section_mods = self._initial_section_mods()
@@ -548,7 +553,7 @@ class ModDiagnosticsDialog(QDialog):
 
     def _rebuild_mod_checkboxes(self, selected: set[str]) -> None:
         while self._mods_list_layout.count() > 1:
-            item = self._mods_list_layout.takeAt(0)
+            item = cast(QLayoutItem, self._mods_list_layout.takeAt(0))
             widget = item.widget()
             if widget:
                 widget.deleteLater()
@@ -720,14 +725,14 @@ class ModDiagnosticsDialog(QDialog):
         self._clear_preflight_result()
         plan = self._selected_operation_plan()
         if plan is None or not plan.operations:
-            self._preflight_phase.setText(tr("diagnostics.no_mods_selected"))
+            self._preflight_phase.set_localized_text("diagnostics.no_mods_selected")
             return
         game_mode = getattr(self._app_state, "game_mode", None)
         game_path = (
             game_mode.get_game_path(self._app_state.local_config) if game_mode else ""
         )
         if not game_path or not os.path.isdir(game_path):
-            self._preflight_phase.setText(tr("diagnostics.actual_game_path_missing"))
+            self._preflight_phase.set_localized_text("diagnostics.actual_game_path_missing")
             return
         game_data_path = (
             game_mode.get_data_path(self._app_state.local_config) if game_mode else None
@@ -751,14 +756,14 @@ class ModDiagnosticsDialog(QDialog):
         self._cancel_preflight_btn.setEnabled(True)
         self._export_preflight_btn.setEnabled(False)
         self._preflight_progress.setValue(0)
-        self._preflight_phase.setText(tr("diagnostics.actual_phase_staging"))
+        self._preflight_phase.set_localized_text("diagnostics.actual_phase_staging")
         worker.start()
 
     def _cancel_preflight(self) -> None:
         worker = self._preflight_worker
         if worker and worker.isRunning():
             self._cancel_preflight_btn.setEnabled(False)
-            self._preflight_phase.setText(tr("diagnostics.actual_phase_cancelling"))
+            self._preflight_phase.set_localized_text("diagnostics.actual_phase_cancelling")
             worker.cancel()
 
     def _finish_preflight_worker(self, worker: DiagnosticsPreflightWorker) -> None:
@@ -772,7 +777,7 @@ class ModDiagnosticsDialog(QDialog):
         self._preflight_progress.setValue(value)
         if phase.startswith("patching_step:"):
             _prefix, section, step, total = phase.split(":", 3)
-            text = tr(
+            self._preflight_phase.set_localized_text(
                 "diagnostics.actual_phase_step",
                 section=section,
                 step=step,
@@ -786,36 +791,31 @@ class ModDiagnosticsDialog(QDialog):
                 "cancelled": "diagnostics.actual_phase_cancelled",
                 "failed": "diagnostics.actual_phase_failed",
             }.get(phase)
-            text = tr(key) if key else phase
-        self._preflight_phase.setText(text)
+            if key:
+                self._preflight_phase.set_localized_text(key)
+            else:
+                self._preflight_phase.setText(phase)
 
     def _on_preflight_ready(self, report: PreflightReport) -> None:
         self._preflight_report = report
         self._export_preflight_btn.setEnabled(True)
         self._populate_preflight_report(report)
-        quick_conflicts = self._report.summary.conflicts if self._report else 0
-        self._summary_labels["conflicts"].setText(
-            tr(
-                "diagnostics.summary_conflicts",
-                count=max(quick_conflicts, report.conflict_count),
-            )
-        )
+        self._refresh_conflict_summary()
         if report.cancelled:
-            self._preflight_phase.setText(tr("diagnostics.actual_phase_cancelled"))
+            self._preflight_phase.set_localized_text("diagnostics.actual_phase_cancelled")
         elif report.success:
-            self._preflight_phase.setText(tr("diagnostics.actual_phase_completed"))
+            self._preflight_phase.set_localized_text("diagnostics.actual_phase_completed")
             self._preflight_progress.setValue(100)
         else:
-            self._preflight_phase.setText(tr("diagnostics.actual_phase_failed"))
+            self._preflight_phase.set_localized_text("diagnostics.actual_phase_failed")
 
     def _on_preflight_failed(self, error: str) -> None:
         self._clear_preflight_result()
-        self._preflight_phase.setText(
-            tr("diagnostics.actual_analysis_failed", error=error)
-        )
+        self._preflight_phase.set_localized_text("diagnostics.actual_analysis_failed", error=error)
 
     def _clear_preflight_result(self) -> None:
         self._preflight_report = None
+        self._refresh_conflict_summary()
         self._export_preflight_btn.setEnabled(False)
         self._preflight_progress.setValue(0)
         self._preflight_steps_tree.clear()
@@ -882,10 +882,10 @@ class ModDiagnosticsDialog(QDialog):
     def _filter_preflight_resources(self, text: str) -> None:
         needle = text.strip().casefold()
         for index in range(self._preflight_resources_tree.topLevelItemCount()):
-            group = self._preflight_resources_tree.topLevelItem(index)
+            group = cast(QTreeWidgetItem, self._preflight_resources_tree.topLevelItem(index))
             visible_children = 0
             for child_index in range(group.childCount()):
-                child = group.child(child_index)
+                child = cast(QTreeWidgetItem, group.child(child_index))
                 haystack = " ".join(
                     child.text(column) for column in range(3)
                 ).casefold()
@@ -971,11 +971,9 @@ class ModDiagnosticsDialog(QDialog):
             return
         try:
             export_preflight_report(self._preflight_report, path)
-            self._preflight_phase.setText(tr("diagnostics.actual_export_completed"))
+            self._preflight_phase.set_localized_text("diagnostics.actual_export_completed")
         except OSError as error:
-            self._preflight_phase.setText(
-                tr("diagnostics.actual_export_failed", error=str(error))
-            )
+            self._preflight_phase.set_localized_text("diagnostics.actual_export_failed", error=str(error))
 
     def _set_busy(self, busy: bool) -> None:
         if busy:
@@ -1013,6 +1011,14 @@ class ModDiagnosticsDialog(QDialog):
         }
         for key, text in values.items():
             self._summary_labels[key].setText(text)
+        self._refresh_conflict_summary()
+
+    def _refresh_conflict_summary(self) -> None:
+        quick = self._report.summary.conflicts if self._report else 0
+        preflight = self._preflight_report.conflict_count if self._preflight_report else 0
+        self._summary_labels["conflicts"].setText(
+            tr("diagnostics.summary_conflicts", count=max(quick, preflight))
+        )
 
     def _populate_overview(self, report: DiagnosticsReport) -> None:
         summary = report.summary
@@ -1123,7 +1129,7 @@ class ModDiagnosticsDialog(QDialog):
                 if resource_type not in self._resource_type_checks
             }
         while self._resource_filter_layout.count() > 1:
-            item = self._resource_filter_layout.takeAt(0)
+            item = cast(QLayoutItem, self._resource_filter_layout.takeAt(0))
             widget = item.widget()
             if widget:
                 widget.deleteLater()
@@ -1541,16 +1547,20 @@ class ModDiagnosticsDialog(QDialog):
         return f"{size} B"
 
     def _set_preview_text(self, text: str) -> None:
-        self._stop_preview_audio()
-        self._current_audio_path = ""
-        self._audio_play_btn.setEnabled(False)
-        self._audio_stop_btn.setEnabled(False)
-        self._audio_play_btn.setVisible(False)
-        self._audio_stop_btn.setVisible(False)
-        self._audio_status.setText("")
+        if not getattr(self, "_updating_texts", False):
+            self._stop_preview_audio()
+            self._current_audio_path = ""
+            self._audio_play_btn.setEnabled(False)
+            self._audio_stop_btn.setEnabled(False)
+            self._audio_play_btn.setVisible(False)
+            self._audio_stop_btn.setVisible(False)
+            self._audio_status.setText("")
         self._preview_compare_panel.setPlainText(text)
 
     def _set_preview_file(self, path: str, *, title: str = "") -> None:
+        if getattr(self, "_updating_texts", False) and self._current_audio_path == path:
+            self._preview_compare_panel.setPlainText(tr("diagnostics.audio_preview_hint", file=title or os.path.basename(path)))
+            return
         self._stop_preview_audio()
         self._current_audio_path = ""
         self._audio_play_btn.setEnabled(False)
@@ -1571,7 +1581,7 @@ class ModDiagnosticsDialog(QDialog):
         if self._looks_audio_like(path):
             if not is_audio_playback_available():
                 logger.debug("Audio preview disabled: gst-play-1.0 is unavailable")
-                self._audio_status.setText(tr("diagnostics.audio_playback_unavailable"))
+                self._audio_status.set_localized_text("diagnostics.audio_playback_unavailable")
                 self._preview_compare_panel.setPlainText(
                     tr("diagnostics.audio_playback_unavailable")
                 )
@@ -1749,6 +1759,10 @@ class ModDiagnosticsDialog(QDialog):
         ]
         self._preflight_resources_tree.setHeaderLabels(common_headers)
         self._preflight_files_tree.setHeaderLabels(common_headers)
+        self._file_tree.setHeaderLabels(common_headers)
+        self._data_tree.setHeaderLabels(common_headers)
+        self._preflight_phase.relocalize_ui()
+        self._audio_status.relocalize_ui()
         self._scope_label.setText(self._scope_text())
         self._refresh_mod_row_labels()
         if not self._report:
@@ -1775,10 +1789,64 @@ class ModDiagnosticsDialog(QDialog):
             )
         ):
             self._tabs.setTabText(index, tr(key))
-        if self._report:
-            self._on_report_ready(self._report)
-        if self._preflight_report:
-            self._populate_preflight_report(self._preflight_report)
+        self._refresh_report_texts()
+
+    def _refresh_report_texts(self) -> None:
+        trees = (self._file_tree, self._data_tree, self._preflight_steps_tree, self._preflight_resources_tree, self._preflight_files_tree)
+        def items(tree):
+            def walk(item, path):
+                yield path, item
+                for index in range(item.childCount()):
+                    yield from walk(item.child(index), (*path, index))
+            for index in range(tree.topLevelItemCount()):
+                yield from walk(tree.topLevelItem(index), (index,))
+        snapshots = []
+        for tree in trees:
+            snapshots.append((tree, {path: (item.isExpanded(), item.isSelected(), item is tree.currentItem()) for path, item in items(tree)}, cast(QScrollBar, tree.verticalScrollBar()).value()))
+        issue_row = self._issues_list.currentRow()
+        with ExitStack() as stack:
+            for tree in trees:
+                stack.enter_context(QSignalBlocker(tree))
+            if self._report:
+                self._populate_summary(self._report)
+                self._populate_overview(self._report)
+                self._sync_resource_filters(self._report)
+                self._populate_file_tree(self._report)
+                self._populate_data_tree(self._report)
+                stack.enter_context(QSignalBlocker(self._issues_list))
+                self._populate_issues(self._report)
+            if self._preflight_report:
+                self._populate_preflight_report(self._preflight_report)
+                self._filter_preflight_resources(self._preflight_search.text())
+            self._refresh_conflict_summary()
+            for tree, state, scroll in snapshots:
+                for path, item in items(tree):
+                    if path in state:
+                        expanded, selected, current = state[path]
+                        if current:
+                            tree.setCurrentItem(item)
+                        item.setSelected(selected)
+                        item.setExpanded(expanded)
+                cast(QScrollBar, tree.verticalScrollBar()).setValue(scroll)
+            self._issues_list.setCurrentRow(issue_row)
+        callbacks = {
+            1: self._show_selected_file, 2: self._show_selected_data,
+            4: lambda: self._show_selected_issue(self._issues_list.currentItem(), None),
+            5: self._show_selected_preflight_step, 6: self._show_selected_preflight_resource,
+            7: self._show_selected_preflight_file,
+        }
+        current_tab = self._tabs.currentIndex()
+        if callback := callbacks.get(current_tab):
+            self._updating_texts = True
+            try:
+                callback()
+            finally:
+                self._tabs.setCurrentIndex(current_tab)
+                self._updating_texts = False
+        if self._worker and self._worker.isRunning():
+            self._inspector.setPlainText(tr("diagnostics.running"))
+        elif not self._report and not self._preflight_report:
+            self._inspector.setPlainText(tr("diagnostics.select_item_hint"))
 
     def refresh_theme(self) -> None:
         self._apply_theme()
@@ -1819,7 +1887,7 @@ class ModDiagnosticsDialog(QDialog):
                 border-radius: 3px;
             }}
         """
-        self.setStyleSheet(base + extra)
+        self.set_theme_stylesheet(base + extra)
 
     def _refresh_mod_row_labels(self) -> None:
         for mod_data in self._all_mods:
@@ -1903,7 +1971,8 @@ class ModDiagnosticsDialog(QDialog):
             return "Operations"
         return tr("diagnostics.mod_kind_unknown")
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, a0) -> None:
+        event = cast(QCloseEvent, a0)
         self._stop_preview_audio()
         workers = [self._worker, self._preflight_worker]
         running = [worker for worker in workers if worker and worker.isRunning()]

@@ -43,7 +43,7 @@ from ui.common.styling import (
 class ModsBrowserTabBuilder(QObject):
     def __init__(self, app_state, parent=None) -> None:
         super().__init__(parent)
-        self.app_state, self.parent, self.widgets = app_state, parent, {}
+        self.app_state, self.parent_window, self.widgets = app_state, parent, {}
         self.mod_list_columns = 1
         self._dynamic_style_signal_connected = False
 
@@ -71,7 +71,7 @@ class ModsBrowserTabBuilder(QObject):
     def _connect_dynamic_style_refresh(self) -> None:
         if self._dynamic_style_signal_connected:
             return
-        settings_service = getattr(self.parent, "settings_service", None)
+        settings_service = getattr(self.parent_window, "settings_service", None)
         if settings_service is None:
             return
         settings_service.theme_changed.connect(self.refresh_dynamic_styles)

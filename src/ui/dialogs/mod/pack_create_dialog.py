@@ -2,7 +2,6 @@
 
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -11,10 +10,10 @@ from PyQt6.QtWidgets import (
 )
 
 from services.localization_service import tr
-from ui.common.dialog_theme import apply_dialog_theme
+from ui.common.dialog_theme import DynamicDialog, apply_dialog_theme
 
 
-class CreateModpackDialog(QDialog):
+class CreateModpackDialog(DynamicDialog):
     def __init__(self, app_state, parent=None) -> None:
         super().__init__(parent)
         self.app_state = app_state

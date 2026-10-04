@@ -203,6 +203,7 @@ def test_preflight_later_sources_read_staged_custom_outputs(tmp_path, archived):
         custom.write_text("original", encoding="utf-8")
     previous = custom.read_bytes()
     config = _config("mod", f"${{mod_path}}/payload{extension}", custom.as_posix())
+    assert isinstance(config["files"], list)
     config["files"].append({
         "source": custom.as_posix() + ("/payload.txt" if archived else ""),
         "target": "${game_path}/result.txt", "type": "overwrite",

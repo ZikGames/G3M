@@ -140,10 +140,10 @@ def test_reload_global_settings_suppresses_callback_failure_from_worker(qapp, mo
     from presentation import update_presenter
 
     app = QObject()
-    app.app_state = Mock()
-    app.app_state.has_internet = True
-    app.app_state.global_settings = {}
-    app.app_state.global_settings_load_in_progress = False
+    vars(app)["app_state"] = Mock()
+    vars(app)["app_state"].has_internet = True
+    vars(app)["app_state"].global_settings = {}
+    vars(app)["app_state"].global_settings_load_in_progress = False
     callback = Mock(side_effect=RuntimeError("callback failed"))
 
     class _Signal:
@@ -170,5 +170,5 @@ def test_reload_global_settings_suppresses_callback_failure_from_worker(qapp, mo
     reload_global_settings(app, callback=callback, force_refresh=True)
 
     callback.assert_called_once_with(True)
-    assert app.app_state.global_settings == {"announce": {"version": 2}}
-    assert app.app_state.global_settings_load_in_progress is False
+    assert vars(app)["app_state"].global_settings == {"announce": {"version": 2}}
+    assert vars(app)["app_state"].global_settings_load_in_progress is False

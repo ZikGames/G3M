@@ -190,7 +190,7 @@ def test_plugin_use_suppresses_emit_failure_after_install_error(temp_dir, caplog
         plugin_install_service=install_service,
     )
 
-    worker.use_finished = FailingSignal()
+    vars(worker)["use_finished"] = FailingSignal()
 
     worker.run()
 

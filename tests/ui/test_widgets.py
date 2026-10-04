@@ -7,8 +7,9 @@ from typing import cast
 
 import pytest
 from PyQt6.QtCore import QMimeData, QUrl
+from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QLabel, QScrollBar, QTreeWidgetItem, QVBoxLayout, QWidget
 
 
 def _drain_events(qapp, cycles: int = 3) -> None:
@@ -69,7 +70,7 @@ class TestModWidgets:
         from ui.widgets.mod.search_mod_card_widget import SearchModCardWidget
 
         host = QWidget()
-        host.app_state = SimpleNamespace(local_config={"ui_scale": 1.0})
+        vars(host)["app_state"] = SimpleNamespace(local_config={"ui_scale": 1.0})
         mod_data = ModInfo(
             id="test_mod",
             name="Scaled Search Mod",
@@ -82,17 +83,17 @@ class TestModWidgets:
             game="deltarune",
             last_updated="2024-05-01",
         )
-        mod_data.is_gamebanana_mod = False
+        vars(mod_data)["is_gamebanana_mod"] = False
         with patch("ui.widgets.mod.search_mod_card_widget.load_mod_icon_universal"):
             widget = SearchModCardWidget(mod_data, parent=host)
             base_width = widget.maximumWidth()
-            host.app_state.local_config["ui_scale"] = 0.5
+            vars(host)["app_state"].local_config["ui_scale"] = 0.5
             widget._update_style()
             qapp.processEvents()
             small_width = widget.maximumWidth()
             assert small_width < base_width
             assert "font-size: 15px;" in widget.name_label.styleSheet()
-            host.app_state.local_config["ui_scale"] = 1.5
+            vars(host)["app_state"].local_config["ui_scale"] = 1.5
             widget._update_style()
             qapp.processEvents()
             large_width = widget.maximumWidth()
@@ -110,7 +111,7 @@ class TestModWidgets:
         from ui.widgets.mod.installed_mod_widget import InstalledModWidget
 
         host = QWidget()
-        host.app_state = SimpleNamespace(local_config={"ui_scale": 1.5})
+        vars(host)["app_state"] = SimpleNamespace(local_config={"ui_scale": 1.5})
         mod_data = ModInfo(
             id="test_mod",
             name="Scaled Installed Mod",
@@ -138,7 +139,7 @@ class TestModWidgets:
         from ui.widgets.mod.mod_card_widget import ModCardWidget
 
         host = QWidget()
-        host.app_state = SimpleNamespace(local_config={"ui_scale": 1.5})
+        vars(host)["app_state"] = SimpleNamespace(local_config={"ui_scale": 1.5})
         mod_data = ModInfo(
             id="test_mod",
             name="Scaled Mod",
@@ -150,7 +151,7 @@ class TestModWidgets:
             downloads=0,
             game="deltarune",
         )
-        mod_data.is_gamebanana_mod = False
+        vars(mod_data)["is_gamebanana_mod"] = False
         with patch("ui.widgets.mod.base_mod_widget.load_mod_icon_universal"):
             widget = ModCardWidget(mod_data, parent=host)
             assert widget.height() > 120
@@ -182,7 +183,7 @@ class TestModWidgets:
             game="deltarune",
             last_updated="2024-05-01",
         )
-        mod_data.is_gamebanana_mod = False
+        vars(mod_data)["is_gamebanana_mod"] = False
         with patch("ui.widgets.mod.search_mod_card_widget.load_mod_icon_universal"):
             widget = SearchModCardWidget(mod_data, parent=host)
             host.show()
@@ -226,7 +227,7 @@ class TestModWidgets:
         from ui.widgets.mod.search_mod_card_widget import SearchModCardWidget
 
         host = QWidget()
-        host.app_state = SimpleNamespace(local_config={"ui_scale": 1.5})
+        vars(host)["app_state"] = SimpleNamespace(local_config={"ui_scale": 1.5})
         mod_data = ModInfo(
             id="test_mod",
             name="Scaled Search Mod",
@@ -239,7 +240,7 @@ class TestModWidgets:
             game="deltarune",
             last_updated="2024-05-01",
         )
-        mod_data.is_gamebanana_mod = False
+        vars(mod_data)["is_gamebanana_mod"] = False
         with patch("ui.widgets.mod.search_mod_card_widget.load_mod_icon_universal"):
             widget = SearchModCardWidget(mod_data, parent=host)
             widget._update_style()
@@ -264,7 +265,7 @@ class TestModWidgets:
         mod = SimpleNamespace(name="Test Mod")
         card = SimpleNamespace(mod_data=mod, is_selected=True, set_selected=Mock())
         controller = SearchDisplayController.__new__(SearchDisplayController)
-        controller._iter_layout_cards = lambda: iter([card])
+        vars(controller)["_iter_layout_cards"] = lambda: iter([card])
         controller.clear_all_selections = Mock()
         SearchDisplayController.on_mod_clicked(controller, mod)
         controller.clear_all_selections.assert_not_called()
@@ -280,7 +281,7 @@ class TestModWidgets:
         card = SimpleNamespace(mod_data=mod, is_selected=False, set_selected=Mock())
         controller = SearchDisplayController.__new__(SearchDisplayController)
         controller.app = SimpleNamespace()
-        controller._iter_layout_cards = lambda: iter([card])
+        vars(controller)["_iter_layout_cards"] = lambda: iter([card])
         controller.clear_all_selections = Mock()
 
         SearchDisplayController.on_mod_clicked(controller, mod)
@@ -298,7 +299,7 @@ class TestModWidgets:
         from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
 
         host = QWidget()
-        host.local_config = {}
+        vars(host)["local_config"] = {}
         panel = ModSummaryPanel(host)
         host.show()
         qapp.processEvents()
@@ -334,7 +335,7 @@ class TestModWidgets:
             like_count=123,
             game="deltarune",
         )
-        mod_data.is_gamebanana_mod = False
+        vars(mod_data)["is_gamebanana_mod"] = False
         with patch("ui.widgets.mod.base_mod_widget.load_mod_icon_universal"):
             widget = ModCardWidget(mod_data, parent=None)
             assert hasattr(widget, "likes_label")
@@ -441,7 +442,7 @@ class TestModWidgets:
         from ui.widgets.mod.installed_mod_widget import InstalledModWidget
 
         host = QWidget()
-        host.app_state = SimpleNamespace(local_config={})
+        vars(host)["app_state"] = SimpleNamespace(local_config={})
         operation_config = {
             "config_version": "2.0.0",
             "id": "test_mod",
@@ -451,7 +452,7 @@ class TestModWidgets:
             "game": "deltarune",
             "files": [],
         }
-        host.mod_service = SimpleNamespace(
+        vars(host)["mod_service"] = SimpleNamespace(
             get_mod_folder_path=Mock(return_value=str(tmp_path)),
             get_mod_config=Mock(return_value=operation_config),
         )
@@ -624,7 +625,7 @@ class TestModWidgets:
         from ui.widgets.mod.mod_card_widget import ModCardWidget
 
         host = QWidget()
-        host.app_state = SimpleNamespace(
+        vars(host)["app_state"] = SimpleNamespace(
             local_config={
                 "custom_hover_color": "#111111",
                 "custom_select_color": "#ABCDEF",
@@ -641,7 +642,7 @@ class TestModWidgets:
             downloads=0,
             game="deltarune",
         )
-        mod_data.is_gamebanana_mod = False
+        vars(mod_data)["is_gamebanana_mod"] = False
         with patch("ui.widgets.mod.base_mod_widget.load_mod_icon_universal"):
             widget = ModCardWidget(mod_data, parent=host)
             widget.set_selected(True)
@@ -830,7 +831,7 @@ class TestCommonWidgets:
         from ui.widgets.mod_details_overlay import ModDetailsOverlay
 
         parent = QWidget()
-        parent.app_state = SimpleNamespace(
+        vars(parent)["app_state"] = SimpleNamespace(
             local_config={"custom_hover_color": "#123456"}
         )
         mod_data = ModInfo(
@@ -856,7 +857,7 @@ class TestCommonWidgets:
         from ui.widgets.mod_details_overlay import ModDetailsOverlay
 
         parent = QWidget()
-        parent.app_state = SimpleNamespace(
+        vars(parent)["app_state"] = SimpleNamespace(
             local_config={"custom_select_color": "#654321"}
         )
         mod_data = ModInfo(
@@ -1002,7 +1003,7 @@ class TestCommonWidgets:
         from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
 
         host = QWidget()
-        host.local_config = {}
+        vars(host)["local_config"] = {}
         mod_data = ModInfo(
             id="test_mod",
             name="Test Mod",
@@ -1032,7 +1033,7 @@ class TestCommonWidgets:
         from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
 
         host = QWidget()
-        host.local_config = {}
+        vars(host)["local_config"] = {}
         mod_data = ModInfo(
             id="test_mod",
             name="Test Mod",
@@ -1088,7 +1089,7 @@ class TestCommonWidgets:
             },
         )
         host = QWidget()
-        host.local_config = {}
+        vars(host)["local_config"] = {}
         mod_data = ModInfo(
             id="test_mod",
             name="Test Mod",
@@ -1116,10 +1117,10 @@ class TestCommonWidgets:
 
             panel._operations_toggle.click()
             assert panel._operations_tree.topLevelItemCount() == 2
-            assert panel._operations_tree.topLevelItem(0).text(1).endswith(
+            assert cast(QTreeWidgetItem, panel._operations_tree.topLevelItem(0)).text(1).endswith(
                 "patches/data.xdelta"
             )
-            assert panel._operations_tree.topLevelItem(0).text(2).endswith("data.win")
+            assert cast(QTreeWidgetItem, panel._operations_tree.topLevelItem(0)).text(2).endswith("data.win")
             assert panel._operations_toggle.text() == "Show summary"
 
         panel.deleteLater()
@@ -1159,8 +1160,8 @@ class TestCommonWidgets:
             },
         )
         host = QWidget()
-        host.local_config = {"game_path": str(game_path)}
-        host.game_mode = SimpleNamespace(
+        vars(host)["local_config"] = {"game_path": str(game_path)}
+        vars(host)["game_mode"] = SimpleNamespace(
             get_game_path=lambda config: config["game_path"],
             get_data_path=lambda _config: "",
         )
@@ -1192,8 +1193,11 @@ class TestCommonWidgets:
         assert panel._data_label.toolTip() == expected_target
         panel._operations_toggle.click()
         item = panel._operations_tree.topLevelItem(0)
+        assert item is not None
         assert item.text(1).endswith("patches/data.xdelta")
+        assert item is not None
         assert item.toolTip(1) == str((tmp_path / "patches/data.xdelta").resolve())
+        assert item is not None
         assert item.toolTip(2) == expected_target
         panel.deleteLater()
         host.deleteLater()
@@ -1226,7 +1230,7 @@ class TestCommonWidgets:
             },
         )
         host = QWidget()
-        host.local_config = {}
+        vars(host)["local_config"] = {}
         mod_data = ModInfo(
             id="large_mod",
             name="Large Mod",
@@ -1256,7 +1260,7 @@ class TestCommonWidgets:
         from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
 
         host = QWidget()
-        host.local_config = {}
+        vars(host)["local_config"] = {}
         panel = ModSummaryPanel(host)
         panel.resize(300, 400)
         panel._empty_label.hide()
@@ -1265,7 +1269,7 @@ class TestCommonWidgets:
         panel.show()
         qapp.processEvents()
 
-        assert panel._scroll.horizontalScrollBar().maximum() > 0
+        assert cast(QScrollBar, panel._scroll.horizontalScrollBar()).maximum() > 0
 
         panel.deleteLater()
         host.deleteLater()
@@ -1279,7 +1283,7 @@ class TestCommonWidgets:
         from ui.widgets.mod.mod_summary_panel import ModSummaryPanel
 
         host = QWidget()
-        host.local_config = {}
+        vars(host)["local_config"] = {}
         description = "A" * 420
         mod_data = ModInfo(
             id="test_mod",
@@ -1317,20 +1321,20 @@ class TestCommonWidgets:
             event = SimpleNamespace(_source=source, accepted=False, ignored=False)
             event.mimeData = lambda: mime
             event.source = lambda: event._source
-            event.acceptProposedAction = lambda: setattr(event, "accepted", True)
-            event.ignore = lambda: setattr(event, "ignored", True)
+            event.acceptProposedAction = lambda: vars(event).__setitem__("accepted", True)
+            event.ignore = lambda: vars(event).__setitem__("ignored", True)
             return event
 
         internal_event = _event(source=object())
-        drop_area.dragEnterEvent(internal_event)
-        drop_area.dropEvent(internal_event)
+        drop_area.dragEnterEvent(cast(QDragEnterEvent, internal_event))
+        drop_area.dropEvent(cast(QDropEvent, internal_event))
         assert internal_event.accepted is False
         assert internal_event.ignored is True
         assert dropped_paths == []
 
         external_event = _event(source=None)
-        drop_area.dragEnterEvent(external_event)
-        drop_area.dropEvent(external_event)
+        drop_area.dragEnterEvent(cast(QDragEnterEvent, external_event))
+        drop_area.dropEvent(cast(QDropEvent, external_event))
         assert external_event.accepted is True
         assert dropped_paths == ["C:/Mods/test_mod.zip"]
         drop_area.deleteLater()
@@ -1347,8 +1351,8 @@ class TestCommonWidgets:
         from ui.widgets.mod.installed_mod_widget import InstalledModWidget
 
         host = QWidget()
-        host.app_state = SimpleNamespace(local_config={"ui_scale": 1.0})
-        host.mod_import_export_controller = Mock()
+        vars(host)["app_state"] = SimpleNamespace(local_config={"ui_scale": 1.0})
+        vars(host)["mod_import_export_controller"] = Mock()
         mod_data = ModInfo(
             id="test_mod",
             name="Lazy Export Mod",
@@ -1363,15 +1367,15 @@ class TestCommonWidgets:
         with patch("ui.widgets.mod.base_mod_widget.load_mod_icon_universal"):
             widget = InstalledModWidget(mod_data, parent=host, parent_app=host)
         mime = LazyFileExportMimeData(
-            lambda path: host.mod_import_export_controller.export_mod_to_path(
+            lambda path: vars(host)["mod_import_export_controller"].export_mod_to_path(
                 mod_data, path
             ),
             "Lazy Export Mod.zip",
             internal_format="application/x-g3m-installed-mod-export",
         )
-        assert host.mod_import_export_controller.export_mod_to_path.call_count == 0
+        assert vars(host)["mod_import_export_controller"].export_mod_to_path.call_count == 0
         assert mime.hasUrls() is True
-        assert host.mod_import_export_controller.export_mod_to_path.call_count == 0
+        assert vars(host)["mod_import_export_controller"].export_mod_to_path.call_count == 0
         with patch.object(
             mime, "_ensure_export_ready", return_value="C:/Temp/Lazy Export Mod.zip"
         ) as ensure_ready:
@@ -1380,7 +1384,7 @@ class TestCommonWidgets:
             assert [normalize_local_path(url.toLocalFile()) for url in urls] == [
                 "C:/Temp/Lazy Export Mod.zip"
             ]
-        assert host.mod_import_export_controller.export_mod_to_path.call_count == 0
+        assert vars(host)["mod_import_export_controller"].export_mod_to_path.call_count == 0
         widget.deleteLater()
         host.deleteLater()
         _drain_events(qapp)
@@ -1393,7 +1397,7 @@ class TestCommonWidgets:
         from ui.widgets.mod.search_mod_card_widget import SearchModCardWidget
 
         host = QWidget()
-        host.app_state = SimpleNamespace(local_config={"ui_scale": 1.0})
+        vars(host)["app_state"] = SimpleNamespace(local_config={"ui_scale": 1.0})
         mod_data = ModInfo(
             id="gb_wip_123",
             name="WIP Search Mod",
@@ -1407,7 +1411,7 @@ class TestCommonWidgets:
             last_updated="2024-05-01",
             is_wip=True,
         )
-        mod_data.is_gamebanana_mod = True
+        vars(mod_data)["is_gamebanana_mod"] = True
         with patch("ui.widgets.mod.search_mod_card_widget.load_mod_icon_universal"):
             widget = SearchModCardWidget(mod_data, parent=host)
             assert widget.updated_label.text() == "2024-05-01 | WIP"

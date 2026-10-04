@@ -15,6 +15,7 @@ from services.localization_service import (
     localization_service,
     tr,
 )
+from ui.common.live_updates import refresh_live_widgets
 from ui.common.styling import (
     get_border_radius,
     rgba_from_color,
@@ -184,7 +185,9 @@ class ThemeController:
         status_font = QFont(font_family_main, font_size_small)
         self.app.status_label.setFont(status_font)
         app_font = QFont(font_family_main)
-        (QApplication.instance() or self.app).setFont(app_font)
+        application = QApplication.instance()
+        font_target = application if isinstance(application, QApplication) else self.app
+        font_target.setFont(app_font)
         palette = self.app.palette()
         txt_col = QColor(main_text_color)
         for role in (
@@ -193,7 +196,7 @@ class ThemeController:
             QPalette.ColorRole.ButtonText,
         ):
             palette.setColor(role, txt_col)
-        (QApplication.instance() or self.app).setPalette(palette)
+        font_target.setPalette(palette)
         scroll_handle_color = (
             self.app_state.local_config.get("custom_elements_color")
             or DEFAULT_COLORS["main_text"]
@@ -329,25 +332,7 @@ class ThemeController:
                     self.app.search_tab_builder, "refresh_dynamic_styles"
                 ):
                     self.app.search_tab_builder.refresh_dynamic_styles()
-                summary = getattr(self.app, "mod_summary_panel", None)
-                if summary and hasattr(summary, "refresh_theme"):
-                    summary.refresh_theme()
-                elif summary and hasattr(summary, "apply_theme"):
-                    summary.apply_theme()
-                for dialog_attr in (
-                    "_game_versions_dialog",
-                    "_mod_versions_dialog",
-                    "_downloads_dialog",
-                    "_log_viewer_dialog",
-                    "_support_packager_dialog",
-                    "_modding_tools_dialog",
-                    "_diagnostics_dialog",
-                ):
-                    dialog = getattr(self.app, dialog_attr, None)
-                    if not dialog or not hasattr(dialog, "refresh_theme"):
-                        continue
-                    with contextlib.suppress(RuntimeError):
-                        dialog.refresh_theme()
+                refresh_live_widgets(self.app, "apply_theme")
                 self.update_dynamic_elements()
                 self._resync_filter_scroll_heights()
 

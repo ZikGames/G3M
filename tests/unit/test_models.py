@@ -73,6 +73,6 @@ def test_game_tab_is_immutable_and_registry_is_populated():
     tab = GameTab("deltarune_1", "1", "tabs.chapter_1")
 
     with pytest.raises(AttributeError):
-        tab.tab_id = "other"
+        tab.__setattr__("tab_id", "other")
 
     assert {game.game_id for game in get_all_games()} >= {"deltarune", "undertale"}

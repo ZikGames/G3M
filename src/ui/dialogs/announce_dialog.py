@@ -1,11 +1,12 @@
 """Dialog for application announcements."""
 
 import logging
+from typing import cast
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
+    QLayoutItem,
     QPushButton,
     QSizePolicy,
     QTextBrowser,
@@ -15,7 +16,11 @@ from PyQt6.QtWidgets import (
 
 from services.announce_service import AnnounceService
 from services.localization_service import tr
-from ui.common.dialog_theme import apply_dialog_theme, get_dialog_theme_values
+from ui.common.dialog_theme import (
+    DynamicDialog,
+    apply_dialog_theme,
+    get_dialog_theme_values,
+)
 from utils.native_integration import open_url_native
 
 logger = logging.getLogger(__name__)
@@ -114,7 +119,7 @@ class AnnouncePanel(QWidget):
 
     def _populate_poll_buttons(self) -> None:
         while self._poll_buttons_layout.count():
-            item = self._poll_buttons_layout.takeAt(0)
+            item = cast(QLayoutItem, self._poll_buttons_layout.takeAt(0))
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
@@ -174,9 +179,18 @@ class AnnouncePanel(QWidget):
                 background-color: {theme["hover"]};
             }}
             """
-        existing = self.styleSheet() or ""
-        if "pollOption" not in existing:
-            self.setStyleSheet(existing + poll_styles)
+        from ui.common.dialog_theme import scale_stylesheet
+
+        self.setStyleSheet(scale_stylesheet(poll_styles, self.app_state))
+
+    def apply_theme(self) -> None:
+        self._apply_poll_button_theme()
+        for button in self._option_buttons:
+            button.ensurePolished()
+            button.setMaximumWidth(max(70, button.sizeHint().width() + 18))
+
+    def rescale_ui(self) -> None:
+        self.apply_theme()
 
     def relocalize_ui(self) -> None:
         self.details_button.setText(tr("dialogs.announce_details_button"))
@@ -188,7 +202,7 @@ class AnnouncePanel(QWidget):
         self.sync_ok_button_state()
 
 
-class AnnounceDialog(QDialog):
+class AnnounceDialog(DynamicDialog):
     accepted_with_ok = pyqtSignal()
 
     def __init__(self, announce: dict, parent=None, *, on_submit_poll=None) -> None:

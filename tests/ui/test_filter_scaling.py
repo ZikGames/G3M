@@ -72,15 +72,18 @@ class TestFilterScaling:
         QApplication.processEvents()
 
         filters_scroll = builder.widgets.get('filters_scroll')
+        assert filters_scroll is not None
         filters_widget = filters_scroll.widget()
 
         resize_event = QEvent(QEvent.Type.Resize)
         builder.eventFilter(filters_widget, resize_event)
 
+        assert filters_scroll is not None
         assert filters_scroll.maximumHeight() == (
             filters_widget.sizeHint().height()
             + filters_scroll.horizontalScrollBar().sizeHint().height()
         )
+        assert filters_scroll is not None
         assert filters_scroll.minimumHeight() == filters_scroll.maximumHeight()
 
         widget.close()
@@ -107,6 +110,7 @@ class TestFilterScaling:
 
         assert filters_scroll.maximumHeight() == 0
         assert not filters_scroll.isVisible()
+        assert controls_layout is not None
         assert controls_layout.indexOf(actions_widget) >= 0
         assert not search_btn.isVisible()
 
@@ -126,6 +130,7 @@ class TestFilterScaling:
 
         filters_scroll = builder.widgets["filters_scroll"]
         actions_widget = builder._library_actions_widget
+        assert actions_widget is not None
         actions_layout = actions_widget.layout()
         search_btn = builder.widgets["library_search_button"]
         modding_btn = builder.widgets["library_modding_tools_button"]
@@ -137,9 +142,12 @@ class TestFilterScaling:
 
         assert filters_scroll.maximumHeight() > 0
         assert filters_scroll.isVisible()
+        assert builder._library_filters_layout is not None
         assert builder._library_filters_layout.indexOf(actions_widget) >= 0
         assert search_btn.isVisible()
+        assert actions_layout is not None
         assert actions_layout.indexOf(modding_btn) < actions_layout.indexOf(downloads_btn)
+        assert actions_layout is not None
         assert actions_layout.indexOf(downloads_btn) < actions_layout.indexOf(search_btn)
 
         widget.close()
@@ -156,15 +164,18 @@ class TestFilterScaling:
         QApplication.processEvents()
 
         filters_scroll = builder.widgets.get('filters_scroll')
+        assert filters_scroll is not None
         filters_widget = filters_scroll.widget()
 
         resize_event = QEvent(QEvent.Type.Resize)
         builder.eventFilter(filters_widget, resize_event)
 
+        assert filters_scroll is not None
         assert filters_scroll.maximumHeight() == (
             filters_widget.sizeHint().height()
             + filters_scroll.horizontalScrollBar().sizeHint().height()
         )
+        assert filters_scroll is not None
         assert filters_scroll.minimumHeight() == filters_scroll.maximumHeight()
 
         widget.close()

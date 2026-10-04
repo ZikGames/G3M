@@ -24,6 +24,8 @@ class FetchChangelogWorker(QObject):
     @pyqtSlot()
     def run(self):
         thread = QThread.currentThread()
+        if thread is None:
+            return
         try:
             if thread.isInterruptionRequested():
                 return

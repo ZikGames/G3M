@@ -1,21 +1,26 @@
+
 import json
 import logging
 import os
 import re
 import shutil
+from collections.abc import Callable, Sequence
 from functools import lru_cache
+from typing import Any, cast, overload
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QLayout,
     QLineEdit,
+    QListView,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -28,6 +33,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ui.common.dialog_theme import DynamicDialog
 from ui.common.styling import clamp_border_radius, get_theme_color, rgba_from_color
 
 logger = logging.getLogger(__name__)
@@ -106,7 +112,7 @@ class _LazyPage(QWidget):
     def ensure_loaded(self) -> None:
         if self._loaded or self._builder is None:
             return
-        self.layout().addWidget(self._builder())
+        cast(QLayout, self.layout()).addWidget(self._builder())
         self._loaded = True
         self._builder = None
 
@@ -369,12 +375,17 @@ CUSTOMIZATION_FLAG_GROUPS = [
 ]
 
 
-class SaveEditorDialog(QDialog):
+type _Title = str | tuple[str, dict[str, Any]]
+type _PageSpec = tuple[_Title, Callable[[], QWidget]]
+
+
+class SaveEditorDialog(DynamicDialog):
     def __init__(
         self, file_path: str, app_state=None, parent=None, tr_func=None
     ) -> None:
         super().__init__(parent)
         self.tr_func = tr_func or tr
+        self.translator = self.tr_func
         self.app_state = app_state
         self.file_path = file_path
         self.simple_mode_data = load_simple_mode_data()
@@ -397,9 +408,9 @@ class SaveEditorDialog(QDialog):
         self.advanced_details_toggle = QCheckBox()
         self.table = QTableWidget()
         self.table.setColumnCount(3)
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.horizontalHeader().setMinimumSectionSize(80)
+        cast(QHeaderView, self.table.verticalHeader()).setVisible(False)
+        cast(QHeaderView, self.table.horizontalHeader()).setStretchLastSection(True)
+        cast(QHeaderView, self.table.horizontalHeader()).setMinimumSectionSize(80)
         self.mode_tabs = QTabWidget()
         self.mode_tabs.addTab(self._simple_tab, "")
         self.mode_tabs.addTab(self._advanced_tab, "")
@@ -450,6 +461,7 @@ class SaveEditorDialog(QDialog):
         self.apply_theme()
 
     def relocalize_ui(self) -> None:
+        super().relocalize_ui()
         self.setWindowTitle(self.tr_func("dialogs.save_editing"))
         self.mode_tabs.setTabText(0, self.tr_func("ui.simple_mode"))
         self.mode_tabs.setTabText(1, self.tr_func("ui.advanced_mode"))
@@ -477,7 +489,7 @@ class SaveEditorDialog(QDialog):
         radius = clamp_border_radius(
             config.get("custom_border_radius", 10), width=48, height=36
         )
-        self.setStyleSheet(
+        self.set_theme_stylesheet(
             f"""
             QDialog {{ background-color: {background}; color: {text}; }}
             QLabel, QCheckBox {{ color: {text}; }}
@@ -487,7 +499,9 @@ class SaveEditorDialog(QDialog):
             QPushButton {{ background-color: {button}; border: 2px solid {border}; border-radius: {radius}px; color: {text}; padding: 6px 10px; }}
             QPushButton:hover {{ background-color: {button_hover}; }}
             QPushButton:focus, QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTableWidget:focus {{ border-color: {text}; }}
-            QLineEdit, QComboBox, QSpinBox, QTableWidget {{ background-color: rgba(0,0,0,0.16); border: 2px solid {border}; border-radius: {radius}px; color: {text}; padding: 6px 8px; }}
+            QLineEdit,
+    QListView,
+    QListView, QComboBox, QSpinBox, QTableWidget {{ background-color: rgba(0,0,0,0.16); border: 2px solid {border}; border-radius: {radius}px; color: {text}; padding: 6px 8px; }}
             QComboBox, QLineEdit, QSpinBox {{ min-height: 36px; }}
             QScrollArea {{ border: none; background: transparent; }}
             """
@@ -552,7 +566,7 @@ class SaveEditorDialog(QDialog):
         if self.table.rowCount() == 0:
             return list(self._advanced_lines_cache)
         return [
-            ("" if self.table.item(row, 2) is None else self.table.item(row, 2).text())
+            ("" if self.table.item(row, 2) is None else cast(QTableWidgetItem, self.table.item(row, 2)).text())
             for row in range(self.table.rowCount())
         ]
 
@@ -579,7 +593,7 @@ class SaveEditorDialog(QDialog):
             logger.warning("SaveEditorDialog: simple mode unavailable: %s", error)
             self._simple_ready = False
             self._clear_layout(self._simple_layout)
-            label = QLabel(self.tr_func("dialogs.simple_mode_unavailable"))
+            label = self.localize_text(QLabel(), "dialogs.simple_mode_unavailable")
             label.setWordWrap(True)
             self._simple_layout.addWidget(label)
             return
@@ -606,11 +620,13 @@ class SaveEditorDialog(QDialog):
         scroll.setWidget(widget)
         return scroll
 
-    def _lazy_tabs(self, pages: list[tuple[str, object]]) -> QTabWidget:
+    def _lazy_tabs(self, pages: Sequence[_PageSpec]) -> QTabWidget:
         tabs = QTabWidget()
         for title, builder in pages:
             page = _LazyPage(builder)
-            tabs.addTab(page, title)
+            index = tabs.addTab(page, "" if isinstance(title, tuple) else title)
+            if isinstance(title, tuple):
+                self.localize(lambda text, index=index: tabs.setTabText(index, text), title[0], owner=tabs, **title[1])
 
         def ensure(index: int) -> None:
             page = tabs.widget(index)
@@ -623,14 +639,23 @@ class SaveEditorDialog(QDialog):
             ensure(0)
         return tabs
 
+    @overload
+    def _section(self, title: _Title, layout_class: type[QFormLayout] = QFormLayout) -> tuple[QWidget, QFormLayout]: ...
+
+    @overload
+    def _section(self, title: _Title, layout_class: type[QGridLayout]) -> tuple[QWidget, QGridLayout]: ...
+
+    @overload
+    def _section(self, title: _Title, layout_class: type[QVBoxLayout]) -> tuple[QWidget, QVBoxLayout]: ...
+
     def _section(
-        self, title: str, layout_class=QFormLayout
+        self, title: _Title, layout_class: type[QFormLayout] | type[QGridLayout] | type[QVBoxLayout] = QFormLayout
     ) -> tuple[QWidget, QFormLayout | QGridLayout | QVBoxLayout]:
         root = QWidget()
         outer = QVBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
-        header = QLabel(title)
+        header = self.localize_text(QLabel(), title[0], **title[1]) if isinstance(title, tuple) else QLabel(title)
         header.setObjectName("simpleSectionTitle")
         body = QFrame()
         body.setObjectName("simpleSectionBody")
@@ -644,7 +669,7 @@ class SaveEditorDialog(QDialog):
     def _control_min_height(self, widget: QWidget, padding: int = 16) -> int:
         return max(36, widget.fontMetrics().height() + padding)
 
-    def _configure_editor_widget(self, widget: QWidget) -> QWidget:
+    def _configure_editor_widget[T: QWidget](self, widget: T) -> T:
         widget.setMinimumHeight(self._control_min_height(widget))
         widget.setMinimumWidth(max(widget.minimumWidth(), 132))
         widget.setSizePolicy(
@@ -706,11 +731,12 @@ class SaveEditorDialog(QDialog):
             )
         combo.setCurrentIndex(max(0, combo.findData(current_id)))
         combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
-        combo.view().setWordWrap(True)
-        combo.view().setUniformItemSizes(False)
-        combo.view().setTextElideMode(Qt.TextElideMode.ElideNone)
-        combo.view().setSpacing(2)
-        combo.view().setStyleSheet(
+        view = cast(QListView, combo.view())
+        view.setWordWrap(True)
+        view.setUniformItemSizes(False)
+        cast(QListView, combo.view()).setTextElideMode(Qt.TextElideMode.ElideNone)
+        view.setSpacing(2)
+        cast(QListView, combo.view()).setStyleSheet(
             "QAbstractItemView::item { padding: 6px 8px; min-height: 28px; }"
         )
         combo.currentIndexChanged.connect(lambda idx: on_change(combo.itemData(idx)))
@@ -1007,7 +1033,7 @@ class SaveEditorDialog(QDialog):
         chapter_flags = set(self._chapter_content()["flags"])
         if team_name_id is not None and team_name_id in chapter_flags:
             team_box, team_layout = self._section(
-                self.tr_func("ui.party_customization")
+                ("ui.party_customization", {})
             )
             team_layout.addRow(self._flag_editor(team_name_id))
             layout.addWidget(team_box)
@@ -1027,7 +1053,7 @@ class SaveEditorDialog(QDialog):
     def _build_battle_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        battle_box, battle_layout = self._section(self.tr_func("ui.battle"))
+        battle_box, battle_layout = self._section(("ui.battle", {}))
         battle = self.save_data["battle"]
         for key, title, minimum, maximum in (
             ("tension", self.tr_func("ui.current_tp"), 0, 99999),
@@ -1048,7 +1074,7 @@ class SaveEditorDialog(QDialog):
         layout.addWidget(battle_box)
         chapter = self.save_data["meta"]["chapter"]
         if chapter >= 3:
-            extras_box, extras_layout = self._section(self.tr_func("ui.chapter_extras"))
+            extras_box, extras_layout = self._section(("ui.chapter_extras", {}))
             if chapter == 3:
                 points = self._flag_id("POINTS")
                 if points is not None:
@@ -1068,31 +1094,31 @@ class SaveEditorDialog(QDialog):
     def _build_general_page(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
-        info_box, info_layout = self._section(self.tr_func("ui.general"))
+        info_box, info_layout = self._section(("ui.general", {}))
         info_layout.addRow(
-            self.tr_func("ui.chapter_label"),
+            self.localize_text(QLabel(), "ui.chapter_label"),
             QLabel(str(self.save_data["meta"]["chapter"])),
         )
         info_layout.addRow(
-            self.tr_func("ui.slot_label"),
+            self.localize_text(QLabel(), "ui.slot_label"),
             QLabel(str(self.save_data["meta"]["slot"] + 1)),
         )
         info_layout.addRow(
-            self.tr_func("ui.player_name"),
+            self.localize_text(QLabel(), "ui.player_name"),
             self._make_line_edit(
                 self.save_data["playerName"],
                 lambda text: self.save_data.__setitem__("playerName", text),
             ),
         )
         info_layout.addRow(
-            self.tr_func("ui.vessel_name"),
+            self.localize_text(QLabel(), "ui.vessel_name"),
             self._make_line_edit(
                 self.save_data["vesselName"],
                 lambda text: self.save_data.__setitem__("vesselName", text),
             ),
         )
         info_layout.addRow(
-            self.tr_func("ui.money_label"),
+            self.localize_text(QLabel(), "ui.money_label"),
             self._make_spin(
                 self.save_data["money"],
                 lambda value: self.save_data.__setitem__("money", value),
@@ -1101,7 +1127,7 @@ class SaveEditorDialog(QDialog):
             ),
         )
         info_layout.addRow(
-            self.tr_func("ui.xp"),
+            self.localize_text(QLabel(), "ui.xp"),
             self._make_spin(
                 self.save_data["xp"],
                 lambda value: self.save_data.__setitem__("xp", value),
@@ -1110,7 +1136,7 @@ class SaveEditorDialog(QDialog):
             ),
         )
         info_layout.addRow(
-            self.tr_func("ui.level"),
+            self.localize_text(QLabel(), "ui.level"),
             self._make_spin(
                 self.save_data["lv"],
                 lambda value: self.save_data.__setitem__("lv", value),
@@ -1119,7 +1145,7 @@ class SaveEditorDialog(QDialog):
             ),
         )
         info_layout.addRow(
-            self.tr_func("ui.inventory_count"),
+            self.localize_text(QLabel(), "ui.inventory_count"),
             self._make_spin(
                 self.save_data["inv"],
                 lambda value: self.save_data.__setitem__("inv", value),
@@ -1128,7 +1154,7 @@ class SaveEditorDialog(QDialog):
             ),
         )
         info_layout.addRow(
-            self.tr_func("ui.inventory_capacity"),
+            self.localize_text(QLabel(), "ui.inventory_capacity"),
             self._make_spin(
                 self.save_data["invc"],
                 lambda value: self.save_data.__setitem__("invc", value),
@@ -1137,7 +1163,7 @@ class SaveEditorDialog(QDialog):
             ),
         )
         info_layout.addRow(
-            self.tr_func("ui.playtime_label"),
+            self.localize_text(QLabel(), "ui.playtime_label"),
             self._make_line_edit(
                 self._format_time(self.save_data["time"]),
                 lambda text: self.save_data.__setitem__("time", self._parse_time(text)),
@@ -1163,7 +1189,7 @@ class SaveEditorDialog(QDialog):
                 (int(self.save_data["plot"]), str(self.save_data["plot"]), "")
             )
         info_layout.addRow(
-            self.tr_func("ui.plot_label"),
+            self.localize_text(QLabel(), "ui.plot_label"),
             self._make_combo(
                 int(self.save_data["plot"]),
                 plot_options,
@@ -1171,7 +1197,7 @@ class SaveEditorDialog(QDialog):
             ),
         )
         info_layout.addRow(
-            self.tr_func("ui.room_label"),
+            self.localize_text(QLabel(), "ui.room_label"),
             self._make_combo(
                 self.save_data["room"],
                 self._option_list(
@@ -1180,7 +1206,7 @@ class SaveEditorDialog(QDialog):
                 lambda value: self.save_data.__setitem__("room", int(value or 0)),
             ),
         )
-        in_dark = QCheckBox(self.tr_func("ui.in_dark_world"))
+        in_dark = self.localize_text(QCheckBox(), "ui.in_dark_world")
         in_dark.setChecked(bool(self.save_data["inDarkWorld"]))
         in_dark.stateChanged.connect(
             lambda state: self.save_data.__setitem__("inDarkWorld", bool(state))
@@ -1292,7 +1318,7 @@ class SaveEditorDialog(QDialog):
             ]
         )
         stats_layout.addRow(
-            self.tr_func("ui.weapon_label"),
+            self.localize_text(QLabel(), "ui.weapon_label"),
             self._make_combo(
                 character["weapon"],
                 self._option_list("weapons", allowed_weapons, character["weapon"]),
@@ -1315,7 +1341,7 @@ class SaveEditorDialog(QDialog):
             )
         if self.save_data["meta"]["format"] == 2:
             stats_layout.addRow(
-                self.tr_func("ui.weapon_style"),
+                self.localize_text(QLabel(), "ui.weapon_style"),
                 self._make_spin(
                     character["weaponStyle"],
                     lambda value: character.__setitem__("weaponStyle", value),
@@ -1325,7 +1351,7 @@ class SaveEditorDialog(QDialog):
             )
         else:
             stats_layout.addRow(
-                self.tr_func("ui.weapon_style"),
+                self.localize_text(QLabel(), "ui.weapon_style"),
                 self._make_line_edit(
                     str(character["weaponStyle"]),
                     lambda text: character.__setitem__("weaponStyle", text),
@@ -1333,7 +1359,7 @@ class SaveEditorDialog(QDialog):
             )
         layout.addWidget(stats_box)
         spells_box, spells_layout = self._section(
-            self.tr_func("ui.spells"), QGridLayout
+            ("ui.spells", {}), QGridLayout
         )
         for idx in range(len(character["spells"])):
             row = idx % 6
@@ -1356,7 +1382,7 @@ class SaveEditorDialog(QDialog):
             )
         layout.addWidget(spells_box)
         weapon_box, weapon_layout = self._section(
-            self.tr_func("ui.weapon_sets"), QGridLayout
+            ("ui.weapon_sets", {}), QGridLayout
         )
         stat_titles = (
             ("attack", self.tr_func("ui.stat_attack_short")),
@@ -1421,7 +1447,7 @@ class SaveEditorDialog(QDialog):
     def _build_light_world_page(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
-        stats_box, stats_layout = self._section(self.tr_func("ui.light_world"))
+        stats_box, stats_layout = self._section(("ui.light_world", {}))
         light_world = self.save_data["lightWorld"]
         for key, title in (
             ("health", self.tr_func("ui.current_hp")),
@@ -1456,7 +1482,7 @@ class SaveEditorDialog(QDialog):
             if self._group_meta("lightWorldItems").get(str(item_id), {}).get("armor")
         ]
         stats_layout.addRow(
-            self.tr_func("ui.weapon_label"),
+            self.localize_text(QLabel(), "ui.weapon_label"),
             self._make_combo(
                 light_world["weapon"],
                 self._option_list(
@@ -1466,7 +1492,7 @@ class SaveEditorDialog(QDialog):
             ),
         )
         stats_layout.addRow(
-            self.tr_func("ui.armor_label"),
+            self.localize_text(QLabel(), "ui.armor_label"),
             self._make_combo(
                 light_world["armor"],
                 self._option_list(
@@ -1477,7 +1503,7 @@ class SaveEditorDialog(QDialog):
         )
         layout.addWidget(stats_box)
         items_box, items_layout = self._section(
-            self.tr_func("ui.items_label"), QGridLayout
+            ("ui.items_label", {}), QGridLayout
         )
         for idx in range(8):
             items_layout.addWidget(
@@ -1500,7 +1526,7 @@ class SaveEditorDialog(QDialog):
             )
         layout.addWidget(items_box)
         phone_box, phone_layout = self._section(
-            self.tr_func("ui.phone_contacts"), QGridLayout
+            ("ui.phone_contacts", {}), QGridLayout
         )
         for idx in range(8):
             phone_layout.addWidget(
@@ -1528,7 +1554,7 @@ class SaveEditorDialog(QDialog):
     def _build_recruits_page(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
-        recruit_box, recruit_layout = self._section(self.tr_func("ui.recruits"))
+        recruit_box, recruit_layout = self._section(("ui.recruits", {}))
 
         def set_recruit_value(flag_id: int, recruit_count: int, count: int) -> None:
             normalized = max(-1, min(recruit_count, int(count)))
@@ -1587,11 +1613,11 @@ class SaveEditorDialog(QDialog):
     def _build_flags_page(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
-        manual_box, manual_layout = self._section(self.tr_func("ui.manual_flag_editor"))
+        manual_box, manual_layout = self._section(("ui.manual_flag_editor", {}))
         flag_id_input = QSpinBox()
         flag_id_input.setRange(0, len(self.save_data["flags"]) - 1)
         flag_value_input = QLineEdit("0")
-        apply_button = QPushButton(self.tr_func("ui.apply"))
+        apply_button = self.localize_text(QPushButton(), "ui.apply")
 
         def sync_manual_value() -> None:
             flag_value_input.setText(
@@ -1606,8 +1632,8 @@ class SaveEditorDialog(QDialog):
         flag_id_input.valueChanged.connect(sync_manual_value)
         apply_button.clicked.connect(apply_manual_value)
         sync_manual_value()
-        manual_layout.addRow(self.tr_func("ui.flag_id"), flag_id_input)
-        manual_layout.addRow(self.tr_func("ui.value_label"), flag_value_input)
+        manual_layout.addRow(self.localize_text(QLabel(), "ui.flag_id"), flag_id_input)
+        manual_layout.addRow(self.localize_text(QLabel(), "ui.value_label"), flag_value_input)
         manual_layout.addRow(apply_button)
         layout.addWidget(manual_box)
         search = QLineEdit()
@@ -1641,7 +1667,7 @@ class SaveEditorDialog(QDialog):
         return self._lazy_tabs(
             [
                 (
-                    self.tr_func("ui.chapter_tab_title", chapter_num=chapter),
+                    ("ui.chapter_tab_title", {"chapter_num": chapter}),
                     lambda current_chapter=chapter: self._wrap_scroll(
                         self._build_story_chapter_page(current_chapter)
                     ),
@@ -1674,9 +1700,9 @@ class SaveEditorDialog(QDialog):
 
     def _rebuild_simple_mode(self) -> None:
         self._clear_layout(self._simple_layout)
-        party_pages = [
+        party_pages: list[_PageSpec] = [
             (
-                self.tr_func("ui.overview"),
+                ("ui.overview", {}),
                 lambda: self._wrap_scroll(self._build_party_overview_page()),
             )
         ]
@@ -1699,9 +1725,9 @@ class SaveEditorDialog(QDialog):
                     ),
                 )
             )
-        inventory_pages = [
+        inventory_pages: list[_PageSpec] = [
             (
-                self.tr_func("ui.consumables"),
+                ("ui.consumables", {}),
                 lambda: self._wrap_scroll(
                     self._build_inventory_page("consumables", "consumables")
                 ),
@@ -1710,7 +1736,7 @@ class SaveEditorDialog(QDialog):
         if "storage" in self.save_data["inventory"]:
             inventory_pages.append(
                 (
-                    self.tr_func("ui.storage"),
+                    ("ui.storage", {}),
                     lambda: self._wrap_scroll(
                         self._build_inventory_page("storage", "consumables")
                     ),
@@ -1719,19 +1745,19 @@ class SaveEditorDialog(QDialog):
         inventory_pages.extend(
             [
                 (
-                    self.tr_func("ui.key_items"),
+                    ("ui.key_items", {}),
                     lambda: self._wrap_scroll(
                         self._build_inventory_page("keyItems", "keyitems")
                     ),
                 ),
                 (
-                    self.tr_func("ui.weapons"),
+                    ("ui.weapons", {}),
                     lambda: self._wrap_scroll(
                         self._build_inventory_page("weapons", "weapons")
                     ),
                 ),
                 (
-                    self.tr_func("ui.armors"),
+                    ("ui.armors", {}),
                     lambda: self._wrap_scroll(
                         self._build_inventory_page("armors", "armors")
                     ),
@@ -1741,32 +1767,32 @@ class SaveEditorDialog(QDialog):
         simple_tabs = self._lazy_tabs(
             [
                 (
-                    self.tr_func("ui.general"),
+                    ("ui.general", {}),
                     lambda: self._wrap_scroll(self._build_general_page()),
                 ),
-                (self.tr_func("ui.party"), lambda: self._lazy_tabs(party_pages)),
+                (("ui.party", {}), lambda: self._lazy_tabs(party_pages)),
                 (
-                    self.tr_func("ui.inventory"),
+                    ("ui.inventory", {}),
                     lambda: self._lazy_tabs(inventory_pages),
                 ),
                 (
-                    self.tr_func("ui.battle"),
+                    ("ui.battle", {}),
                     lambda: self._wrap_scroll(self._build_battle_page()),
                 ),
                 (
-                    self.tr_func("ui.customization"),
+                    ("ui.customization", {}),
                     lambda: self._wrap_scroll(self._build_customization_page()),
                 ),
-                (self.tr_func("ui.story"), self._build_story_page),
+                (("ui.story", {}), self._build_story_page),
                 (
-                    self.tr_func("ui.light_world"),
+                    ("ui.light_world", {}),
                     lambda: self._wrap_scroll(self._build_light_world_page()),
                 ),
                 (
-                    self.tr_func("ui.recruits"),
+                    ("ui.recruits", {}),
                     lambda: self._wrap_scroll(self._build_recruits_page()),
                 ),
-                (self.tr_func("ui.flags"), self._build_flags_page),
+                (("ui.flags", {}), self._build_flags_page),
             ]
         )
         self._simple_layout.addWidget(simple_tabs)

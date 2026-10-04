@@ -738,7 +738,7 @@ def _restore_shortcut_state(
         and shortcut_plugin_context.enabled
         and runtime_service.has_enabled_hook("before_restore_after_exit_shortcut")
     )
-    if plugin_restore:
+    if plugin_restore and journal is not None:
         try:
             journal.verify_deployed()
         except Exception:
@@ -752,7 +752,7 @@ def _restore_shortcut_state(
     ):
         logger.error("Shortcut plugin restoration failed; operation journal retained")
         return False
-    if plugin_restore:
+    if plugin_restore and journal is not None:
         try:
             journal.checkpoint()
         except Exception:

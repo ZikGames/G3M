@@ -1,10 +1,10 @@
 """Dialog for choosing files from curated lists."""
 
 from datetime import datetime
+from typing import cast
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
@@ -15,10 +15,11 @@ from PyQt6.QtWidgets import (
 )
 
 from services.localization_service import tr
+from ui.common.dialog_theme import DynamicDialog
 from utils.native_integration import open_url_native
 
 
-class GameBananaFilePickerDialog(QDialog):
+class GameBananaFilePickerDialog(DynamicDialog):
     def __init__(
         self, parent, files: list[dict], mod_name: str, homepage: str | None = None
     ) -> None:
@@ -74,8 +75,8 @@ class GameBananaFilePickerDialog(QDialog):
         self.hint_label.setText(tr("dialogs.gamebanana_picker_hint"))
         if self.open_button:
             self.open_button.setText(tr("dialogs.gamebanana_picker_open_page"))
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText(tr("ui.ok"))
-        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText(
+        cast(QPushButton, self.button_box.button(QDialogButtonBox.StandardButton.Ok)).setText(tr("ui.ok"))
+        cast(QPushButton, self.button_box.button(QDialogButtonBox.StandardButton.Cancel)).setText(
             tr("dialogs.cancel")
         )
         self._on_selection_changed()

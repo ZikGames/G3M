@@ -17,7 +17,7 @@ def begin_close_event(window, event, *, single_shot):
     window._close_cleanup_started = True
     logger.info("Application close requested; starting shutdown cleanup")
     app = QApplication.instance()
-    if app:
+    if isinstance(app, QApplication):
         with contextlib.suppress(Exception):
             app.removeEventFilter(window)
         with contextlib.suppress(Exception):
@@ -56,7 +56,7 @@ def mark_close_task_complete(window, task_name: str) -> None:
         return
     logger.info("All close tasks completed; quitting application")
     app = QApplication.instance()
-    if app:
+    if app is not None:
         with contextlib.suppress(Exception):
             app.quit()
 
@@ -75,6 +75,6 @@ def force_finish_close_tasks(window) -> None:
         if not completed:
             pending[task_name] = True
     app = QApplication.instance()
-    if app:
+    if app is not None:
         with contextlib.suppress(Exception):
             app.quit()

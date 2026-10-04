@@ -1,5 +1,6 @@
 """Unit tests for AppWindow dialog callback safety."""
 
+
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock
@@ -50,7 +51,7 @@ def test_community_dialog_adds_validated_plugin_feed(qapp):
         plugin_id="news",
     )
     parent = QWidget()
-    parent.plugin_runtime_service = SimpleNamespace(get_community_feeds=lambda: [feed])
+    vars(parent)["plugin_runtime_service"] = SimpleNamespace(get_community_feeds=lambda: [feed])
     dialog = CommunityDialog(parent, SimpleNamespace(global_settings={}))
 
     assert dialog.feed_combo.itemData(2) == feed
@@ -178,11 +179,11 @@ def test_main_window_permission_error_ignores_broken_feedback():
     window._safe_show_message = lambda *args, **kwargs: AppWindow._safe_show_message(
         window, *args, **kwargs
     )
-    window.feedback_service.show_message.side_effect = RuntimeError("toast deleted")
+    vars(window.feedback_service.show_message)["side_effect"] = RuntimeError("toast deleted")
 
     AppWindow._handle_permission_error(window, "C:/locked")
 
-    window.feedback_service.show_message.assert_called_once_with(
+    cast(Mock, window.feedback_service.show_message).assert_called_once_with(
         "error", "errors.access_denied", path="C:/locked"
     )
 
@@ -202,10 +203,10 @@ def test_main_window_rate_limit_ignores_broken_feedback():
     window._safe_show_message = lambda *args, **kwargs: AppWindow._safe_show_message(
         window, *args, **kwargs
     )
-    window.feedback_service.show_message.side_effect = RuntimeError("toast deleted")
+    vars(window.feedback_service.show_message)["side_effect"] = RuntimeError("toast deleted")
 
     AppWindow._on_gb_rate_limit_error(window)
 
     assert window.app_state.local_config["gb_rate_limit_notified_this_session"] is True
-    window.settings_service.write_local_config.assert_called_once()
-    window.feedback_service.show_message.assert_called_once()
+    cast(Mock, window.settings_service.write_local_config).assert_called_once()
+    cast(Mock, window.feedback_service.show_message).assert_called_once()

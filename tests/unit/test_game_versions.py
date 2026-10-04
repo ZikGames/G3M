@@ -675,7 +675,7 @@ class TestExportImportWorkers:
             except OSError:
                 pytest.skip("Hard links are unavailable")
         worker_class = getattr(game_version_archive_worker, worker_name)
-        args = [str(source), str(destination)]
+        args: list[object] = [str(source), str(destination)]
         if worker_name == "GameExportVersionWorker":
             args.append(manifest)
         worker = worker_class(*args)

@@ -70,7 +70,7 @@ Release downloads are available for Windows, Linux, and macOS on both x86_64 and
 
 - Browse supported GameBanana games directly in the app, with metadata, screenshots, descriptions, and per-post file selection when a page has multiple compatible downloads.
 - Install from GameBanana, external URLs, local archives, or one-click install links.
-- Use Manual Install when an archive is not ready for automatic conversion. Select source files and folders, then choose where they belong and how G3M should apply them.
+- Use Manual Install to configure downloaded files in one window. G3M fills in GameBanana details and detects confirmed patch destinations. Configure multiple files or folders together and read the mod's instructions during setup.
 - Hide unwanted browser results with the blocklist manager. Entries can be scoped globally or per game, and can block by mod ID, name, or category.
 
 ### Library, profiles, and versions
@@ -171,7 +171,8 @@ pytest
 Useful local commands:
 
 ```bash
-ruff check src tests
+ruff check .
+basedpyright
 pytest tests/unit
 pytest tests/integration
 pytest tests/ui

@@ -333,7 +333,7 @@ class DiscordRichPresenceService(QObject):
 
     def _iter_visible_windows(self) -> list[QWidget]:
         app = QApplication.instance()
-        if app is None:
+        if not isinstance(app, QApplication):
             return []
         windows = []
         for widget in app.topLevelWidgets():

@@ -135,6 +135,7 @@ def test_operation_diagnostics_describes_data_patch(tmp_path):
 
     assert report.summary.data_files == 1
     assert report.data_impacts[0].patch_type == "patch"
+    assert report.data_impacts[0].target_data_path is not None
     assert report.data_impacts[0].target_data_path.endswith("data.win")
 
 

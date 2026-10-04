@@ -1,8 +1,10 @@
+
 import importlib.util
 import os
-from typing import Any, override
+from typing import Any, cast, override
 
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QEnterEvent, QMouseEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -31,29 +33,33 @@ class _SlotRowFrame(QFrame):
         self._slot = slot
 
     @override
-    def enterEvent(self, ev):
+    def enterEvent(self, event):
+        ev = cast(QEnterEvent, event)
         self.hover_entered.emit(self._chapter, self._slot)
         super().enterEvent(ev)
 
     @override
-    def leaveEvent(self, ev):
+    def leaveEvent(self, a0):
+        ev = cast(QEvent, a0)
         self.hover_left.emit(self._chapter, self._slot)
         super().leaveEvent(ev)
 
     @override
-    def mousePressEvent(self, ev):
+    def mousePressEvent(self, a0):
+        ev = cast(QMouseEvent, a0)
         if ev and ev.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self._chapter, self._slot)
         super().mousePressEvent(ev)
 
     @override
-    def mouseDoubleClickEvent(self, ev):
+    def mouseDoubleClickEvent(self, a0):
+        ev = cast(QMouseEvent, a0)
         if ev and ev.button() == Qt.MouseButton.LeftButton:
             self.double_clicked.emit(self._chapter, self._slot)
         super().mouseDoubleClickEvent(ev)
 
 
-class _SlotHeightSyncMixin:
+class _SlotHeightSyncMixin(QLabel):
     def _sync_slot_height(self) -> None:
         row = getattr(self, "_slot_row", None)
         if row is None:
@@ -69,11 +75,13 @@ class _SlotHeightSyncMixin:
     def _schedule_slot_height_sync(self) -> None:
         QTimer.singleShot(0, self._sync_slot_height)
 
-    def setText(self, text: str) -> None:  # noqa: N802 - PyQt6 method override must use camelCase
+    def setText(self, a0: str | None) -> None:  # noqa: N802 - PyQt6 method override must use camelCase
+        text = a0
         super().setText(text)
         self._schedule_slot_height_sync()
 
-    def event(self, ev):
+    def event(self, e):
+        ev = cast(QEvent, e)
         result = super().event(ev)
         if ev is not None and ev.type() in {
             QEvent.Type.Show,
@@ -126,14 +134,15 @@ class SaveManagerViewBuilder:
                         self.clicked.emit(self._ch, self._sl)
                     super().mousePressEvent(ev)
 
-                def mouseDoubleClickEvent(self, ev):
+                def mouseDoubleClickEvent(self, a0):
+                    ev = cast(QMouseEvent, a0)
                     if ev and ev.button() == Qt.MouseButton.LeftButton:
                         self.double_clicked.emit(self._ch, self._sl)
                     super().mouseDoubleClickEvent(ev)
 
             clickable_label_cls = _ClickableLabel
 
-        slot_label_cls = type("SlotClickableLabel", (_SlotHeightSyncMixin, clickable_label_cls), {})
+        slot_label_cls: Any = type("SlotClickableLabel", (_SlotHeightSyncMixin, clickable_label_cls), {})
 
         save_manager_widget = QFrame(self.parent)
         save_manager_widget.setObjectName('save_manager_widget')

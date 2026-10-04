@@ -13,7 +13,7 @@ class TestAnnounceDialog:
         from ui.dialogs.announce_dialog import AnnounceDialog
 
         parent = QWidget()
-        parent.app_state = SimpleNamespace(local_config={})
+        vars(parent)["app_state"] = SimpleNamespace(local_config={})
         dialog = AnnounceDialog(
             {
                 "type": "poll_single",
@@ -39,7 +39,7 @@ class TestAnnounceDialog:
         from ui.dialogs.announce_dialog import AnnounceDialog
 
         parent = QWidget()
-        parent.app_state = SimpleNamespace(local_config={})
+        vars(parent)["app_state"] = SimpleNamespace(local_config={})
         dialog = AnnounceDialog(
             {
                 "type": "poll_single",
@@ -79,7 +79,7 @@ class TestAnnounceDialog:
         from ui.dialogs.announce_dialog import AnnounceDialog
 
         parent = QWidget()
-        parent.app_state = SimpleNamespace(local_config={})
+        vars(parent)["app_state"] = SimpleNamespace(local_config={})
         dialog = AnnounceDialog(
             {
                 "type": "poll_multiple",

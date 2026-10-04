@@ -3,6 +3,7 @@
 import json
 import os
 import threading
+from typing import cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -851,7 +852,7 @@ class TestLaunchManager:
         from services.launch_service import GameLauncher
 
         parent = QObject()
-        parent.plugin_runtime_service = Mock(
+        vars(parent)["plugin_runtime_service"] = Mock(
             execute_hook_with_runtime=Mock(return_value=[False])
         )
         launcher = GameLauncher(app_state, feedback_service, Mock(), parent)
@@ -859,7 +860,7 @@ class TestLaunchManager:
 
         launcher._restore_after_verified_game_exit(False)
 
-        parent.plugin_runtime_service.execute_hook_with_runtime.assert_called_once_with(
+        vars(parent)["plugin_runtime_service"].execute_hook_with_runtime.assert_called_once_with(
             "before_restore_after_exit", None, False, raise_errors=True
         )
         launcher._finish_game_exit_without_restore.assert_called_once_with(False)
@@ -988,7 +989,7 @@ class TestLaunchManager:
 
         launcher._launch_game_with_selections({})
 
-        qtbot.waitUntil(lambda: launcher._continue_after_patching.called)
+        qtbot.waitUntil(lambda: cast(Mock, launcher._continue_after_patching).called)
         journal.restore.assert_called_once_with()
         assert launcher._operation_journal is None
         launcher._continue_after_patching.assert_called_once_with({}, True, False)
@@ -1017,7 +1018,7 @@ class TestLaunchManager:
 
         launcher._launch_game_with_selections({})
 
-        qtbot.waitUntil(lambda: launcher._continue_after_patching.called)
+        qtbot.waitUntil(lambda: cast(Mock, launcher._continue_after_patching).called)
         feedback.ask_operation_recovery_conflict.assert_called_once_with(
             "external changes"
         )
@@ -1092,7 +1093,7 @@ class TestLaunchManager:
 
         launcher._launch_game_with_selections({})
 
-        qtbot.waitUntil(lambda: launcher._handle_launch_failure.called)
+        qtbot.waitUntil(lambda: cast(Mock, launcher._handle_launch_failure).called)
         assert launcher._operation_journal is journal
         launcher._continue_after_patching.assert_not_called()
         launcher._handle_launch_failure.assert_called_once_with("restore")

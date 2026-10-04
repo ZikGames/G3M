@@ -430,6 +430,7 @@ def test_legacy_metadata_converts_line_endings_and_display_values():
     assert config["id"] == "legacy_mod"
     assert config["game"] == "undertale"
     assert config["description"] == "Caf\u00e9\nFirst\nSecond"
+    assert isinstance(config["game_version"], str)
     assert len(config["game_version"]) == MOD_CONFIG_MAX_DISPLAY_CHARS
 
 

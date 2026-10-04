@@ -938,13 +938,13 @@ class GameLaunchController(QObject):
             self._mod_update_dialog.set_busy(False)
             outcomes = []
             if batch["failed"]:
-                outcomes.append(tr("mod_updates.failed", names=", ".join(batch["failed"])))
+                outcomes.append(("mod_updates.failed", {"names": ", ".join(batch["failed"])}))
             if batch["manual"]:
                 outcomes.append(
-                    tr("mod_updates.manual_required", names=", ".join(batch["manual"]))
+                    ("mod_updates.manual_required", {"names": ", ".join(batch["manual"])})
                 )
             if outcomes:
-                self._mod_update_dialog.set_outcome("\n".join(outcomes))
+                self._mod_update_dialog.set_outcome_messages(outcomes)
             else:
                 self._mod_update_dialog.set_progress(batch["total"], batch["total"])
         self.mod_service.invalidate_mods_cache()

@@ -1,14 +1,18 @@
 """Dialog for viewing changelog entries."""
 
-from PyQt6.QtWidgets import QDialog, QHBoxLayout, QPushButton, QTextBrowser, QVBoxLayout
+from typing import cast
+
+from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QTextBrowser, QVBoxLayout
 
 from config.config import NETWORK_TIMEOUT_MEDIUM
 from services.localization_service import tr
+from ui.common.dialog_theme import DynamicDialog
 from ui.utils.thread_lifetime import ManagedQThread
 from workers.changelog_worker import FetchChangelogWorker
 
 
-class ChangelogDialog(QDialog):
+class ChangelogDialog(DynamicDialog):
     def __init__(self, parent=None, source: str = "") -> None:
         super().__init__(parent)
         self._thread = None
@@ -83,7 +87,8 @@ class ChangelogDialog(QDialog):
             self._cleanup_thread()
         return thread_finished
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
+        event = cast(QCloseEvent, a0)
         if not self._stop_thread():
             event.ignore()
             return

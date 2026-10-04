@@ -7,12 +7,12 @@ import logging
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import override
+from typing import cast, override
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QCloseEvent, QShowEvent
 from PyQt6.QtWidgets import (
     QComboBox,
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -31,6 +31,8 @@ from services.gamebanana_rss_service import (
     merge_gamebanana_feeds,
 )
 from services.localization_service import tr
+from ui.common.dialog_theme import DynamicDialog
+from ui.common.localized_label import LocalizedLabel
 from ui.common.styling import load_mod_icon_universal
 from ui.utils.thread_lifetime import ManagedQThread, retire_qthread
 from utils.native_integration import open_url_native
@@ -181,7 +183,7 @@ class _FeedCard(QFrame):
         self.open_button.setText(tr("community_feed.open"))
 
 
-class CommunityDialog(QDialog):
+class CommunityDialog(DynamicDialog):
     _feed_cache: dict[
         tuple[str, tuple[int, ...]], tuple[float, list[GameBananaFeedItem]]
     ] = {}
@@ -239,7 +241,7 @@ class CommunityDialog(QDialog):
         filters.addWidget(self.refresh_button)
         root.addLayout(filters)
 
-        self.status_label = QLabel()
+        self.status_label = LocalizedLabel()
         self.status_label.setTextFormat(Qt.TextFormat.PlainText)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setWordWrap(True)
@@ -264,19 +266,22 @@ class CommunityDialog(QDialog):
         root.addLayout(bottom)
 
     @override
-    def showEvent(self, event) -> None:
+    def showEvent(self, a0) -> None:
+        event = cast(QShowEvent, a0)
         super().showEvent(event)
         if not self._loaded_once:
             self._loaded_once = True
             self.reload(use_cache=True)
 
     @override
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, a0) -> None:
+        event = cast(QCloseEvent, a0)
         self._stop_worker()
         super().closeEvent(event)
 
     @override
-    def done(self, result: int) -> None:
+    def done(self, a0: int) -> None:
+        result = a0
         self._stop_worker()
         super().done(result)
 
@@ -312,7 +317,7 @@ class CommunityDialog(QDialog):
         self._clear_cards()
         self._stop_worker()
         if plugin_feed is None and not games:
-            self.status_label.setText(tr("community_feed.no_games"))
+            self.status_label.set_localized_text("community_feed.no_games")
             return
         cache_key = self._cache_key()
         cached = self._feed_cache.get(cache_key)
@@ -351,18 +356,16 @@ class CommunityDialog(QDialog):
         self, items: list[GameBananaFeedItem], *, failed_count: int = 0
     ) -> None:
         if failed_count:
-            status = tr(
+            self.status_label.set_localized_text(
                 "community_feed.partial_results",
                 count=len(items),
                 failed=failed_count,
             )
         else:
-            status = (
-                tr("community_feed.results", count=len(items))
-                if items
-                else tr("community_feed.empty")
+            self.status_label.set_localized_text(
+                "community_feed.results" if items else "community_feed.empty",
+                count=len(items),
             )
-        self.status_label.setText(status)
         for item in items:
             card = _FeedCard(item, self.feed_widget)
             self._cards.append(card)
@@ -371,7 +374,7 @@ class CommunityDialog(QDialog):
     def _on_failed(self) -> None:
         worker = self.sender()
         if worker is self._worker:
-            self.status_label.setText(tr("community_feed.load_failed"))
+            self.status_label.set_localized_text("community_feed.load_failed")
 
     def _on_progress(self, current: int, total: int) -> None:
         worker = self.sender()
@@ -379,10 +382,9 @@ class CommunityDialog(QDialog):
             self._set_loading(current, total)
 
     def _set_loading(self, current: int, total: int) -> None:
-        self.status_label.setText(
-            tr("community_feed.loading_progress", current=current, total=total)
-            if total > 1
-            else tr("community_feed.loading")
+        self.status_label.set_localized_text(
+            "community_feed.loading_progress" if total > 1 else "community_feed.loading",
+            current=current, total=total,
         )
 
     def _on_finished(self) -> None:
@@ -409,6 +411,7 @@ class CommunityDialog(QDialog):
 
     def relocalize_ui(self) -> None:
         self.setWindowTitle(tr("community_feed.title"))
+        self.status_label.relocalize_ui()
         self.game_label.setText(tr("community_feed.game"))
         self.feed_label.setText(tr("community_feed.feed"))
         self.game_combo.setItemText(0, tr("community_feed.all_games"))

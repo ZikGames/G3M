@@ -1,6 +1,9 @@
 """UI tests for test warning preferences dialog."""
 
+from typing import cast
+
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QLayout
 
 from services.warning_service import WarningSeverity
 from ui.dialogs.warning_preferences_dialog import WarningPreferencesDialog
@@ -11,10 +14,11 @@ def test_warning_preferences_dialog_ignores_legacy_section_overrides(qapp):
     dialog = WarningPreferencesDialog(config)
     try:
         child = dialog.warning_checkboxes["xdelta_apply_failed"]
-        skip_all_index = dialog.layout().indexOf(dialog.skip_all_checkbox)
-        skip_all_item = dialog.layout().itemAt(skip_all_index)
+        skip_all_index = cast(QLayout, dialog.layout()).indexOf(dialog.skip_all_checkbox)
+        skip_all_item = cast(QLayout, dialog.layout()).itemAt(skip_all_index)
 
         assert dialog.minimumWidth() >= 680
+        assert skip_all_item is not None
         assert skip_all_item.alignment() == Qt.AlignmentFlag.AlignCenter
         assert child.isEnabled() is True
         assert (

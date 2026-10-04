@@ -144,11 +144,11 @@ def test_local_import_migrates_legacy_config_before_copying(tmp_path):
         SimpleNamespace(get_mod_folder_path=lambda _mod_id: None),
         SimpleNamespace(),
     )
-    controller._materialize_local_import = lambda _path, _temp: str(source)
+    vars(controller)["_materialize_local_import"] = lambda _path, _temp: str(source)
     controller._refresh_mod_list = lambda: None
-    controller._safe_show_information = lambda *_args: None
-    controller._safe_show_critical = lambda *_args: None
-    controller._show_import_error_with_manual_install = lambda *_args: None
+    vars(controller)["_safe_show_information"] = lambda *_args: None
+    vars(controller)["_safe_show_critical"] = lambda *_args: None
+    vars(controller)["_show_import_error_with_manual_install"] = lambda *_args: None
 
     controller._install_mod_from_file(str(tmp_path / "import.zip"))
 
@@ -196,8 +196,8 @@ def test_local_import_can_be_cancelled_for_direct_absolute_paths(tmp_path):
         SimpleNamespace(get_mod_folder_path=lambda _mod_id: None),
         SimpleNamespace(feedback_service=feedback),
     )
-    controller._materialize_local_import = lambda _path, _temp: str(source)
-    controller._show_import_error_with_manual_install = lambda *_args: None
+    vars(controller)["_materialize_local_import"] = lambda _path, _temp: str(source)
+    vars(controller)["_show_import_error_with_manual_install"] = lambda *_args: None
 
     controller._install_mod_from_file(str(tmp_path / "import.zip"))
 

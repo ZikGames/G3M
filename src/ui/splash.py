@@ -17,10 +17,10 @@ class CustomSplashScreen(QSplashScreen):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, a0):
         pass
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, a0):
         pass
 
 

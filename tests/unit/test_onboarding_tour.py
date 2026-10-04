@@ -8,28 +8,28 @@ from PyQt6.QtWidgets import QPushButton, QTabWidget, QWidget
 def _host():
     host = QWidget()
     host.resize(1000, 700)
-    host.app_state = SimpleNamespace(
+    vars(host)["app_state"] = SimpleNamespace(
         is_settings_view=False,
         local_config={},
     )
-    host.main_tab_widget = QTabWidget(host)
-    host.main_tab_widget.setGeometry(0, 60, 1000, 580)
-    host.mods_browser_tab = QWidget()
-    host.library_tab = QWidget()
-    host.main_tab_widget.addTab(host.mods_browser_tab, "Browser")
-    host.main_tab_widget.addTab(host.library_tab, "Library")
-    host.settings_tab_widget = QTabWidget(host)
-    host.settings_tab_widget.setGeometry(0, 60, 1000, 580)
+    vars(host)["main_tab_widget"] = QTabWidget(host)
+    vars(host)["main_tab_widget"].setGeometry(0, 60, 1000, 580)
+    vars(host)["mods_browser_tab"] = QWidget()
+    vars(host)["library_tab"] = QWidget()
+    vars(host)["main_tab_widget"].addTab(vars(host)["mods_browser_tab"], "Browser")
+    vars(host)["main_tab_widget"].addTab(vars(host)["library_tab"], "Library")
+    vars(host)["settings_tab_widget"] = QTabWidget(host)
+    vars(host)["settings_tab_widget"].setGeometry(0, 60, 1000, 580)
     for name in ("App", "Appearance", "Game", "Browser", "Library", "Plugins"):
-        host.settings_tab_widget.addTab(QWidget(), name)
-    host.settings_tab_widget.hide()
+        vars(host)["settings_tab_widget"].addTab(QWidget(), name)
+    vars(host)["settings_tab_widget"].hide()
 
     def toggle_settings():
-        host.app_state.is_settings_view = not host.app_state.is_settings_view
-        host.main_tab_widget.setVisible(not host.app_state.is_settings_view)
-        host.settings_tab_widget.setVisible(host.app_state.is_settings_view)
+        vars(host)["app_state"].is_settings_view = not vars(host)["app_state"].is_settings_view
+        vars(host)["main_tab_widget"].setVisible(not vars(host)["app_state"].is_settings_view)
+        vars(host)["settings_tab_widget"].setVisible(vars(host)["app_state"].is_settings_view)
 
-    host.settings_ui = SimpleNamespace(toggle_settings_view=toggle_settings)
+    vars(host)["settings_ui"] = SimpleNamespace(toggle_settings_view=toggle_settings)
     for name in (
         "settings_button",
         "settings_game_path_edit",
@@ -59,12 +59,12 @@ def test_tour_navigates_to_settings_and_restores_view(qapp):
     tour._show_step(2)
     qapp.processEvents()
 
-    assert host.app_state.is_settings_view is True
-    assert host.settings_tab_widget.currentIndex() == 0
+    assert vars(host)["app_state"].is_settings_view is True
+    assert vars(host)["settings_tab_widget"].currentIndex() == 0
 
     tour._complete(False)
 
-    assert host.app_state.is_settings_view is False
+    assert vars(host)["app_state"].is_settings_view is False
     assert tour.isHidden()
 
 
@@ -72,9 +72,9 @@ def test_tour_started_in_settings_restores_main_and_settings_tabs(qapp):
     from ui.onboarding_tour import _STEPS, OnboardingTour
 
     host = _host()
-    host.main_tab_widget.setCurrentWidget(host.library_tab)
-    host.settings_ui.toggle_settings_view()
-    host.settings_tab_widget.setCurrentIndex(4)
+    vars(host)["main_tab_widget"].setCurrentWidget(vars(host)["library_tab"])
+    vars(host)["settings_ui"].toggle_settings_view()
+    vars(host)["settings_tab_widget"].setCurrentIndex(4)
     tour = OnboardingTour(host)
     browser_step = next(i for i, step in enumerate(_STEPS) if step.key == "browser")
 
@@ -82,27 +82,27 @@ def test_tour_started_in_settings_restores_main_and_settings_tabs(qapp):
     qapp.processEvents()
     tour._complete(False)
 
-    assert host.app_state.is_settings_view is True
-    assert host.main_tab_widget.currentWidget() is host.library_tab
-    assert host.settings_tab_widget.currentIndex() == 4
+    assert vars(host)["app_state"].is_settings_view is True
+    assert vars(host)["main_tab_widget"].currentWidget() is vars(host)["library_tab"]
+    assert vars(host)["settings_tab_widget"].currentIndex() == 4
 
 
 def test_tour_temporarily_shows_hidden_browser_and_restores_it(qapp):
     from ui.onboarding_tour import _STEPS, OnboardingTour
 
     host = _host()
-    host.main_tab_widget.removeTab(host.main_tab_widget.indexOf(host.mods_browser_tab))
+    vars(host)["main_tab_widget"].removeTab(vars(host)["main_tab_widget"].indexOf(vars(host)["mods_browser_tab"]))
     tour = OnboardingTour(host)
     browser_step = next(i for i, step in enumerate(_STEPS) if step.key == "browser")
 
     tour._show_step(browser_step)
     qapp.processEvents()
 
-    assert host.main_tab_widget.currentWidget() is host.mods_browser_tab
+    assert vars(host)["main_tab_widget"].currentWidget() is vars(host)["mods_browser_tab"]
 
     tour._complete(False)
 
-    assert host.main_tab_widget.indexOf(host.mods_browser_tab) == -1
+    assert vars(host)["main_tab_widget"].indexOf(vars(host)["mods_browser_tab"]) == -1
 
 
 def test_tour_highlights_game_versions_button(qapp):
@@ -115,7 +115,7 @@ def test_tour_highlights_game_versions_button(qapp):
     tour._show_step(step)
     qapp.processEvents()
 
-    assert host.main_tab_widget.currentWidget() is host.library_tab
+    assert vars(host)["main_tab_widget"].currentWidget() is vars(host)["library_tab"]
     assert not tour._target_rect.isEmpty()
 
 

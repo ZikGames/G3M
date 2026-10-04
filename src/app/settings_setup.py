@@ -2,14 +2,17 @@
 
 import logging
 from collections.abc import Callable
+from typing import cast
 
 from PyQt6 import sip
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QMetaObject, Qt, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QBoxLayout,
     QColorDialog,
     QFrame,
     QHBoxLayout,
+    QLayout,
     QLineEdit,
     QSpinBox,
     QVBoxLayout,
@@ -159,21 +162,22 @@ def prepare_color_dialog(w, dialog: QColorDialog):
             )
 
     if dialog.layout():
-        dialog.layout().insertWidget(
-            max(0, dialog.layout().count() - 1), preview_container
+        cast(QBoxLayout, dialog.layout()).insertWidget(
+            max(0, cast(QLayout, dialog.layout()).count() - 1), preview_container
         )
 
     color_picker_widget = next(
         (
             widget
             for widget in dialog.findChildren(QWidget)
-            if widget.metaObject().className().endswith("QColorPicker")
+            if cast(QMetaObject, widget.metaObject()).className().endswith("QColorPicker")
         ),
         None,
     )
     if color_picker_widget:
-        dialog._black_color_picker_filter = BlackColorPickerEventFilter(dialog)
-        color_picker_widget.installEventFilter(dialog._black_color_picker_filter)
+        color_picker_filter = BlackColorPickerEventFilter(dialog)
+        vars(dialog)["_black_color_picker_filter"] = color_picker_filter
+        color_picker_widget.installEventFilter(color_picker_filter)
     if color_name_line_edit:
         color_name_line_edit.textEdited.connect(
             lambda text: _on_color_dialog_html_text_edited(text, html_edit_state)
@@ -244,7 +248,7 @@ def _schedule_color_edit_commit(w, target_edit: QLineEdit):
         timer = QTimer(target_edit)
         timer.setSingleShot(True)
         timer.timeout.connect(lambda le=target_edit: _commit_color_edit(w, le))
-        target_edit._color_commit_timer = timer
+        vars(target_edit)["_color_commit_timer"] = timer
     timer.start(300)
 
 

@@ -135,7 +135,7 @@ class ModCardWidget(BaseModWidget):
         self._update_style()
         if self.is_installed and hasattr(self, "action_button"):
             self._apply_unaction_button_style()
-        if get_mod_id(self.mod_data).startswith("gb_"):
+        if (get_mod_id(self.mod_data) or "").startswith("gb_"):
             QTimer.singleShot(350, self._do_start_compatibility_check)
         UIAnimator.fade_in(
             self,
@@ -237,7 +237,7 @@ class ModCardWidget(BaseModWidget):
         self.actions_widget = QWidget(self)
         actions_layout = QVBoxLayout(self.actions_widget)
         actions_layout.setContentsMargins(0, 0, 0, 0)
-        actions_layout.setSpacing(5)
+        actions_layout.setSpacing(8)
         actions_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.details_button = QPushButton(tr("ui.details_button"), self.actions_widget)
         self.details_button.setObjectName("cardButton")
@@ -501,8 +501,4 @@ class ModCardWidget(BaseModWidget):
         if hasattr(self, "details_button"):
             self.details_button.setText(tr("ui.details_button"))
         if hasattr(self, "action_button"):
-            if self.is_installed:
-                self.action_button.setText(tr("buttons.delete"))
-            else:
-                self.action_button.setText(tr("buttons.download"))
-                self._apply_download_style()
+            self._update_action_button()

@@ -8,6 +8,7 @@ import re
 import threading
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -97,6 +98,7 @@ class ModSummaryPanel(QFrame):
         super().__init__(parent)
         self._app_state = app_state
         self._current_mod = None
+        self._is_active = False
         self._current_mod_folder = None
         self._current_readme_files = []
         self._mod_size_cache = {}
@@ -104,7 +106,7 @@ class ModSummaryPanel(QFrame):
         self._cache_lock = threading.Lock()
         self._operation_path_tooltips: dict[str, str] = {}
         self._operation_config: dict[str, object] | None = None
-        self._operation_leaves: list[tuple[tuple[str, ...], dict[str, object]]] = []
+        self._operation_leaves: list[tuple[tuple[str, ...], Mapping[str, object]]] = []
         self._showing_all_operations = False
         self.setObjectName("summaryPanel")
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -174,8 +176,8 @@ class ModSummaryPanel(QFrame):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._scroll.viewport().setObjectName("summaryViewport")
-        self._scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        cast(QWidget, self._scroll.viewport()).setObjectName("summaryViewport")
+        cast(QWidget, self._scroll.viewport()).setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._content = QWidget()
         self._content.setObjectName("summaryContent")
         self._content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -219,7 +221,7 @@ class ModSummaryPanel(QFrame):
         self._actions_widget = QWidget(self._content)
         actions = QHBoxLayout(self._actions_widget)
         actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(4)
+        actions.setSpacing(8)
         self._action_buttons = {}
         for icon_name, tooltip_key, signal_name in self._ACTION_DEFS:
             btn = QToolButton()
@@ -320,7 +322,7 @@ class ModSummaryPanel(QFrame):
         cl.addStretch()
         self._scroll.setWidget(self._content)
         if self._scroll.viewport():
-            self._scroll.viewport().setAutoFillBackground(True)
+            cast(QWidget, self._scroll.viewport()).setAutoFillBackground(True)
         root.addWidget(self._scroll, 1)
         self._scroll.hide()
 
@@ -676,7 +678,7 @@ class ModSummaryPanel(QFrame):
     def _planned_operation_paths(
         self,
         config_data: dict[str, object],
-        leaves: list[tuple[int, tuple[str, ...], dict[str, object]]],
+        leaves: list[tuple[int, tuple[str, ...], Mapping[str, object]]],
     ) -> dict[int, dict[str, str]]:
         mod_folder = self._current_mod_folder
         if not mod_folder:
@@ -777,6 +779,7 @@ class ModSummaryPanel(QFrame):
         return mod_folder
 
     def update_use_button_state(self, is_active=False):
+        self._is_active = bool(is_active)
         config = self._get_config()
         border = get_theme_color(config, "border") if config else "#039d5b"
         br = get_border_radius(config) if config else 0
@@ -987,7 +990,7 @@ class ModSummaryPanel(QFrame):
             self._update_metadata(self._current_mod, self._current_mod_folder)
             self._populate_file_info(self._current_mod, self._current_mod_folder)
             self._update_playtime(self._current_mod)
-        self.update_use_button_state(self._use_button.text() == tr("ui.remove_button"))
+        self.update_use_button_state(self._is_active)
 
     def refresh_theme(self):
         self._current_readme_files = find_mod_readme_files(self._current_mod_folder)
@@ -995,12 +998,20 @@ class ModSummaryPanel(QFrame):
 
     def update_labels_text(self):
         self._empty_label.setText(tr("ui.select_mod"))
-        self._use_button.setText(tr("ui.use_button"))
+        self.update_use_button_state(self._is_active)
         self._readme_button.setText(tr("dialogs.info"))
         for icon_name, tooltip_key, _ in self._ACTION_DEFS:
             if icon_name in self._action_buttons:
                 self._action_buttons[icon_name].setToolTip(tr(tooltip_key))
         if self._current_mod:
+            self._update_metadata(self._current_mod, self._current_mod_folder)
+            self._description_label.setText(getattr(self._current_mod, "description", "") or tr("ui.no_description"))
             self._update_action_visibility(self._current_mod, self._current_mod_folder)
             self._update_playtime(self._current_mod)
             self._populate_file_info(self._current_mod, self._current_mod_folder)
+
+    def relocalize_ui(self) -> None:
+        self.update_labels_text()
+
+    def rescale_ui(self) -> None:
+        self.apply_theme()

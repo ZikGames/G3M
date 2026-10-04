@@ -53,7 +53,6 @@ class ModManager(QObject):
     progress_updated = pyqtSignal(int)
     status_changed = pyqtSignal(str, str)
     mod_list_updated = pyqtSignal()
-    url_prompt_required = pyqtSignal(str, str)
 
     def __init__(
         self, app_state, feedback_service, settings_service=None, parent=None
@@ -496,7 +495,6 @@ class ModManager(QObject):
         url_install_thread.progress.connect(self.progress_updated.emit)
         url_install_thread.status.connect(self.status_changed.emit)
         url_install_thread.result_ready.connect(self._on_url_install_finished)
-        url_install_thread.prompt_required.connect(self.url_prompt_required.emit)
         url_install_thread.manual_install_required.connect(
             self._on_manual_install_required
         )
@@ -885,11 +883,6 @@ class ModManager(QObject):
             )
         else:
             self.status_changed.emit(tr("status.installation_failed"), "status_error")
-
-    def handle_url_prompt_response(self, response: bool):
-        if self.app_state.current_task:
-            self.app_state.current_task.prompt_result = response
-            self.app_state.current_task.prompt_event.set()
 
     def create_mod_object_from_info(self, mod_info: dict, all_mods: list | None = None):
         mod_id = mod_info.get("id", "")

@@ -12,16 +12,24 @@ import zipfile
 from copy import deepcopy
 from html import escape
 from pathlib import Path
-from typing import override
+from types import SimpleNamespace
+from typing import cast, override
 from urllib.parse import urlparse
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QDrag, QDropEvent, QIcon, QPixmap
+from PyQt6.QtCore import QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import (
+    QBrush,
+    QCloseEvent,
+    QColor,
+    QDrag,
+    QDropEvent,
+    QIcon,
+    QShowEvent,
+)
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -43,11 +51,13 @@ from PyQt6.QtWidgets import (
 from config.config import CYOP_AFOM_TAG
 from models.game_modes import get_game, get_visible_game_entries
 from services.localization_service import tr
+from ui.common.dialog_theme import DynamicDialog
 from ui.common.styling import (
     clamp_border_radius,
     get_border_radius,
     get_theme_color,
-    round_pixmap,
+    get_ui_scale_factor,
+    load_mod_icon_universal,
 )
 from ui.utils.thread_lifetime import ManagedQThread, retire_qthread
 from utils.file_utils import get_file_filter, get_unique_mod_dir
@@ -83,7 +93,6 @@ from utils.path_utils import (
     colored_icon,
     resolve_execution_runtime,
     resolve_game_executable,
-    resource_path,
 )
 from utils.process_utils import format_filesystem_error
 
@@ -152,7 +161,7 @@ class _OperationTreeWidget(QTreeWidget):
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
     @override
-    def startDrag(self, supported_actions: Qt.DropActions) -> None:
+    def startDrag(self, supportedActions: Qt.DropAction) -> None:
         self._drag_path = self._owner._item_path(self.currentItem())
         if self._drag_path is None:
             return
@@ -198,8 +207,10 @@ class _OperationHashThread(ManagedQThread):
         self.result_ready.emit(self.path, self.field, self.generation, value, error)
 
 
-class ModEditorDialog(QDialog):
+class ModEditorDialog(DynamicDialog):
     """Edit one current configuration; historic input is converted at the boundary."""
+
+    _remove_button: QPushButton
 
     def __init__(self, parent, is_creating: bool = True, mod_data=None) -> None:
         super().__init__(parent)
@@ -308,7 +319,7 @@ class ModEditorDialog(QDialog):
     def _build_metadata(self, parent: QVBoxLayout) -> None:
         game_row = QHBoxLayout()
         game_row.addStretch()
-        game_row.addWidget(QLabel(tr("ui.mod_type_label"), self))
+        game_row.addWidget(self.localize_text(QLabel(self), "ui.mod_type_label"))
         self.game_combo = QComboBox(self)
         for game in get_visible_game_entries():
             self.game_combo.addItem(game.display_name, game.id)
@@ -322,7 +333,7 @@ class ModEditorDialog(QDialog):
         parent.addLayout(form)
 
         def field(key: str, edit: QLineEdit) -> None:
-            form.addRow(QLabel(tr(key), self), edit)
+            form.addRow(self.localize_text(QLabel(self), key), edit)
 
         self.name_edit = QLineEdit(self)
         self.name_edit.setMaxLength(MOD_CONFIG_MAX_DISPLAY_CHARS)
@@ -338,7 +349,11 @@ class ModEditorDialog(QDialog):
         field("ui.homepage", self.homepage_edit)
         self.icon_edit = QLineEdit(self)
         self.icon_edit.setMaxLength(MOD_CONFIG_MAX_PATH_CHARS)
-        self.icon_edit.textChanged.connect(self._load_icon_preview)
+        self._icon_preview_timer = QTimer(self)
+        self._icon_preview_timer.setSingleShot(True)
+        self._icon_preview_timer.setInterval(200)
+        self._icon_preview_timer.timeout.connect(lambda: self._load_icon_preview(self.icon_edit.text()))
+        self.icon_edit.textChanged.connect(lambda _text: self._icon_preview_timer.start())
         icon_row = QHBoxLayout()
         icon_row.addWidget(self.icon_edit, 1)
         self.icon_browse_button = QPushButton(self)
@@ -348,15 +363,15 @@ class ModEditorDialog(QDialog):
         self.icon_preview.setFixedSize(64, 64)
         self.icon_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon_row.addWidget(self.icon_preview)
-        form.addRow(QLabel(tr("files.icon_label"), self), icon_row)
+        form.addRow(self.localize_text(QLabel(self), "files.icon_label"), icon_row)
         tags = QGridLayout()
-        self.tag_textedit = QCheckBox(tr("tags.textedit_text"), self)
-        self.tag_customization = QCheckBox(tr("tags.customization"), self)
-        self.tag_gameplay = QCheckBox(tr("tags.gameplay"), self)
-        self.tag_other = QCheckBox(tr("tags.other"), self)
+        self.tag_textedit = self.localize_text(QCheckBox(self), "tags.textedit_text")
+        self.tag_customization = self.localize_text(QCheckBox(self), "tags.customization")
+        self.tag_gameplay = self.localize_text(QCheckBox(self), "tags.gameplay")
+        self.tag_other = self.localize_text(QCheckBox(self), "tags.other")
         for index, checkbox in enumerate((self.tag_textedit, self.tag_customization, self.tag_gameplay, self.tag_other)):
             tags.addWidget(checkbox, index // 2, index % 2)
-        form.addRow(QLabel(tr("ui.mod_tags_label"), self), tags)
+        form.addRow(self.localize_text(QLabel(self), "ui.mod_tags_label"), tags)
         self.version_edit = QLineEdit(self)
         self.version_edit.setMaxLength(MOD_CONFIG_MAX_DISPLAY_CHARS)
         field("ui.overall_mod_version", self.version_edit)
@@ -365,7 +380,7 @@ class ModEditorDialog(QDialog):
         field("ui.game_version_label", self.game_version_edit)
 
     def _build_compatibility(self, parent: QVBoxLayout) -> None:
-        hint = QLabel(tr("ui.mod_editor_compatibility_hint"), self)
+        hint = self.localize_text(QLabel(self), "ui.mod_editor_compatibility_hint")
         hint.setObjectName("modEditorHint")
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -385,7 +400,7 @@ class ModEditorDialog(QDialog):
             layout = QVBoxLayout(pane)
             layout.setContentsMargins(20, 0, 20, 16)
             layout.setSpacing(8)
-            title = QLabel(tr(f"ui.mod_editor_{field}"), pane)
+            title = self.localize_text(QLabel(pane), f"ui.mod_editor_{field}")
             title.setObjectName("modEditorPaneTitle")
             layout.addWidget(title)
             tree = QTreeWidget(pane)
@@ -406,10 +421,10 @@ class ModEditorDialog(QDialog):
             layout.addLayout(tree_row, 1)
             buttons = QHBoxLayout()
             buttons.addStretch()
-            add = QPushButton(tr("ui.add"), pane)
+            add = self.localize_text(QPushButton(pane), "ui.add")
             add.clicked.connect(lambda _checked=False, name=field: self._add_relation(name))
             buttons.addWidget(add)
-            remove = QPushButton(tr("ui.remove"), pane)
+            remove = self.localize_text(QPushButton(pane), "ui.remove")
             remove.clicked.connect(
                 lambda _checked=False, name=field: self._remove_relation(name)
             )
@@ -430,13 +445,13 @@ class ModEditorDialog(QDialog):
             relation_id.editingFinished.connect(
                 lambda name=field: self._save_relation(name)
             )
-            form.addRow(tr("ui.mod_editor_relation_mod_id"), relation_id)
+            form.addRow(self.localize_text(QLabel(self), "ui.mod_editor_relation_mod_id"), relation_id)
             mode = QComboBox(pane)
             self._populate_relation_modes(mode)
             mode.currentIndexChanged.connect(
                 lambda _index, name=field: self._save_relation(name)
             )
-            form.addRow(tr("ui.mod_editor_relation_order"), mode)
+            form.addRow(self.localize_text(QLabel(self), "ui.mod_editor_relation_order"), mode)
             form_widget.setLayout(form)
             form_row = QHBoxLayout()
             form_row.addStretch()
@@ -453,9 +468,7 @@ class ModEditorDialog(QDialog):
         parent.addWidget(splitter, 1)
 
     def _build_custom_placeholders(self, parent: QVBoxLayout) -> None:
-        self._custom_placeholders_hint = QLabel(
-            tr("ui.mod_editor_custom_placeholders_hint"), self
-        )
+        self._custom_placeholders_hint = self.localize_text(QLabel(self), "ui.mod_editor_custom_placeholders_hint")
         self._custom_placeholders_hint.setObjectName("modEditorHint")
         self._custom_placeholders_hint.setWordWrap(True)
         self._custom_placeholders_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -490,10 +503,10 @@ class ModEditorDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch()
-        add = QPushButton(tr("ui.add"), pane)
+        add = self.localize_text(QPushButton(pane), "ui.add")
         add.clicked.connect(self._add_custom_placeholder)
         buttons.addWidget(add)
-        remove = QPushButton(tr("ui.remove"), pane)
+        remove = self.localize_text(QPushButton(pane), "ui.remove")
         remove.clicked.connect(self._remove_custom_placeholder)
         buttons.addWidget(remove)
         buttons.addStretch()
@@ -516,7 +529,7 @@ class ModEditorDialog(QDialog):
             self._save_custom_placeholder
         )
         form.addRow(
-            tr("ui.mod_editor_placeholder_name"), self._custom_placeholder_name
+            self.localize_text(QLabel(self), "ui.mod_editor_placeholder_name"), self._custom_placeholder_name
         )
         self._custom_placeholder_path = QLineEdit(form_widget)
         self._custom_placeholder_path.setMaxLength(MOD_CONFIG_MAX_PATH_CHARS)
@@ -527,7 +540,7 @@ class ModEditorDialog(QDialog):
             self._save_custom_placeholder
         )
         form.addRow(
-            tr("ui.mod_editor_placeholder_path"), self._custom_placeholder_path
+            self.localize_text(QLabel(self), "ui.mod_editor_placeholder_path"), self._custom_placeholder_path
         )
         form_row = QHBoxLayout()
         form_row.addStretch()
@@ -579,7 +592,7 @@ class ModEditorDialog(QDialog):
             ("_add_group_button", "ui.mod_editor_add_group", self._add_group),
             ("_remove_button", "ui.remove", self._remove),
         ):
-            button = QPushButton(tr(key), widget)
+            button = self.localize_text(QPushButton(widget), key)
             button.clicked.connect(callback)
             buttons.addWidget(button)
             setattr(self, attribute, button)
@@ -632,7 +645,7 @@ class ModEditorDialog(QDialog):
         self._form_labels: dict[str, QLabel] = {}
 
         def form_row(key: str, widget: QWidget) -> None:
-            label = QLabel(tr(key), inspector_body)
+            label = self.localize_text(QLabel(inspector_body), key)
             label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self._form_labels[key] = label
             self._form.addRow(label, widget)
@@ -646,9 +659,7 @@ class ModEditorDialog(QDialog):
         self._populate_operation_types()
         self._type.currentIndexChanged.connect(self._save_entry)
         form_row("ui.mod_editor_type", self._type)
-        self._source_hash_box = QCheckBox(
-            tr("ui.mod_editor_include_source_hash"), inspector_body
-        )
+        self._source_hash_box = self.localize_text(QCheckBox(inspector_body), "ui.mod_editor_include_source_hash")
         self._source_hash_box.toggled.connect(lambda enabled: self._toggle_hash("source_hash", enabled))
         self._form.addRow(self._source_hash_box)
         self._source = QLineEdit(inspector_body)
@@ -658,9 +669,7 @@ class ModEditorDialog(QDialog):
         self._source_hash = QLineEdit(inspector_body)
         self._source_hash.setReadOnly(True)
         form_row("ui.mod_editor_source_hash", self._source_hash)
-        self._target_hash_box = QCheckBox(
-            tr("ui.mod_editor_include_target_hash"), inspector_body
-        )
+        self._target_hash_box = self.localize_text(QCheckBox(inspector_body), "ui.mod_editor_include_target_hash")
         self._target_hash_box.toggled.connect(lambda enabled: self._toggle_hash("target_hash", enabled))
         self._form.addRow(self._target_hash_box)
         self._target = QLineEdit(inspector_body)
@@ -798,7 +807,7 @@ class ModEditorDialog(QDialog):
     def _relation_values(self, field: str) -> list[str]:
         tree = self._relation_trees[field]
         return [
-            str(tree.topLevelItem(index).data(0, Qt.ItemDataRole.UserRole) or "")
+            str(cast(QTreeWidgetItem, tree.topLevelItem(index)).data(0, Qt.ItemDataRole.UserRole) or "")
             for index in range(tree.topLevelItemCount())
         ]
 
@@ -1648,14 +1657,14 @@ class ModEditorDialog(QDialog):
         row = QHBoxLayout()
         if not self.is_creating:
             for key, callback in (("ui.delete_mod", self._delete), ("ui.export_mod", self._export), ("ui.open_mod_folder", self._open_folder)):
-                button = QPushButton(tr(key), self)
+                button = self.localize_text(QPushButton(self), key)
                 button.clicked.connect(callback)
                 row.addWidget(button)
-            versions = QPushButton(tr("mod_versions.switch_version_button"), self)
+            versions = self.localize_text(QPushButton(self), "mod_versions.switch_version_button")
             versions.clicked.connect(self._open_versions)
             row.addWidget(versions)
         row.addStretch()
-        cancel = QPushButton(tr("ui.cancel_button"), self)
+        cancel = self.localize_text(QPushButton(self), "ui.cancel_button")
         cancel.clicked.connect(self._cancel)
         row.addWidget(cancel)
         self._save_button = QPushButton(tr("ui.finish_creation") if self.is_creating else tr("ui.save_changes"), self)
@@ -1694,6 +1703,8 @@ class ModEditorDialog(QDialog):
             self.icon_edit.setText(path)
 
     def _load_icon_preview(self, path: str) -> None:
+        self._icon_preview_timer.stop()
+        path = path.strip()
         custom_placeholders = (
             self._custom_placeholders
             if isinstance(self._custom_placeholders, dict)
@@ -1703,17 +1714,19 @@ class ModEditorDialog(QDialog):
             path,
             custom_placeholders,
         ) or path
-        if not os.path.isabs(candidate):
+        if not candidate.startswith(("http://", "https://")) and not os.path.isabs(candidate):
             candidate = os.path.join(self._find_mod_folder() or "", candidate)
-        pixmap = QPixmap(candidate)
-        if pixmap.isNull():
-            pixmap = QPixmap(resource_path("assets/icons/icon.ico"))
-        if pixmap.isNull():
-            self.icon_preview.setText(tr("ui.icon_preview"))
-            return
-        side = min(pixmap.width(), pixmap.height())
-        pixmap = pixmap.copy((pixmap.width() - side) // 2, (pixmap.height() - side) // 2, side, side).scaled(64, 64, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-        self.icon_preview.setPixmap(round_pixmap(pixmap, self._radius(64, 64), 2, self._color("border", "#039d5b")))
+        scale = get_ui_scale_factor(getattr(self._app_state, "local_config", None))
+        side = round(64 * scale)
+        self.icon_preview.setFixedSize(side, side)
+        load_mod_icon_universal(
+            self.icon_preview,
+            SimpleNamespace(icon=candidate),
+            size=side,
+            border_radius=round(self._radius(64, 64) * scale),
+            border_width=round(2 * scale),
+            border_color=self._color("border", "#039d5b"),
+        )
 
     def _valid_for_save(self) -> bool:
         if not self.name_edit.text().strip():
@@ -1795,7 +1808,8 @@ class ModEditorDialog(QDialog):
             label.setText(tr(key))
             label.setFixedWidth(width)
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, a0) -> None:
+        event = cast(QCloseEvent, a0)
         for thread in list(self._hash_threads):
             retire_qthread(thread)
         self._hash_threads.clear()
@@ -1882,6 +1896,10 @@ class ModEditorDialog(QDialog):
             return QMessageBox.StandardButton.No
 
     def relocalize_ui(self) -> None:
+        super().relocalize_ui()
+        self._save_button.setText(tr("ui.finish_creation" if self.is_creating else "ui.save_changes"))
+        for edit in self._relation_id_edits.values():
+            edit.setPlaceholderText(tr("ui.mod_editor_relation_mod_id_placeholder"))
         self.setWindowTitle(tr("ui.create_mod") if self.is_creating else tr("ui.edit_mod"))
         self._tabs.setTabText(0, tr("ui.mod_editor_tab_metadata"))
         self._tabs.setTabText(1, tr("ui.mod_editor_tab_compatibility"))
@@ -1919,7 +1937,7 @@ class ModEditorDialog(QDialog):
             )
             self._populate_relation_modes(self._relation_mode_combos[field])
             for index in range(tree.topLevelItemCount()):
-                item = tree.topLevelItem(index)
+                item = cast(QTreeWidgetItem, tree.topLevelItem(index))
                 _relation_id, mode = self._split_relation(
                     item.data(0, Qt.ItemDataRole.UserRole)
                 )
@@ -1936,17 +1954,18 @@ class ModEditorDialog(QDialog):
         )
         self._source_hash_box.setText(tr("ui.mod_editor_include_source_hash"))
         self._target_hash_box.setText(tr("ui.mod_editor_include_target_hash"))
+        self._validate()
 
     def apply_theme(self) -> None:
+        self._cfg = getattr(self._app_state, "local_config", {}) or {}
         border = self._color("border", "#039d5b")
         elements = self._color("elements", "#222222")
         main_text = self._color("main_text", "#e8e9eb")
         secondary_text = self._color("secondary_text", "#6de985")
         hover = self._color("hover", "#616b78")
-        selected = self._path()
         self._refresh_operation_icons()
         self._populate_operation_types()
-        self.setStyleSheet(
+        self.set_theme_stylesheet(
             f"QFrame#modEditorFrame {{ border: 2px solid {border}; border-radius: {self._radius()}px; background: {self._color('background', '#282828')}; }} "
             f"QFrame#modEditorOperationPane {{ border: 2px solid {border}; border-radius: {self._radius()}px; background: {elements}; }} "
             f"QLineEdit, QComboBox, QTreeWidget {{ background: {elements}; }} "
@@ -1962,14 +1981,30 @@ class ModEditorDialog(QDialog):
             f"QTextBrowser#modEditorHelpText {{ border: 1px solid {border}; border-radius: {self._radius()}px; padding: 10px; background: {elements}; color: {main_text}; }} "
             f"QLabel#modEditorHint {{ color: {secondary_text}; }} QLabel#modEditorValidation {{ color: #d9534f; }}"
         )
-        self._refresh_tree(selected)
+        def refresh(item: QTreeWidgetItem) -> None:
+            path = self._item_path(item)
+            try:
+                entry = self._entry(path) if path else None
+            except (IndexError, ValueError):
+                entry = None
+            if entry is not None and self._group(entry):
+                if item.foreground(0).color() != QColor("#d9534f"):
+                    item.setForeground(0, QBrush(QColor(secondary_text)))
+            elif entry is not None:
+                item.setIcon(1, self._operation_icon(str(entry.get("type", ""))))
+            for index in range(item.childCount()):
+                refresh(cast(QTreeWidgetItem, item.child(index)))
+        for index in range(self._tree.topLevelItemCount()):
+            refresh(cast(QTreeWidgetItem, self._tree.topLevelItem(index)))
+        self._relocalize_form_labels()
         self.icon_browse_button.setIcon(colored_icon("folder", self._color("main_text", "#e8e9eb")))
         self._source_browse.setIcon(colored_icon("folder", self._color("main_text", "#e8e9eb")))
         self._target_browse.setIcon(colored_icon("folder", self._color("main_text", "#e8e9eb")))
         self._load_icon_preview(self.icon_edit.text())
 
     @override
-    def showEvent(self, event) -> None:
+    def showEvent(self, a0) -> None:
+        event = cast(QShowEvent, a0)
         super().showEvent(event)
         if screen := self.screen():
             frame = self.frameGeometry()

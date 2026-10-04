@@ -133,7 +133,7 @@ def test_monitor_suppresses_finished_emit_failure(qapp, caplog):
 
     with patch("workers.game_monitor_worker.GameProcessTracker"):
         worker = GameMonitorWorker(None, False)
-    worker.finished = _FailingSignal()
+    vars(worker)["finished"] = _FailingSignal()
     worker._refresh_tracked_processes = Mock(return_value=False)
 
     with patch("workers.game_monitor_worker.time.sleep"):

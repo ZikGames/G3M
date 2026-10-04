@@ -38,8 +38,8 @@ def test_full_install_worker_suppresses_emit_failure_after_install_error(qapp, c
         def emit(self, *_args, **_kwargs):
             raise RuntimeError("receiver deleted")
 
-    worker.status = _FailingSignal()
-    worker.result_ready = _FailingSignal()
+    vars(worker)["status"] = _FailingSignal()
+    vars(worker)["result_ready"] = _FailingSignal()
 
     worker.run()
 

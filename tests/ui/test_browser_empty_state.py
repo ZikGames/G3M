@@ -1,3 +1,5 @@
+
+from typing import cast
 from unittest.mock import Mock
 
 from PyQt6.QtWidgets import (
@@ -18,8 +20,8 @@ from services.localization_service import tr
 def test_empty_browser_keeps_query_and_updates_loading_message(qtbot, app_state):
     host = QWidget()
     qtbot.addWidget(host)
-    host.mod_list_widget = QWidget(host)
-    host.mod_list_layout = QVBoxLayout(host.mod_list_widget)
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QVBoxLayout(vars(host)["mod_list_widget"])
     app_state.mods_loaded = True
     app_state.gamebanana_loading = False
     app_state.filtered_mods = []
@@ -28,7 +30,7 @@ def test_empty_browser_keeps_query_and_updates_loading_message(qtbot, app_state)
     controller._sync_mod_grid_metrics = Mock()
     controller._finalize_mod_list_layout_refresh = Mock()
     controller._do_update_display()
-    labels = host.mod_list_widget.findChildren(QLabel)
+    labels = vars(host)["mod_list_widget"].findChildren(QLabel)
     assert len(labels) == 1
     assert labels[0].text() == tr("ui.no_search_results")
     assert app_state.search_text == "unmatched query"
@@ -40,11 +42,11 @@ def test_empty_browser_keeps_query_and_updates_loading_message(qtbot, app_state)
 def test_loading_indicator_is_centered_on_a_themed_full_grid_row(qtbot, app_state):
     host = QWidget()
     qtbot.addWidget(host)
-    host.mod_list_widget = QWidget(host)
-    host.mod_list_layout = QGridLayout(host.mod_list_widget)
-    host.mod_list_columns = 4
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QGridLayout(vars(host)["mod_list_widget"])
+    vars(host)["mod_list_columns"] = 4
     for column in range(4):
-        host.mod_list_layout.addWidget(QLabel(str(column)), 0, column)
+        vars(host)["mod_list_layout"].addWidget(QLabel(str(column)), 0, column)
     app_state.local_config.update(
         {
             "custom_secondary_text_color": "#abc123",
@@ -56,8 +58,8 @@ def test_loading_indicator_is_centered_on_a_themed_full_grid_row(qtbot, app_stat
     controller._show_bottom_loading_indicator()
 
     indicator = next(controller._iter_loading_indicators())
-    row, column, row_span, column_span = host.mod_list_layout.getItemPosition(
-        host.mod_list_layout.indexOf(indicator)
+    row, column, row_span, column_span = vars(host)["mod_list_layout"].getItemPosition(
+        vars(host)["mod_list_layout"].indexOf(indicator)
     )
     assert (row, column, row_span, column_span) == (1, 0, 1, 4)
     assert "color: #abc123" in indicator.styleSheet()
@@ -70,17 +72,17 @@ def test_loading_indicator_is_removed_only_when_a_card_reaches_its_row(
 ):
     host = QWidget()
     qtbot.addWidget(host)
-    host.mod_list_widget = QWidget(host)
-    host.mod_list_layout = QGridLayout(host.mod_list_widget)
-    host.mod_list_columns = 4
-    indicator = QLabel("Loading...", host.mod_list_widget)
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QGridLayout(vars(host)["mod_list_widget"])
+    vars(host)["mod_list_columns"] = 4
+    indicator = QLabel("Loading...", vars(host)["mod_list_widget"])
     indicator.setObjectName("loading_indicator")
-    host.mod_list_layout.addWidget(indicator, 1, 0, 1, 4)
+    vars(host)["mod_list_layout"].addWidget(indicator, 1, 0, 1, 4)
     controller = SearchDisplayController(app_state, Mock(), Mock(), Mock(), host)
 
     controller._remove_loading_indicator_at_position(4)
 
-    assert host.mod_list_layout.indexOf(indicator) == -1
+    assert vars(host)["mod_list_layout"].indexOf(indicator) == -1
     controller.cleanup()
 
 
@@ -89,8 +91,8 @@ def test_pagination_keeps_visible_cards_when_filtering_is_temporarily_empty(
 ):
     host = QWidget()
     qtbot.addWidget(host)
-    host.mod_list_widget = QWidget(host)
-    host.mod_list_layout = QGridLayout(host.mod_list_widget)
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QGridLayout(vars(host)["mod_list_widget"])
     app_state.mods_loaded = True
     app_state.gamebanana_loading = True
     app_state.filtered_mods = []
@@ -137,8 +139,8 @@ def test_virtual_visibility_reenables_each_card_after_a_layout_change(qtbot, app
 def test_layout_refresh_skips_card_creation_in_progress(qtbot, app_state):
     host = QWidget()
     qtbot.addWidget(host)
-    host.mod_list_widget = QWidget(host)
-    host.mod_list_layout = QGridLayout(host.mod_list_widget)
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QGridLayout(vars(host)["mod_list_widget"])
     controller = SearchDisplayController(app_state, Mock(), Mock(), Mock(), host)
     controller._update_display_in_progress = True
     controller._queue_layout_refresh = Mock()
@@ -155,20 +157,22 @@ def test_initial_loading_indicator_is_centered_in_the_scroll_view(qtbot, app_sta
     host = QWidget()
     qtbot.addWidget(host)
     host.resize(640, 480)
-    host.mod_list_widget = QWidget()
-    host.mod_list_layout = QGridLayout(host.mod_list_widget)
-    host.mods_browser_scroll = QScrollArea(host)
-    host.mods_browser_scroll.resize(600, 400)
-    host.mods_browser_scroll.setWidget(host.mod_list_widget)
+    vars(host)["mod_list_widget"] = QWidget()
+    vars(host)["mod_list_layout"] = QGridLayout(vars(host)["mod_list_widget"])
+    vars(host)["mods_browser_scroll"] = QScrollArea(host)
+    vars(host)["mods_browser_scroll"].resize(600, 400)
+    vars(host)["mods_browser_scroll"].setWidget(vars(host)["mod_list_widget"])
     host.show()
-    qtbot.waitUntil(lambda: host.mods_browser_scroll.viewport().height() > 0)
+    qtbot.waitUntil(lambda: vars(host)["mods_browser_scroll"].viewport().height() > 0)
     controller = SearchDisplayController(app_state, Mock(), Mock(), Mock(), host)
 
     assert controller._show_centered_loading_indicator()
 
     indicator = controller._centered_loading_indicator
-    viewport = host.mods_browser_scroll.viewport()
+    viewport = vars(host)["mods_browser_scroll"].viewport()
+    assert indicator is not None
     assert abs(indicator.geometry().center().x() - viewport.rect().center().x()) <= 1
+    assert indicator is not None
     assert abs(indicator.geometry().center().y() - viewport.rect().center().y()) <= 1
     controller.cleanup()
 
@@ -176,9 +180,9 @@ def test_initial_loading_indicator_is_centered_in_the_scroll_view(qtbot, app_sta
 def test_incomplete_grid_row_stays_buffered_until_the_last_page(qtbot, app_state):
     host = QWidget()
     qtbot.addWidget(host)
-    host.mod_list_widget = QWidget(host)
-    host.mod_list_layout = QGridLayout(host.mod_list_widget)
-    host.mod_list_columns = 4
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QGridLayout(vars(host)["mod_list_widget"])
+    vars(host)["mod_list_columns"] = 4
     controller = SearchDisplayController(app_state, Mock(), Mock(), Mock(), host)
     mods = [object() for _ in range(5)]
     controller._has_pending_gamebanana_pages = Mock(return_value=True)
@@ -187,7 +191,7 @@ def test_incomplete_grid_row_stays_buffered_until_the_last_page(qtbot, app_state
 
     controller._has_pending_gamebanana_pages.return_value = False
     assert controller._mods_for_complete_grid_rows(mods) == mods
-    host.mod_list_columns = 100
+    vars(host)["mod_list_columns"] = 100
     controller._has_pending_gamebanana_pages.return_value = True
     assert controller._mods_for_complete_grid_rows(mods) == mods
     controller.cleanup()
@@ -196,8 +200,8 @@ def test_incomplete_grid_row_stays_buffered_until_the_last_page(qtbot, app_state
 def test_pending_gamebanana_pages_require_a_completed_fetch(qtbot, app_state):
     host = QWidget()
     qtbot.addWidget(host)
-    host.mod_list_widget = QWidget(host)
-    host.mod_list_layout = QGridLayout(host.mod_list_widget)
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QGridLayout(vars(host)["mod_list_widget"])
     controller = SearchDisplayController(app_state, Mock(), Mock(), Mock(), host)
     game_id = get_gamebanana_game_ids()["deltarune"]
 
@@ -217,18 +221,18 @@ def test_pending_gamebanana_pages_require_a_completed_fetch(qtbot, app_state):
 def test_grid_metric_cache_keeps_the_calculated_column_count(qtbot, app_state):
     host = QWidget()
     qtbot.addWidget(host)
-    host.mod_list_widget = QWidget(host)
-    host.mod_list_layout = QGridLayout(host.mod_list_widget)
-    host.mod_list_columns = 1
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QGridLayout(vars(host)["mod_list_widget"])
+    vars(host)["mod_list_columns"] = 1
     controller = SearchDisplayController(app_state, Mock(), Mock(), Mock(), host)
     controller._get_mod_list_available_width = Mock(return_value=1500)
 
     assert controller._sync_mod_grid_metrics()
-    columns = host.mod_list_columns
-    host.mod_list_columns = 1
+    columns = vars(host)["mod_list_columns"]
+    vars(host)["mod_list_columns"] = 1
 
     assert not controller._sync_mod_grid_metrics()
-    assert host.mod_list_columns == columns
+    assert vars(host)["mod_list_columns"] == columns
     assert columns > 1
     controller.cleanup()
 
@@ -238,8 +242,8 @@ def test_failed_search_can_retry_without_exhausting_query(
 ):
     host = QWidget()
     qtbot.addWidget(host)
-    host.mod_list_widget = QWidget(host)
-    host.mod_list_layout = QVBoxLayout(host.mod_list_widget)
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QVBoxLayout(vars(host)["mod_list_widget"])
     app_state.mods_loaded = True
     app_state.gamebanana_loading = False
     app_state.filtered_mods = []
@@ -266,7 +270,7 @@ def test_failed_search_can_retry_without_exhausting_query(
         w for w in controller._iter_loading_indicators() if isinstance(w, QPushButton)
     )
     retry.click()
-    qtbot.waitUntil(lambda: controller.update_filtered_mods.called)
+    qtbot.waitUntil(lambda: cast(Mock, controller.update_filtered_mods).called)
     assert request.call_count == 2
     assert not controller._search_error
     assert not app_state.gamebanana_loading

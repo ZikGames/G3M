@@ -17,6 +17,12 @@ from models.download_models import (
 from services.downloads.manager import DownloadsManager
 
 
+def test_manual_setup_metadata_includes_the_game_version(tmp_path):
+    manager = DownloadsManager(str(tmp_path), lambda: {})
+    record = DownloadRecord(id="manual", display_name="Mod", metadata={"gb_mod_id": 42, "game_version": "1.08"})
+    assert manager._build_dialog_metadata(record)["game_version"] == "1.08"
+
+
 @pytest.mark.parametrize("checksum", ["0" * 32, "invalid-checksum"])
 def test_gamebanana_checksum_failure_never_installs_over_existing_mod(tmp_path, monkeypatch, checksum):
     from workers.download_worker import DownloadWorker
@@ -39,8 +45,11 @@ def test_gamebanana_checksum_failure_never_installs_over_existing_mod(tmp_path, 
     )
 
     record = manager.store.find(record_id)
+    assert record is not None
     assert record.download_status == DownloadStatus.FAILED
+    assert record is not None
     assert record.use_status == UseStatus.FAILED
+    assert record is not None
     assert record.file_exists is False
     install.assert_not_called()
     assert existing.read_bytes() == b"original mod"
@@ -72,8 +81,12 @@ def test_mod_downloads_keep_their_original_profile_and_deduplicate_per_profile(t
     second_id, duplicate = manager.enqueue("Mod", canonical_key="gb_mod_1_2")
     assert not duplicate
     assert second_id != first_id
-    assert manager._mod_target_dir(manager.store.find(first_id)) == first_dir
-    assert manager._mod_target_dir(manager.store.find(second_id)) == second_dir
+    first_record = manager.store.find(first_id)
+    second_record = manager.store.find(second_id)
+    assert first_record is not None
+    assert second_record is not None
+    assert manager._mod_target_dir(first_record) == first_dir
+    assert manager._mod_target_dir(second_record) == second_dir
     assert manager.enqueue("Mod", canonical_key="gb_mod_1_2") == (second_id, True)
 
 

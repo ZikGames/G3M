@@ -2,12 +2,14 @@
 
 import os
 from collections.abc import Callable
+from contextlib import ExitStack
 from typing import cast
 from unittest.mock import Mock, patch
 
-from PyQt6.QtCore import QPoint, QRect, Qt
+from PyQt6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, QRect, Qt
+from PyQt6.QtGui import QHoverEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QSizePolicy
+from PyQt6.QtWidgets import QDialogButtonBox, QSizePolicy
 
 from services.localization_service import tr
 
@@ -97,6 +99,53 @@ def _window_test_patches(temp_dir):
 
 class TestAppWindow:
     """Tests for main window."""
+
+    def test_live_customization_updates_unregistered_open_dialog(self, qapp, temp_dir, tmp_path, caplog):
+        from app.window import AppWindow
+        from services.localization_service import localization_service
+        from ui.dialogs.manual_install.dialog import ManualModInstallDialog
+
+        _, _, _, _, _, patches = _window_test_patches(temp_dir)
+        original_language = localization_service.get_current_language()
+        with ExitStack() as stack:
+            for context in patches:
+                stack.enter_context(context)
+            window = AppWindow()
+            original_config = dict(window.app_state.local_config)
+            try:
+                prepared = tmp_path / "prepared"
+                prepared.mkdir()
+                (prepared / "README.txt").write_text("Instructions", encoding="utf-8")
+                dialog = ManualModInstallDialog(window, str(prepared))
+                dialog._stop_detection()
+                dialog._assign("README.txt", {"type": "info"})
+                dialog.name_edit.setText("Unsaved name")
+                dialog.sources.setCurrentItem(dialog._items["README.txt"])
+                selected = dialog.sources.currentItem()
+                _drain_events(qapp)
+                for language, scale in (("ru", 1.5), ("en", 0.8)):
+                    window.settings_service.on_language_changed(language)
+                    window.app_state.local_config["ui_scale"] = scale
+                    window.theme.apply_theme(force=True)
+                    window._refresh_scaled_card_displays()
+                    _drain_events(qapp)
+                    assert dialog.windowTitle() == tr("dialogs.manual_install_title")
+                    assert dialog.game_label.text() == tr("ui.mod_type_label")
+                    assert dialog.name_label.text() == tr("ui.mod_name_label")
+                    assert dialog.name_edit.text() == "Unsaved name"
+                    assert dialog.sources.currentItem() is selected
+                    assert dialog._assignments["README.txt"] == {"type": "info"}
+                    assert f"padding: {round(8 * scale)}px;" in dialog.styleSheet()
+                assert "Failed to relocalize_ui" not in caplog.text
+                assert "Failed to apply_theme" not in caplog.text
+                assert "Failed to rescale_ui" not in caplog.text
+                dialog.close()
+            finally:
+                window.app_state.local_config.clear()
+                window.app_state.local_config.update(original_config)
+                window.settings_service.on_language_changed(original_language)
+                window.theme.apply_theme(force=True)
+                _close_app_window(qapp, window)
 
     def test_app_window_creation(self, qapp, temp_dir):
         """Checks that apping window creation."""
@@ -199,8 +248,8 @@ class TestAppWindow:
                 window.app_state.mods_loaded = True
                 window.app_state.gamebanana_loading = False
                 window.app_state.search_text = ""
-                pizzatower_index = window.modgame_combo.findData("pizzatower")
-                window.modgame_combo.setCurrentIndex(pizzatower_index)
+                pizzatower_index = vars(window)["modgame_combo"].findData("pizzatower")
+                vars(window)["modgame_combo"].setCurrentIndex(pizzatower_index)
                 window.show()
                 _drain_events(qapp, cycles=12, delay_ms=50)
                 window.app_state.all_mods = [
@@ -219,13 +268,13 @@ class TestAppWindow:
                 _drain_events(qapp, cycles=12, delay_ms=50)
 
                 assert [mod.name for mod in window.app_state.filtered_mods] == ["P"]
-                assert window.mod_list_layout.count() == 1
+                assert vars(window)["mod_list_layout"].count() == 1
 
-                window.tag_textedit.setChecked(True)
+                vars(window)["tag_textedit"].setChecked(True)
                 _drain_events(qapp, cycles=12, delay_ms=50)
 
                 assert window.app_state.filtered_mods == []
-                assert window.mod_list_layout.count() == 1
+                assert vars(window)["mod_list_layout"].count() == 1
             finally:
                 _close_app_window(qapp, window)
 
@@ -336,31 +385,31 @@ class TestAppWindow:
             try:
                 window.show()
                 _drain_events(qapp)
-                window.settings_service.validate_executable_path = lambda path: (
+                vars(window.settings_service)["validate_executable_path"] = lambda path: (
                     path.endswith("G3MTool.exe")
                 )
 
                 custom_path = os.path.join(temp_dir, "tools", "G3MTool.exe")
                 os.makedirs(os.path.dirname(custom_path), exist_ok=True)
-                window.settings_custom_g3mtool_edit.setFocus()
-                window.settings_custom_g3mtool_edit.setText(custom_path)
-                window.settings_custom_xdelta_edit.setFocus()
+                vars(window)["settings_custom_g3mtool_edit"].setFocus()
+                vars(window)["settings_custom_g3mtool_edit"].setText(custom_path)
+                vars(window)["settings_custom_xdelta_edit"].setFocus()
                 _drain_events(qapp)
 
-                assert window.settings_game_path_label.text().endswith(" Path:")
+                assert vars(window)["settings_game_path_label"].text().endswith(" Path:")
                 assert window.app_state.local_config.get(
                     "custom_g3mtool_path"
                 ) == normalize_user_input_path(custom_path)
-                assert not window.settings_reset_g3mtool_button.isHidden()
+                assert not vars(window)["settings_reset_g3mtool_button"].isHidden()
 
-                window.settings_reset_g3mtool_button.click()
+                vars(window)["settings_reset_g3mtool_button"].click()
                 _drain_events(qapp)
 
                 assert (
                     window.app_state.local_config.get("custom_g3mtool_path", "") == ""
                 )
-                assert window.settings_reset_g3mtool_button.isHidden()
-                assert window.focusWidget() is not window.settings_custom_xdelta_edit
+                assert vars(window)["settings_reset_g3mtool_button"].isHidden()
+                assert window.focusWidget() is not vars(window)["settings_custom_xdelta_edit"]
             finally:
                 _close_app_window(qapp, window)
 
@@ -387,11 +436,11 @@ class TestAppWindow:
                 window.show()
                 _drain_events(qapp)
                 window.feedback_service.show_message = Mock()
-                window.settings_service.validate_executable_path = lambda _path: False
+                vars(window.settings_service)["validate_executable_path"] = lambda _path: False
 
-                window.settings_custom_executable_edit.setFocus()
-                window.settings_custom_executable_edit.setText("C:/bad/path.exe")
-                window.settings_game_path_edit.setFocus()
+                vars(window)["settings_custom_executable_edit"].setFocus()
+                vars(window)["settings_custom_executable_edit"].setText("C:/bad/path.exe")
+                vars(window)["settings_game_path_edit"].setFocus()
                 _drain_events(qapp)
 
                 assert (
@@ -430,7 +479,7 @@ class TestAppWindow:
                 window.feedback_service.show_message = Mock()
                 window.settings_service.select_executable_path = Mock(return_value=None)
 
-                window.settings_custom_executable_button.click()
+                vars(window)["settings_custom_executable_button"].click()
                 _drain_events(qapp)
 
                 window.settings_service.select_executable_path.assert_called_once()
@@ -473,12 +522,12 @@ class TestAppWindow:
                     window.app_state.local_config, new_game_path
                 )
 
-                window.settings_game_path_browse_button.click()
+                vars(window)["settings_game_path_browse_button"].click()
                 _drain_events(qapp)
 
-                assert window.settings_game_path_edit.full_text() == new_game_path
-                assert window.settings_game_path_edit.toolTip() == new_game_path
-                assert not window.settings_game_path_reset_button.isHidden()
+                assert vars(window)["settings_game_path_edit"].full_text() == new_game_path
+                assert vars(window)["settings_game_path_edit"].toolTip() == new_game_path
+                assert not vars(window)["settings_game_path_reset_button"].isHidden()
             finally:
                 _close_app_window(qapp, window)
 
@@ -505,16 +554,14 @@ class TestAppWindow:
                 window.show()
                 _drain_events(qapp)
                 window.feedback_service.show_message = Mock()
-                window.settings_service.validate_selected_game_path = (
-                    lambda _path, *args, **kwargs: False
-                )
-                previous_path = window.settings_game_path_edit.full_text()
+                vars(window.settings_service)["validate_selected_game_path"] = lambda _path, *args, **kwargs: False
+                previous_path = vars(window)["settings_game_path_edit"].full_text()
 
                 invalid_path = os.path.join(temp_dir, "BrokenGameFolder")
                 os.makedirs(invalid_path, exist_ok=True)
-                window.settings_game_path_edit.setFocus()
-                window.settings_game_path_edit.setText(invalid_path)
-                window.settings_custom_executable_edit.setFocus()
+                vars(window)["settings_game_path_edit"].setFocus()
+                vars(window)["settings_game_path_edit"].setText(invalid_path)
+                vars(window)["settings_custom_executable_edit"].setFocus()
                 _drain_events(qapp)
 
                 assert (
@@ -523,7 +570,7 @@ class TestAppWindow:
                     )
                     == previous_path
                 )
-                assert window.settings_game_path_edit.full_text() == previous_path
+                assert vars(window)["settings_game_path_edit"].full_text() == previous_path
                 window.feedback_service.show_message.assert_called_once()
             finally:
                 _close_app_window(qapp, window)
@@ -561,19 +608,19 @@ class TestAppWindow:
                 _drain_events(qapp)
 
                 assert (
-                    window.settings_custom_xdelta_edit.placeholderText()
+                    vars(window)["settings_custom_xdelta_edit"].placeholderText()
                     == "Specify path..."
                 )
-                assert window.settings_custom_wine_label.text() == "Custom Wine:"
+                assert vars(window)["settings_custom_wine_label"].text() == "Custom Wine:"
                 assert (
-                    window.settings_custom_portproton_label.text()
+                    vars(window)["settings_custom_portproton_label"].text()
                     == "Custom PortProton:"
                 )
-                assert window.manage_warnings_button.text() == "Manage Warnings"
-                assert window.clear_g3mtool_cache_button.text() == "Clear G3MTool Cache"
-                assert window.settings_custom_g3mtool_label.text() == "Custom G3MTool:"
+                assert vars(window)["manage_warnings_button"].text() == "Manage Warnings"
+                assert vars(window)["clear_g3mtool_cache_button"].text() == "Clear G3MTool Cache"
+                assert vars(window)["settings_custom_g3mtool_label"].text() == "Custom G3MTool:"
                 assert (
-                    window.change_font_button.text()
+                    vars(window)["change_font_button"].text()
                     == window.customization_service.get_font_button_text()
                 )
                 assert window.status_label.text() == "G3M settings"
@@ -584,26 +631,26 @@ class TestAppWindow:
                 _drain_events(qapp)
 
                 assert (
-                    window.settings_custom_xdelta_edit.placeholderText()
+                    vars(window)["settings_custom_xdelta_edit"].placeholderText()
                     == "Укажите путь..."
                 )
-                assert window.settings_custom_wine_label.text() == "Кастомный Wine:"
+                assert vars(window)["settings_custom_wine_label"].text() == "Кастомный Wine:"
                 assert (
-                    window.settings_custom_portproton_label.text()
+                    vars(window)["settings_custom_portproton_label"].text()
                     == "Кастомный PortProton:"
                 )
                 assert (
-                    window.manage_warnings_button.text()
+                    vars(window)["manage_warnings_button"].text()
                     == "Управление предупреждениями"
                 )
                 assert (
-                    window.clear_g3mtool_cache_button.text() == "Очистить кеш G3MTool"
+                    vars(window)["clear_g3mtool_cache_button"].text() == "Очистить кеш G3MTool"
                 )
                 assert (
-                    window.settings_custom_g3mtool_label.text() == "Кастомный G3MTool:"
+                    vars(window)["settings_custom_g3mtool_label"].text() == "Кастомный G3MTool:"
                 )
                 assert (
-                    window.change_font_button.text()
+                    vars(window)["change_font_button"].text()
                     == window.customization_service.get_font_button_text()
                 )
                 assert window.status_label.text() == "Настройки G3M"
@@ -633,7 +680,7 @@ class TestAppWindow:
                 _drain_events(qapp)
                 window.settings_service.clear_g3mtool_cache = Mock(return_value=True)
 
-                window.clear_g3mtool_cache_button.click()
+                vars(window)["clear_g3mtool_cache_button"].click()
                 _drain_events(qapp)
 
                 window.settings_service.clear_g3mtool_cache.assert_called_once()
@@ -674,7 +721,7 @@ class TestAppWindow:
                 window.show()
                 _drain_events(qapp)
 
-                window.manage_warnings_button.click()
+                vars(window)["manage_warnings_button"].click()
                 _drain_events(qapp)
 
                 assert opened["value"] is True
@@ -706,6 +753,7 @@ class TestAppWindow:
                 _drain_events(qapp, cycles=6, delay_ms=20)
 
                 saved = window.app_state.local_config.get("window_geometry_state")
+                assert saved is not None
                 assert saved["maximized"] is True
             finally:
                 _close_app_window(qapp, window)
@@ -720,24 +768,24 @@ class TestAppWindow:
         from models.game_modes import UndertaleGame
 
         window = QWidget()
-        window.app_state = Mock()
-        window.app_state.game_mode = UndertaleGame()
-        window.app_state.current_mode = "chapter"
-        window.chapter_tabs_widget = QWidget()
-        window.chapter_tab_buttons = [QPushButton() for _ in range(5)]
-        window._on_chapter_tab_clicked = Mock()
+        vars(window)["app_state"] = Mock()
+        vars(window)["app_state"].game_mode = UndertaleGame()
+        vars(window)["app_state"].current_mode = "chapter"
+        vars(window)["chapter_tabs_widget"] = QWidget()
+        vars(window)["chapter_tab_buttons"] = [QPushButton() for _ in range(5)]
+        vars(window)["_on_chapter_tab_clicked"] = Mock()
         tabs = sync_chapter_tab_buttons(window)
         assert len(tabs) == 1
-        assert window.chapter_tab_buttons[0].isVisible()
+        assert vars(window)["chapter_tab_buttons"][0].isVisible()
         assert (
-            getattr(window.chapter_tab_buttons[0], "_chapter_id", None) == "undertale"
+            getattr(vars(window)["chapter_tab_buttons"][0], "_chapter_id", None) == "undertale"
         )
-        for btn in window.chapter_tab_buttons[1:]:
+        for btn in vars(window)["chapter_tab_buttons"][1:]:
             assert not btn.isVisible()
             assert getattr(btn, "_chapter_id", None) is None
-        assert window.chapter_tabs_widget.isHidden()
-        window.chapter_tabs_widget.deleteLater()
-        for btn in window.chapter_tab_buttons:
+        assert vars(window)["chapter_tabs_widget"].isHidden()
+        vars(window)["chapter_tabs_widget"].deleteLater()
+        for btn in vars(window)["chapter_tab_buttons"]:
             btn.deleteLater()
         window.deleteLater()
 
@@ -870,10 +918,10 @@ class TestAppWindow:
         ):
             window = AppWindow()
             try:
-                window._pending_close_tasks = {"cleanup": False}
+                vars(window)["_pending_close_tasks"] = {"cleanup": False}
                 window._force_finish_close_tasks()
 
-                assert window._pending_close_tasks == {"cleanup": True}
+                assert vars(window)["_pending_close_tasks"] == {"cleanup": True}
                 app_mock.quit.assert_called_once_with()
             finally:
                 _close_app_window(qapp, window)
@@ -898,23 +946,23 @@ class TestAppWindow:
             try:
                 assert window.title_bar.windows_button.text() == tr("ui.windows_menu")
                 assert window.title_bar.log_viewer_action.text() == tr("ui.log_viewer")
-                assert window._log_viewer_dialog is None
+                assert vars(window)["_log_viewer_dialog"] is None
 
                 window.title_bar.log_viewer_action.trigger()
                 qapp.processEvents()
 
-                assert window._log_viewer_dialog is not None
-                assert window._log_viewer_dialog.isVisible() is True
+                assert vars(window)["_log_viewer_dialog"] is not None
+                assert vars(window)["_log_viewer_dialog"].isVisible() is True
 
-                first_dialog = window._log_viewer_dialog
+                first_dialog = vars(window)["_log_viewer_dialog"]
                 window.title_bar.log_viewer_action.trigger()
                 qapp.processEvents()
 
-                assert window._log_viewer_dialog is first_dialog
-                assert window._log_viewer_dialog.isVisible() is True
+                assert vars(window)["_log_viewer_dialog"] is first_dialog
+                assert vars(window)["_log_viewer_dialog"].isVisible() is True
             finally:
-                if window._log_viewer_dialog:
-                    window._log_viewer_dialog.close()
+                if vars(window)["_log_viewer_dialog"]:
+                    vars(window)["_log_viewer_dialog"].close()
                 _close_app_window(qapp, window)
 
     def test_title_bar_windows_menu_opens_support_packager(self, qapp, temp_dir):
@@ -938,16 +986,16 @@ class TestAppWindow:
                 assert window.title_bar.support_packager_action.text() == tr(
                     "ui.support_packager"
                 )
-                assert window._support_packager_dialog is None
+                assert vars(window)["_support_packager_dialog"] is None
 
                 window.title_bar.support_packager_action.trigger()
                 qapp.processEvents()
 
-                assert window._support_packager_dialog is not None
-                assert window._support_packager_dialog.isVisible() is True
+                assert vars(window)["_support_packager_dialog"] is not None
+                assert vars(window)["_support_packager_dialog"].isVisible() is True
             finally:
-                if window._support_packager_dialog:
-                    window._support_packager_dialog.close()
+                if vars(window)["_support_packager_dialog"]:
+                    vars(window)["_support_packager_dialog"].close()
                 _close_app_window(qapp, window)
 
 
@@ -1003,19 +1051,24 @@ class TestTabBuilders:
         widget = builder.build()
         widget.show()
         actions_widget = builder._library_actions_widget
+        assert actions_widget is not None
         actions_layout = actions_widget.layout()
         modding_btn = builder.widgets["library_modding_tools_button"]
         downloads_btn = builder.widgets["library_downloads_button"]
         updates_btn = builder.widgets["update_mods_button"]
         search_btn = builder.widgets["library_search_button"]
 
+        assert builder._library_filters_layout is not None
         assert builder._library_filters_layout.indexOf(actions_widget) >= 0
+        assert actions_layout is not None
         assert actions_layout.indexOf(updates_btn) < actions_layout.indexOf(
             modding_btn
         )
+        assert actions_layout is not None
         assert actions_layout.indexOf(modding_btn) < actions_layout.indexOf(
             downloads_btn
         )
+        assert actions_layout is not None
         assert actions_layout.indexOf(downloads_btn) < actions_layout.indexOf(
             search_btn
         )
@@ -1549,5 +1602,36 @@ class TestTabBuilders:
                 assert tooltip.x() >= screen_geometry.left()
                 assert tooltip.x() + tooltip.width() <= screen_geometry.right() + 1
             finally:
+                _close_widget(qapp, getattr(window, "_tooltip_widget", None))
+                _close_app_window(qapp, window)
+
+    def test_disabled_manual_save_uses_application_tooltip(self, qapp, qtbot, temp_dir, tmp_path):
+        from app.window import AppWindow
+        from ui.dialogs.manual_install.dialog import ManualModInstallDialog
+
+        (tmp_path / "pending.bin").write_bytes(b"payload")
+        *_, patches = _window_test_patches(temp_dir)
+        with ExitStack() as stack:
+            for patched in patches:
+                stack.enter_context(patched)
+            window = AppWindow()
+            dialog = None
+            try:
+                dialog = ManualModInstallDialog(window, str(tmp_path))
+                dialog._stop_detection()
+                dialog.show()
+                qtbot.waitActive(dialog)
+                qtbot.wait(50)
+                for button in (dialog.buttons.button(QDialogButtonBox.StandardButton.Ok), dialog.configure_button):
+                    assert button is not None
+                    assert not button.isEnabled()
+                    position = button.rect().center()
+                    QCoreApplication.sendEvent(button, QHoverEvent(
+                        QEvent.Type.HoverEnter, QPointF(position), QPointF(button.mapToGlobal(position)), QPointF(-1, -1),
+                    ))
+                    qtbot.waitUntil(lambda target=button: window._last_tooltip_target is target and window._tooltip_widget is not None and window._tooltip_widget.isVisible())
+                    assert window._tooltip_widget.text() == tr("tooltips.manual_install_save_unconfigured", count=1)
+            finally:
+                _close_widget(qapp, dialog)
                 _close_widget(qapp, getattr(window, "_tooltip_widget", None))
                 _close_app_window(qapp, window)

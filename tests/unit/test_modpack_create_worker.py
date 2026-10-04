@@ -33,8 +33,8 @@ def _config(mod_id: str) -> dict[str, object]:
 
 def test_modpack_create_worker_suppresses_emit_failure_after_error(monkeypatch, tmp_path, caplog):
     worker = CreateModpackThread({}, "Pack", str(tmp_path / "pack"), SimpleNamespace(), SimpleNamespace())
-    worker.status_update = _FailingSignal()
-    worker.result_ready = _FailingSignal()
+    vars(worker)["status_update"] = _FailingSignal()
+    vars(worker)["result_ready"] = _FailingSignal()
     monkeypatch.setattr(worker, "_build_bundle", lambda: (_ for _ in ()).throw(RuntimeError("failed")))
 
     worker.run()
@@ -76,6 +76,8 @@ def test_modpack_create_worker_bundles_current_operations(tmp_path, monkeypatch,
 
     config = load_mod_config(output / "mod_config.json")
     assert config["config_version"] == "2.0.0"
+    assert isinstance(config["files"], list)
+    assert isinstance(config["files"][0], dict)
     assert config["files"][0]["target"] == f"${{game_path}}/{data_filename}"
     assert (output / "payload" / "game-files" / data_filename).read_text("utf-8") == "modded"
 
@@ -94,6 +96,8 @@ def test_modpack_preserves_file_hard_overwrite_deletions(tmp_path, monkeypatch, 
     mod_root.mkdir()
     (mod_root / "payload.txt").write_text("modded", encoding="utf-8")
     config = _config("mod")
+    assert isinstance(config["files"], list)
+    assert isinstance(config["files"][0], dict)
     config["files"][0]["type"] = "hard-overwrite"
     app_state = SimpleNamespace(
         local_config={},

@@ -1,12 +1,101 @@
 """Shared theme helper for dialogs."""
 
+import re
+from collections.abc import Callable
+from typing import Any, cast
+
+from PyQt6 import sip
+from PyQt6.QtCore import QObject
+from PyQt6.QtWidgets import QAbstractButton, QDialog, QLabel, QMessageBox, QPushButton
+
+from services.localization_service import tr
 from ui.common.styling import (
     DEFAULT_COLORS,
     clamp_border_radius,
     get_border_radius,
     get_theme_colors,
+    get_ui_scale_factor,
 )
 from utils.path_utils import resource_path
+
+
+def scale_stylesheet(stylesheet: str, app_state) -> str:
+    """Scale authored pixel dimensions, leaving URLs and quoted strings intact."""
+    scale = get_ui_scale_factor(getattr(app_state, "local_config", None))
+    parts = re.split(r'''(url\([^)]*\)|"[^"]*"|'[^']*')''', stylesheet)
+    for index in range(0, len(parts), 2):
+        parts[index] = re.sub(
+            r"(-?\d+(?:\.\d+)?)px\b",
+            lambda match: f"{round(float(match[1]) * scale)}px",
+            parts[index],
+        )
+    return "".join(parts)
+
+
+class _DialogUpdates:
+    """Dialogs refresh their existing controls when appearance settings change."""
+
+    translator: Callable[..., str] = staticmethod(tr)
+    _app_state: Any
+
+    def localize(self, setter: Callable[[str], None], key: str, *, owner: QObject | None = None, **parameters: Any) -> None:
+        if getattr(self, "_text_bindings", None) is None:
+            self._text_bindings = []
+        target = owner if owner is not None else getattr(setter, "__self__", None)
+        self._text_bindings.append((setter, key, parameters, target))
+        setter(self.translator(key, **parameters))
+
+    def theme_state(self):
+        current = cast(QDialog, self)
+        while current is not None:
+            state = getattr(current, "app_state", None) or getattr(current, "_app_state", None)
+            if state is not None:
+                return state
+            current = current.parentWidget()
+        return None
+
+    def set_theme_stylesheet(self, stylesheet: str) -> None:
+        self._theme_stylesheet = stylesheet
+        cast(QDialog, self).setStyleSheet(scale_stylesheet(stylesheet, self.theme_state()))
+
+    def localize_text[T: QLabel | QAbstractButton](self, control: T, key: str, **parameters: Any) -> T:
+        self.localize(control.setText, key, **parameters)
+        return control
+
+    def set_localized_title(self, key: str, **parameters: Any) -> None:
+        self._title_translation = (key, parameters)
+        cast(QDialog, self).setWindowTitle(self.translator(key, **parameters))
+
+    def relocalize_ui(self) -> None:
+        if title := getattr(self, "_title_translation", None):
+            key, parameters = title
+            cast(QDialog, self).setWindowTitle(self.translator(key, **parameters))
+        bindings = getattr(self, "_text_bindings", ())
+        self._text_bindings = [binding for binding in bindings if not isinstance(binding[3], QObject) or not sip.isdeleted(binding[3])]
+        for setter, key, parameters, _owner in self._text_bindings:
+            setter(self.translator(key, **parameters))
+
+    def apply_theme(self) -> None:
+        refresh = getattr(self, "refresh_theme", None) or getattr(self, "_apply_theme", None)
+        if callable(refresh):
+            refresh()
+        else:
+            apply_dialog_theme(self, self.theme_state())
+
+    def rescale_ui(self) -> None:
+        self.apply_theme()
+
+
+class DynamicDialog(_DialogUpdates, QDialog):
+    """A dialog with localization, theme and scale update hooks."""
+
+
+class DynamicMessageBox(_DialogUpdates, QMessageBox):
+    """A message box with the same update hooks as other dialogs."""
+
+    def add_localized_button(self, key: str, role: QMessageBox.ButtonRole) -> QPushButton:
+        button = cast(QPushButton, self.addButton("", role))
+        return self.localize_text(button, key)
 
 
 def get_dialog_theme_values(app_state):
@@ -188,4 +277,10 @@ def get_dialog_text_color(app_state) -> str:
 
 def apply_dialog_theme(dialog, app_state):
     """Apply consistent theme to dialog."""
-    dialog.setStyleSheet(build_dialog_theme_stylesheet(app_state))
+    stylesheet = build_dialog_theme_stylesheet(app_state)
+    if isinstance(dialog, _DialogUpdates):
+        if app_state is not None and dialog.theme_state() is None:
+            dialog._app_state = app_state
+        dialog.set_theme_stylesheet(stylesheet)
+    else:
+        dialog.setStyleSheet(scale_stylesheet(stylesheet, app_state))

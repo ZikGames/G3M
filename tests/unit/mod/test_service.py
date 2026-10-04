@@ -34,7 +34,7 @@ def test_operation_mods_are_visible_in_the_sections_targeted_by_operations():
     config = _config()
     manager = ModManager.__new__(ModManager)
     local_mod = LocalModInfo.from_dict(config)
-    manager._get_mods_cache = lambda: {
+    vars(manager)["_get_mods_cache"] = lambda: {
         "local_operation": SimpleNamespace(config_data=config)
     }
 
@@ -77,6 +77,7 @@ def test_create_mod_object_keeps_remote_listing_separate():
 
     assert imported is not remote
     assert remote.name == "Remote"
+    assert imported is not None
     assert imported.sections == frozenset({"deltarune_2"})
 
 

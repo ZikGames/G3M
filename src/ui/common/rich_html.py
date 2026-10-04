@@ -13,11 +13,12 @@ import re
 import weakref
 from collections import OrderedDict
 from pathlib import PureWindowsPath
+from typing import cast
 from urllib.parse import quote
 
 from PyQt6.QtCore import QObject, QRectF, QRunnable, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QGuiApplication, QImage, QPainter, QTextDocument
-from PyQt6.QtWidgets import QTextBrowser, QTextEdit
+from PyQt6.QtWidgets import QTextBrowser, QTextEdit, QWidget
 
 from config.config import (
     RICH_HTML_ATTR_RE,
@@ -295,7 +296,7 @@ def _widget_available_width(widget: QTextBrowser | QTextEdit) -> int:
         width_candidates.append(int(widget.width()))
     available_width = next((width for width in width_candidates if width > 0), 600)
     try:
-        document_margin = int(widget.document().documentMargin())
+        document_margin = int(cast(QTextDocument, widget.document()).documentMargin())
     except (AttributeError, TypeError, ValueError):
         document_margin = 0
     return max(available_width - (document_margin * 2), 200)
@@ -366,7 +367,7 @@ def _create_loading_placeholder(width: int, height: int, text: str) -> QImage:
         80, min(int(height) if height else max(120, placeholder_width // 3), 540)
     )
     app = QGuiApplication.instance()
-    screen = app.primaryScreen() if app is not None else None
+    screen = app.primaryScreen() if isinstance(app, QGuiApplication) else None
     dpr = screen.devicePixelRatio() if screen else 2.0
     image = QImage(
         int(placeholder_width * dpr),
@@ -714,7 +715,7 @@ def load_remote_images(
     max_width = max(
         200,
         int(
-            widget_width or (browser.viewport().width() if browser.viewport() else 600)
+            widget_width or (cast(QWidget, browser.viewport()).width() if browser.viewport() else 600)
         ),
     )
     image_requests = _image_requests(html, max_width)

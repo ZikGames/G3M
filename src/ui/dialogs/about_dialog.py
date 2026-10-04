@@ -5,9 +5,7 @@ import platform
 import sys
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,11 +16,12 @@ from PyQt6.QtWidgets import (
 from config.config import APP_DISPLAY_NAME, APP_VERSION, SOCIAL_LINKS
 from models.plugin_models import PLUGIN_API_VERSION
 from services.localization_service import localization_service, tr
+from ui.common.dialog_theme import DynamicDialog
 from utils.native_integration import open_path_native, open_url_native
 from utils.path_utils import get_user_data_root
 
 
-class AboutDialog(QDialog):
+class AboutDialog(DynamicDialog):
     RELEASES_URL = "https://github.com/y114git/G3M/releases"
     ISSUES_URL = "https://github.com/y114git/G3M/issues"
 
@@ -34,6 +33,12 @@ class AboutDialog(QDialog):
         self.setMinimumWidth(620)
         self._init_ui()
         self.relocalize_ui()
+        self.apply_theme()
+
+    def apply_theme(self) -> None:
+        from ui.common.dialog_theme import build_dialog_theme_stylesheet
+
+        self.set_theme_stylesheet(build_dialog_theme_stylesheet(self.app_state) + "QLabel#aboutTitle { font-size: 19px; font-weight: bold; }")
 
     def _resolve_data_root(self) -> str:
         config_dir = getattr(self.app_state, "config_dir", "") or ""
@@ -112,10 +117,7 @@ class AboutDialog(QDialog):
         layout.setSpacing(14)
 
         self.title_label = QLabel(APP_DISPLAY_NAME)
-        title_font = QFont(self.font())
-        title_font.setPointSize(max(14, title_font.pointSize() + 4))
-        title_font.setBold(True)
-        self.title_label.setFont(title_font)
+        self.title_label.setObjectName("aboutTitle")
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.title_label)
 

@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog,
     QDialogButtonBox,
     QLabel,
+    QPushButton,
     QVBoxLayout,
 )
 
 from services.localization_service import tr
+from ui.common.dialog_theme import DynamicDialog
 
 
-class PizzaOvenConversionDialog(QDialog):
+class PizzaOvenConversionDialog(DynamicDialog):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(tr("dialogs.po_convert_title"))
@@ -48,13 +51,13 @@ class PizzaOvenConversionDialog(QDialog):
         layout.addStretch()
 
         button_box = QDialogButtonBox()
-        self.start_button = button_box.addButton(
+        self.start_button = cast(QPushButton, button_box.addButton(
             tr("buttons.start_po_convert"),
             QDialogButtonBox.ButtonRole.AcceptRole,
-        )
-        self.cancel_button = button_box.addButton(
+        ))
+        self.cancel_button = cast(QPushButton, button_box.addButton(
             tr("dialogs.cancel"), QDialogButtonBox.ButtonRole.RejectRole
-        )
+        ))
         self.start_button.clicked.connect(self.accept)
         self.cancel_button.clicked.connect(self.reject)
         self.start_button.setDefault(True)

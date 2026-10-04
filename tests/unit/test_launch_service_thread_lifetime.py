@@ -32,7 +32,7 @@ def test_patching_thread_is_strongly_retained_until_native_finish(qapp, monkeypa
     monkeypatch.setattr(thread_lifetime, "background_operations", operations)
     launcher = GameLauncher(Mock(local_config={}), Mock(), Mock())
     thread = _RunningThread()
-    launcher._patching_thread = thread
+    vars(launcher)["_patching_thread"] = thread
     launcher._continue_after_patching = Mock()
 
     launcher._on_patching_finished({}, True)

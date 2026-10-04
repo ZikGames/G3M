@@ -1,14 +1,16 @@
 from types import SimpleNamespace
 
+import pytest
 from PyQt6.QtCore import Qt
-from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QWidget
 
 from ui.widgets.shared.custom_title_bar import CustomTitleBar
 
 
-def test_title_bar_menu_restores_focus(qapp) -> None:
+@pytest.mark.parametrize("menu_name", ["windows", "help"])
+def test_title_bar_menu_restores_focus(qtbot, menu_name) -> None:
     host = QWidget()
+    qtbot.addWidget(host)
     title_bar = CustomTitleBar(host, SimpleNamespace(local_config={}))
     title_bar.set_localized_texts(
         "Windows",
@@ -23,15 +25,17 @@ def test_title_bar_menu_restores_focus(qapp) -> None:
         "Restore",
         "Close",
     )
+    button = getattr(title_bar, f"{menu_name}_button")
+    menu = getattr(title_bar, f"{menu_name}_menu")
     host.show()
-    qapp.processEvents()
+    host.activateWindow()
 
-    title_bar.windows_button.setFocus()
-    QTest.keyClick(title_bar.windows_button, Qt.Key.Key_Space)
-    qapp.processEvents()
-    assert title_bar.windows_menu.isVisible()
-    QTest.keyClick(title_bar.windows_menu, Qt.Key.Key_Escape)
-    qapp.processEvents()
+    button.setFocus()
+    qtbot.waitUntil(button.hasFocus)
+    qtbot.keyClick(button, Qt.Key.Key_Space)
+    qtbot.waitUntil(menu.isVisible)
+    qtbot.keyClick(menu, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not menu.isVisible())
 
-    assert title_bar.windows_button.hasFocus()
-    host.close()
+    qtbot.waitUntil(button.hasFocus)
+    assert not button.isDown()

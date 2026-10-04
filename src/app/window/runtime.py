@@ -58,7 +58,7 @@ def finalize_window_setup(window) -> None:
     window.initialization_timer.start(INITIALIZATION_TIMEOUT)
     window.settings_service.load_window_geometry(window)
     app = QApplication.instance()
-    if app:
+    if isinstance(app, QApplication):
         app.installEventFilter(window)
         with contextlib.suppress(Exception):
             app.applicationStateChanged.connect(window._on_application_state_changed)

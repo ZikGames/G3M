@@ -23,7 +23,7 @@ def test_localized_dialogs_expose_live_relocalization() -> None:
             if not isinstance(node, ast.ClassDef):
                 continue
             is_dialog = any(
-                ast.unparse(base).endswith("QDialog") for base in node.bases
+                ast.unparse(base) in {"QDialog", "DynamicDialog"} for base in node.bases
             )
             if not is_dialog or "tr(" not in (
                 ast.get_source_segment(source, node) or ""

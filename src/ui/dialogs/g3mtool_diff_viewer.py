@@ -3,10 +3,11 @@
 import logging
 import re
 import shutil
+from typing import cast
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QCloseEvent, QTextDocument
 from PyQt6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -20,11 +21,12 @@ from PyQt6.QtWidgets import (
 
 from services.localization_service import localization_service, tr
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     get_dialog_theme_values,
 )
 from ui.common.dialog_utils import safe_question
-from ui.common.styling import get_theme_color, rgba_from_color
+from ui.common.styling import get_theme_color, get_ui_scale_factor, rgba_from_color
 from ui.widgets.shared.custom_controls import SectionToggle
 from utils.native_integration import get_save_file_name
 from utils.process_utils import format_filesystem_error
@@ -245,14 +247,14 @@ class _CollapsibleSection(QWidget):
         self._body.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
         )
-        self._body.document().setDocumentMargin(8)
+        cast(QTextDocument, self._body.document()).setDocumentMargin(8)
         lay.addWidget(self._body)
 
     def _toggle(self, expanded):
         self._expanded = expanded
         self._body.setVisible(self._expanded)
         if self._expanded:
-            doc_h = int(self._body.document().size().height()) + 16
+            doc_h = int(cast(QTextDocument, self._body.document()).size().height()) + 16
             self._body.setMinimumHeight(min(doc_h, 500))
             self._body.setMaximumHeight(min(doc_h, 500))
             self.clicked.emit(self._index)
@@ -261,7 +263,7 @@ class _CollapsibleSection(QWidget):
             self._body.setMaximumHeight(0)
 
 
-class DiffViewerDialog(QDialog):
+class DiffViewerDialog(DynamicDialog):
     """Show parsed diff report with collapsible sections."""
 
     def __init__(self, md_path: str, app_state, parent=None) -> None:
@@ -448,9 +450,16 @@ class DiffViewerDialog(QDialog):
                 border-color: {theme["select"]};
             }}
         """
-        self.setStyleSheet(base + extra)
+        self.set_theme_stylesheet(base + extra)
+        scale = get_ui_scale_factor(self._app_state.local_config)
+        self._export_btn.setFixedSize(round(38 * scale), round(38 * scale))
+        self._export_btn.setIconSize(QSize(round(18 * scale), round(18 * scale)))
+        from utils.path_utils import colored_icon
 
-    def closeEvent(self, event):
+        self._export_btn.setIcon(colored_icon("export", theme["main_text"]))
+
+    def closeEvent(self, a0):
+        event = cast(QCloseEvent, a0)
         reply = safe_question(
             self,
             tr("modding_tools.diff_viewer_title"),
@@ -471,6 +480,8 @@ class DiffViewerDialog(QDialog):
         self._close_btn.setText(tr("common.close"))
         self._export_btn.setToolTip(tr("modding_tools.export_report"))
         self._export_btn.setAccessibleName(tr("modding_tools.export_report"))
+        if self._export_btn.text():
+            self._export_btn.setText(tr("actions.export"))
 
     def refresh_theme(self):
         self._apply_theme()

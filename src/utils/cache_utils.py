@@ -22,14 +22,14 @@ except (ValueError, RuntimeError) as e:
 @contextlib.contextmanager
 def cache_lock():
     """Thread-safe cache access context manager."""
-    acquired = _IMG_CACHE_LOCK is not None
-    if acquired:
-        _IMG_CACHE_LOCK.acquire()
+    lock = _IMG_CACHE_LOCK
+    if lock is not None:
+        lock.acquire()
     try:
         yield
     finally:
-        if acquired:
-            _IMG_CACHE_LOCK.release()
+        if lock is not None:
+            lock.release()
 
 
 def add_to_cache(key: str, image: QImage) -> None:

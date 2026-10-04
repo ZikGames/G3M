@@ -2,8 +2,10 @@
 
 import contextlib
 import logging
+from typing import cast
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QKeyEvent, QMouseEvent
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from models.mod_models import format_mod_authors
@@ -132,6 +134,7 @@ class BaseModWidget(QFrame):
         self.authors_label_title = QLabel(tr("ui.authors_label"), authors_container)
         self.authors_label_title.setObjectName("primaryText")
         authors_label_value = QLabel(f" {authors_text}", authors_container)
+        self.authors_label_value = authors_label_value
         authors_label_value.setObjectName("secondaryText")
         authors_container_layout.addWidget(self.authors_label_title)
         authors_container_layout.addWidget(authors_label_value)
@@ -150,6 +153,16 @@ class BaseModWidget(QFrame):
         self.category_container = category_container
         self.metadata_layout = metadata_layout
         info_layout.addLayout(metadata_layout)
+        description_text = self._description_text()
+        self.description_label = QLabel(description_text, self)
+        self.description_label.setWordWrap(True)
+        self.description_label.setObjectName("secondaryText")
+        info_layout.addWidget(self.description_label)
+        info_layout.addStretch()
+        main_layout.addLayout(info_layout, 1)
+        self.main_layout = main_layout
+
+    def _description_text(self) -> str:
         description_text = self.mod_data.description or tr("ui.no_description")
         try:
             mod_id = get_mod_id(self.mod_data)
@@ -163,15 +176,7 @@ class BaseModWidget(QFrame):
                 f"BaseModWidget: failed to resolve description placeholder state: {e}",
                 exc_info=True,
             )
-        if len(description_text) > 200:
-            description_text = description_text[:197] + "..."
-        self.description_label = QLabel(description_text, self)
-        self.description_label.setWordWrap(True)
-        self.description_label.setObjectName("secondaryText")
-        info_layout.addWidget(self.description_label)
-        info_layout.addStretch()
-        main_layout.addLayout(info_layout, 1)
-        self.main_layout = main_layout
+        return description_text[:197] + "..." if len(description_text) > 200 else description_text
 
     def _resolve_local_icon_fallback(self):
         key = get_mod_id(self.mod_data)
@@ -281,7 +286,18 @@ class BaseModWidget(QFrame):
                         cache_attr="_category_label_stylesheet_cache",
                     )
 
+    def relocalize_ui(self) -> None:
+        self.update_labels_text()
+
+    def apply_theme(self) -> None:
+        self._update_style()
+
+    def rescale_ui(self) -> None:
+        self._update_style()
+
     def update_labels_text(self):
+        self.authors_label_value.setText(f" {format_mod_authors(self.mod_data.authors) or tr('defaults.unknown')}")
+        self.description_label.setText(self._description_text())
         if hasattr(self, "authors_label_title") and self.authors_label_title:
             with contextlib.suppress(RuntimeError):
                 self.authors_label_title.setText(tr("ui.authors_label"))
@@ -293,11 +309,13 @@ class BaseModWidget(QFrame):
         if self.is_selected == selected:
             return
         self.is_selected = selected
-        if hasattr(self, "_update_actions_visibility"):
-            self._update_actions_visibility()
+        update_actions = getattr(self, "_update_actions_visibility", None)
+        if callable(update_actions):
+            update_actions()
         self._update_style()
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, a0):
+        event = cast(QKeyEvent, a0)
         if event.modifiers() in (
             Qt.KeyboardModifier.NoModifier,
             Qt.KeyboardModifier.KeypadModifier,
@@ -311,12 +329,14 @@ class BaseModWidget(QFrame):
             return
         super().keyPressEvent(event)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, a0):
+        event = cast(QMouseEvent, a0)
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.mod_data)
         super().mousePressEvent(event)
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, a0):
+        event = cast(QMouseEvent, a0)
         if event.button() == Qt.MouseButton.LeftButton:
             details_requested = getattr(self, "details_requested", None)
             if details_requested:

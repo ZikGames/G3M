@@ -127,5 +127,5 @@ def test_audio_preview_shows_unavailable_backend_status(monkeypatch):
     assert preview._current_audio_path == ""
     play_button.setEnabled.assert_called_with(False)
     stop_button.setEnabled.assert_called_with(False)
-    assert status.setText.call_count == 2
-    assert status.setText.call_args.args[0]
+    status.setText.assert_called_once_with("")
+    status.set_localized_text.assert_called_once_with("diagnostics.audio_playback_unavailable")

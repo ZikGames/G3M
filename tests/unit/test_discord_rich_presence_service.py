@@ -56,7 +56,8 @@ def test_start_enables_presence_by_default():
 
     service.start()
 
-    assert service._client.activities[-1]["details"] == "Preparing game to launch"
+    assert vars(service._client)["activities"][-1] is not None
+    assert vars(service._client)["activities"][-1]["details"] == "Preparing game to launch"
 
 
 def test_start_without_client_id_does_not_publish_presence():
@@ -65,7 +66,7 @@ def test_start_without_client_id_does_not_publish_presence():
 
     service.start()
 
-    assert service._client.activities == []
+    assert vars(service._client)["activities"] == []
 
 
 def test_disable_setting_clears_presence_and_blocks_updates():
@@ -118,7 +119,7 @@ def test_playing_status_without_mods_uses_plain_game_line():
 def test_semantic_state_detects_create_modpack_dialog(monkeypatch):
     service = _service()
     dialog = type("CreateModpackDialog", (), {})()
-    dialog.isVisible = lambda: True
+    vars(dialog)["isVisible"] = lambda: True
     monkeypatch.setattr(service, "_iter_visible_windows", lambda: [dialog])
 
     payload = service._resolve_semantic_presence()

@@ -124,7 +124,7 @@ class BootstrapCoordinator:
             server = self.server_factory(self.instance)
             if not server.listen(SINGLE_INSTANCE_KEY):
                 logger.info("Another G3M instance claimed the local server")
-                self.splash.close()
+                self._close_splash()
                 QTimer.singleShot(0, self.app.quit)
                 return
             self.instance.server = server
@@ -136,7 +136,7 @@ class BootstrapCoordinator:
             self._start_network_initialization()
             QTimer.singleShot(0, self._fallback_show_window)
         except Exception as error:
-            self.splash.close()
+            self._close_splash()
             error_msg = tr("errors.startup_error_message", details=str(error))
             logger.exception(f"STARTUP ERROR: {error_msg}")
             self._safe_critical(tr("errors.startup_error_title"), error_msg)
@@ -214,7 +214,8 @@ class BootstrapCoordinator:
             logger.debug(f"Failed to bring launcher to front: {error}")
 
     def _close_splash(self) -> None:
-        self.splash.close()
+        if self.splash is not None:
+            self.splash.close()
 
     def _close_splash_and_show_launcher(self) -> None:
         self._show_launcher_window()
@@ -281,7 +282,7 @@ class BootstrapCoordinator:
             return
         logger.critical("Startup failed: main window never became visible")
         if self.splash:
-            self.splash.close()
+            self._close_splash()
         self._safe_critical(
             tr("errors.startup_error_title"),
             tr(
@@ -293,9 +294,8 @@ class BootstrapCoordinator:
             self.app.quit()
 
     def _play_startup_sound(self) -> None:
-        if getattr(
-            self.instance, "app_state", None
-        ) and not self.instance.app_state.local_config.get(
+        app_state = getattr(self.instance, "app_state", None)
+        if app_state is not None and not app_state.local_config.get(
             "disable_startup_sound", False
         ):
             _audio_service.play_g3m_sound()

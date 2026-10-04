@@ -39,7 +39,7 @@ def test_download_worker_suppresses_emit_failure_after_download_error(
         "https://example.invalid/mod.zip",
         str(tmp_path / "mod.zip"),
     )
-    worker.download_finished = FailingSignal()
+    vars(worker)["download_finished"] = FailingSignal()
 
     class _Session:
         def head(self, *_args, **_kwargs):

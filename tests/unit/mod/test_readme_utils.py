@@ -16,21 +16,24 @@ from utils.mod.readme_utils import (
 
 
 def test_missing_archived_pdf_displays_error(qapp, tmp_path):
-    from ui.dialogs.mod.readme_dialog import _ReadmeTab
+    from ui.dialogs.mod.readme_dialog import ReadmeFileViewer
 
-    tab = _ReadmeTab(str(tmp_path / "missing.zip" / "readme.pdf"))
+    tab = ReadmeFileViewer(str(tmp_path / "missing.zip" / "readme.pdf"))
     tab.load_content()
 
+    assert tab.pdf_viewer is not None
     assert tab.pdf_viewer.isHidden()
+    assert tab.pdf_error_label is not None
     assert not tab.pdf_error_label.isHidden()
+    assert tab.pdf_error_label is not None
     assert tab.pdf_error_label.text()
     tab.dispose()
 
 
 def test_readme_dispose_cleans_extracted_files_even_before_loading(qapp, tmp_path):
-    from ui.dialogs.mod.readme_dialog import _ReadmeTab
+    from ui.dialogs.mod.readme_dialog import ReadmeFileViewer
 
-    tab = _ReadmeTab(str(tmp_path / "README.txt"))
+    tab = ReadmeFileViewer(str(tmp_path / "README.txt"))
     tab._temporary_directory = TemporaryDirectory()
     extracted = Path(tab._temporary_directory.name)
     (extracted / "README.txt").write_text("readme", encoding="utf-8")

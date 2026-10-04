@@ -1,6 +1,9 @@
+
 from types import SimpleNamespace
+from typing import cast
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QTreeWidgetItem
 
 from ui.dialogs.mod.updates_dialog import ModUpdatesDialog
 
@@ -28,18 +31,25 @@ def test_mod_updates_dialog_groups_and_emits_selected_updates(qapp):
     game_item = dialog._tree.topLevelItem(0)
     assert dialog._tree.rootIsDecorated()
     assert dialog._tree.itemsExpandable()
+    assert game_item is not None
     assert game_item.flags() & Qt.ItemFlag.ItemIsUserCheckable
+    assert game_item is not None
     assert game_item.childCount() == 2
+    assert game_item is not None
     game_item.setCheckState(0, Qt.CheckState.Unchecked)
+    assert game_item is not None
     assert all(
-        game_item.child(index).checkState(0) == Qt.CheckState.Unchecked
+        cast(QTreeWidgetItem, game_item.child(index)).checkState(0) == Qt.CheckState.Unchecked
         for index in range(game_item.childCount())
     )
-    game_item.child(0).setCheckState(0, Qt.CheckState.Checked)
+    assert game_item is not None
+    cast(QTreeWidgetItem, game_item.child(0)).setCheckState(0, Qt.CheckState.Checked)
     dialog.relocalize_ui()
     game_item = dialog._tree.topLevelItem(0)
-    assert game_item.child(0).checkState(0) == Qt.CheckState.Checked
-    assert game_item.child(1).checkState(0) == Qt.CheckState.Unchecked
+    assert game_item is not None
+    assert cast(QTreeWidgetItem, game_item.child(0)).checkState(0) == Qt.CheckState.Checked
+    assert game_item is not None
+    assert cast(QTreeWidgetItem, game_item.child(1)).checkState(0) == Qt.CheckState.Unchecked
     assert "QTreeWidget::indicator" in dialog.styleSheet()
     assert requested == [([second_candidate, candidate], False)]
 

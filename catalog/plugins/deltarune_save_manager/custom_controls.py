@@ -1,6 +1,8 @@
-from typing import override
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from typing import cast, override
+
+from PyQt6.QtCore import QEvent, Qt, pyqtSignal
+from PyQt6.QtGui import QEnterEvent, QMouseEvent
 from PyQt6.QtWidgets import QLabel
 
 
@@ -20,17 +22,20 @@ class ClickableLabel(QLabel):
             self.clicked.emit(self._ch, self._sl)
         super().mousePressEvent(ev)
 
-    def mouseDoubleClickEvent(self, ev):
+    def mouseDoubleClickEvent(self, a0):
+        ev = cast(QMouseEvent, a0)
         if ev and ev.button() == Qt.MouseButton.LeftButton:
             self.double_clicked.emit(self._ch, self._sl)
         super().mouseDoubleClickEvent(ev)
 
     @override
-    def enterEvent(self, ev):
+    def enterEvent(self, event):
+        ev = cast(QEnterEvent, event)
         self.hover_entered.emit(self._ch, self._sl)
         super().enterEvent(ev)
 
     @override
-    def leaveEvent(self, ev):
+    def leaveEvent(self, a0):
+        ev = cast(QEvent, a0)
         self.hover_left.emit(self._ch, self._sl)
         super().leaveEvent(ev)

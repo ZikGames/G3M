@@ -2,7 +2,6 @@
 
 from PyQt6.QtWidgets import (
     QComboBox,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -11,16 +10,17 @@ from PyQt6.QtWidgets import (
 )
 
 from services.localization_service import tr
-from ui.common.dialog_theme import build_dialog_theme_stylesheet
+from ui.common.dialog_theme import DynamicDialog, build_dialog_theme_stylesheet
 
 
-class CreateVersionDialog(QDialog):
+class CreateVersionDialog(DynamicDialog):
     """Version name input dialog with optional profile selection."""
 
     def __init__(
         self, game_name: str, app_state, profiles: list[str] | None = None, parent=None
     ) -> None:
         super().__init__(parent)
+        self.app_state = app_state
         self.setWindowTitle(tr("game_versions.create_title"))
         self.setMinimumWidth(380)
         self.setModal(True)
@@ -29,7 +29,7 @@ class CreateVersionDialog(QDialog):
         self._game_name = game_name
         self._profiles = profiles or []
         self._build_ui(game_name, self._profiles)
-        self.setStyleSheet(build_dialog_theme_stylesheet(app_state))
+        self.set_theme_stylesheet(build_dialog_theme_stylesheet(app_state))
 
     def _build_ui(self, game_name: str, profiles: list[str]):
         layout = QVBoxLayout(self)

@@ -1,5 +1,4 @@
 from PyQt6.QtCore import Qt, qInstallMessageHandler
-from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QCheckBox
 
 from services.localization_service import localization_service
@@ -8,7 +7,7 @@ from ui.dialogs.support_packager_dialog import SupportPackagerDialog
 
 
 def test_support_packager_toggle_does_not_change_native_geometry(
-    qapp, app_state, tmp_path
+    qapp, app_state, tmp_path, qtbot
 ):
     service = SupportPackageService(app_state, str(tmp_path))
     dialog = SupportPackagerDialog(app_state, service=service)
@@ -20,9 +19,9 @@ def test_support_packager_toggle_does_not_change_native_geometry(
         dialog.show()
         qapp.processEvents()
         dialog._custom.setChecked(True)
-        QTest.qWait(30)
+        qtbot.wait(30)
         dialog._custom.setChecked(False)
-        QTest.qWait(30)
+        qtbot.wait(30)
     finally:
         qInstallMessageHandler(previous_handler)
         dialog.close()

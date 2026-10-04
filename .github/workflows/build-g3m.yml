@@ -17,11 +17,11 @@ on:
         required: false
         type: string
       archive_name_linux_x64:
-        description: "Archive name for Linux x64 (e.g., G3M-Linux-x86_64-3.4.0)"
+        description: "Archive name for Linux x64 (e.g., G3M-Linux-x86_64-3.4.1)"
         required: false
         type: string
       archive_name_linux_arm64:
-        description: "Archive name for Linux arm64 (e.g., G3M-Linux-arm64-3.4.0)"
+        description: "Archive name for Linux arm64 (e.g., G3M-Linux-arm64-3.4.1)"
         required: false
         type: string
       archive_name_macos_x64:
@@ -33,19 +33,19 @@ on:
         required: false
         type: string
       archive_name_windows_x64:
-        description: "Archive name for Windows x64 Portable (e.g., G3M-Windows-x86_64-3.4.0)"
+        description: "Archive name for Windows x64 Portable (e.g., G3M-Windows-x86_64-3.4.1)"
         required: false
         type: string
       archive_name_windows_x64_setup:
-        description: "Archive name for Windows x64 Setup (e.g., G3M-Windows-x86_64-Setup-3.4.0)"
+        description: "Archive name for Windows x64 Setup (e.g., G3M-Windows-x86_64-Setup-3.4.1)"
         required: false
         type: string
       archive_name_windows_arm64:
-        description: "Archive name for Windows arm64 Portable (e.g., G3M-Windows-arm64-3.4.0)"
+        description: "Archive name for Windows arm64 Portable (e.g., G3M-Windows-arm64-3.4.1)"
         required: false
         type: string
       archive_name_windows_arm64_setup:
-        description: "Archive name for Windows arm64 Setup (e.g., G3M-Windows-arm64-Setup-3.4.0)"
+        description: "Archive name for Windows arm64 Setup (e.g., G3M-Windows-arm64-Setup-3.4.1)"
         required: false
         type: string
 
@@ -177,7 +177,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip wheel
-          python -m pip install ".[build,test]"
+          python -m pip install ".[build,test,dev]"
 
       - name: Build bundled G3MTool
         uses: actions/setup-dotnet@v6
@@ -215,6 +215,14 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path src\assets\bin\unrar | Out-Null
           Copy-Item "builds\assets\bin\UnRAR.exe" "src\assets\bin\unrar\UnRAR.exe"
+
+      - name: Check code and run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ruff check src tests catalog builds
+          basedpyright
+          pytest
 
       - name: Generate .env file
         shell: pwsh

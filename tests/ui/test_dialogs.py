@@ -11,7 +11,7 @@ from zipfile import ZipFile
 from PyQt6.QtCore import QMimeData, QModelIndex, Qt, QUrl
 from PyQt6.QtGui import QDropEvent, QTextCursor, QTextDocument
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QDialog, QLabel, QPushButton
+from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QWidget
 
 EXPECTED_DIALOG_WIDTH = 1145
 
@@ -235,6 +235,7 @@ class TestModPriorityStepsDialog:
         model = dialog._step_lists[0].model()
         changes.assert_not_called()
 
+        assert model is not None
         assert model.moveRows(QModelIndex(), 0, 1, QModelIndex(), 2)
 
         changes.assert_called_once_with([["second", "first"]])
@@ -483,7 +484,9 @@ class TestPizzaOvenConversionDialog:
         assert dialog is not None
         assert isinstance(dialog, QDialog)
         assert dialog.windowTitle() == tr("dialogs.po_convert_title")
+        assert dialog.start_button is not None
         assert dialog.start_button.text() == tr("buttons.start_po_convert")
+        assert dialog.cancel_button is not None
         assert dialog.cancel_button.text() == tr("dialogs.cancel")
         _close_dialog(qapp, dialog)
 
@@ -619,10 +622,10 @@ class TestReadmeUi:
         dialog = ModReadmeDialog(app_state, "Test Mod", [f"{archive}/Guide.md"])
         tab = dialog._tabs.widget(0)
 
-        assert "Archive guide" in tab.viewer.toPlainText()
-        assert tab._temporary_directory is not None
+        assert "Archive guide" in vars(tab)["viewer"].toPlainText()
+        assert vars(tab)["_temporary_directory"] is not None
         _close_dialog(qapp, dialog)
-        assert tab._temporary_directory is None
+        assert vars(tab)["_temporary_directory"] is None
 
     def test_mod_readme_dialog_shows_unlisted_files_only_on_request(
         self, qapp, app_state, tmp_path
@@ -660,7 +663,7 @@ class TestReadmeUi:
 
         dialog = ModReadmeDialog(app_state, "Test Mod", [str(readme_path)])
         tab = dialog._tabs.widget(0)
-        block = tab.viewer.document().begin()
+        block = vars(tab)["viewer"].document().begin()
         sizes = []
         anchors = []
         cursor = QTextCursor(block)
@@ -695,7 +698,7 @@ class TestReadmeUi:
         dialog = ModReadmeDialog(app_state, "Test Mod", [str(readme_path)])
         tab = dialog._tabs.widget(0)
 
-        assert tab.viewer.toPlainText() == "Sigma\nanother sigma\nthird sigma"
+        assert vars(tab)["viewer"].toPlainText() == "Sigma\nanother sigma\nthird sigma"
         _close_dialog(qapp, dialog)
 
     def test_mod_readme_markdown_accepts_escaped_heading_marks(
@@ -710,7 +713,7 @@ class TestReadmeUi:
         dialog = ModReadmeDialog(app_state, "Test Mod", [str(readme_path)])
         tab = dialog._tabs.widget(0)
 
-        assert tab.viewer.toPlainText() == "Sigma\nanother sigma"
+        assert vars(tab)["viewer"].toPlainText() == "Sigma\nanother sigma"
         _close_dialog(qapp, dialog)
 
     def test_mod_readme_markdown_preserves_heading_levels_and_fenced_code(
@@ -740,7 +743,7 @@ class TestReadmeUi:
         dialog = ModReadmeDialog(app_state, "Test Mod", [str(readme_path)])
         tab = dialog._tabs.widget(0)
         levels = []
-        block = tab.viewer.document().begin()
+        block = vars(tab)["viewer"].document().begin()
         while block.isValid():
             level = block.blockFormat().headingLevel()
             if level:
@@ -748,7 +751,7 @@ class TestReadmeUi:
             block = block.next()
 
         assert levels == [1, 2, 3, 4, 5, 6]
-        assert "\\### not a heading" in tab.viewer.toPlainText()
+        assert "\\### not a heading" in vars(tab)["viewer"].toPlainText()
         _close_dialog(qapp, dialog)
 
     def test_mod_readme_markdown_renders_common_inline_formatting(
@@ -765,7 +768,7 @@ class TestReadmeUi:
 
         dialog = ModReadmeDialog(app_state, "Test Mod", [str(readme_path)])
         tab = dialog._tabs.widget(0)
-        document = tab.viewer.document()
+        document = vars(tab)["viewer"].document()
 
         assert document.find("bold").charFormat().fontWeight() > 400
         assert document.find("italic").charFormat().fontItalic()
@@ -783,9 +786,9 @@ class TestReadmeUi:
 
         dialog = ModReadmeDialog(app_state, "Test Mod", [str(readme_path)])
         tab = dialog._tabs.widget(0)
-        cursor = tab.viewer.document().find("HTML")
+        cursor = vars(tab)["viewer"].document().find("HTML")
 
-        assert tab.viewer.toPlainText() == "Guide\nRendered HTML"
+        assert vars(tab)["viewer"].toPlainText() == "Guide\nRendered HTML"
         assert cursor.charFormat().fontWeight() > 400
         _close_dialog(qapp, dialog)
 
@@ -812,13 +815,13 @@ class TestReadmeUi:
         qapp.processEvents()
 
         resource_url = QUrl.fromLocalFile(str(image_path))
-        resource = tab.viewer.document().resource(
+        resource = vars(tab)["viewer"].document().resource(
             QTextDocument.ResourceType.ImageResource,
             resource_url,
         )
         assert not resource.isNull()
         assert resource.width() == 12
-        assert "Debug Mode Controls" in tab.viewer.toPlainText()
+        assert "Debug Mode Controls" in vars(tab)["viewer"].toPlainText()
         _close_dialog(qapp, dialog)
 
     def test_mod_readme_html_loads_remote_image_from_local_file(
@@ -856,11 +859,12 @@ class TestReadmeUi:
             dialog = ModReadmeDialog(app_state, "Remote", [str(readme_path)])
             tab = dialog._tabs.widget(0)
             wait = cast(Callable[[int], None], QTest.qWait)
+            resource = QImage()
             for _ in range(20):
                 qapp.processEvents()
                 wait(25)
 
-                resource = tab.viewer.document().resource(
+                resource = vars(tab)["viewer"].document().resource(
                     QTextDocument.ResourceType.ImageResource,
                     QUrl(url),
                 )
@@ -895,7 +899,7 @@ class TestReadmeUi:
             qapp.processEvents()
             wait(30)
         tab = dialog._tabs.widget(0)
-        html = tab.viewer.toHtml()
+        html = vars(tab)["viewer"].toHtml()
 
         assert str(image_path).replace("\\", "/") in html
         _close_dialog(qapp, dialog)
@@ -915,7 +919,7 @@ class TestReadmeUi:
 
         dialog = ModReadmeDialog(app_state, "Test Mod", [str(readme_path)])
         tab = dialog._tabs.widget(0)
-        document = tab.viewer.document()
+        document = vars(tab)["viewer"].document()
 
         assert document.find("Title").block().blockFormat().headingLevel() == 1
         assert document.find("bold").charFormat().fontWeight() > 400
@@ -940,7 +944,7 @@ class TestReadmeUi:
         qapp.processEvents()
         tab = dialog._tabs.widget(1)
 
-        assert tab.viewer.document().defaultStyleSheet().strip() == ""
+        assert vars(tab)["viewer"].document().defaultStyleSheet().strip() == ""
         _close_dialog(qapp, dialog)
 
     def test_mod_readme_pdf_loads_in_pdf_viewer(self, qapp, app_state, tmp_path):
@@ -967,8 +971,8 @@ class TestReadmeUi:
         dialog = ModReadmeDialog(app_state, "Test Mod", [str(readme_path)])
         tab = dialog._tabs.widget(0)
 
-        assert isinstance(tab.pdf_viewer, QPdfView)
-        assert tab._pdf_document.pageCount() == 1
+        assert isinstance(vars(tab)["pdf_viewer"], QPdfView)
+        assert vars(tab)["_pdf_document"].pageCount() == 1
         _close_dialog(qapp, dialog)
 
     def test_mod_readme_pdf_error_shows_loading_error(self, qapp, app_state, tmp_path):
@@ -982,9 +986,9 @@ class TestReadmeUi:
         dialog = ModReadmeDialog(app_state, "Test Mod", [str(readme_path)])
         tab = dialog._tabs.widget(0)
 
-        assert tab.pdf_viewer.isHidden()
-        assert not tab.pdf_error_label.isHidden()
-        assert tab.pdf_error_label.text() == tr("status.loading_error")
+        assert vars(tab)["pdf_viewer"].isHidden()
+        assert not vars(tab)["pdf_error_label"].isHidden()
+        assert vars(tab)["pdf_error_label"].text() == tr("status.loading_error")
         _close_dialog(qapp, dialog)
 
     def test_mod_summary_panel_uses_localized_info_button(self, qapp, app_state):
@@ -1000,7 +1004,7 @@ class TestReadmeUi:
         panel.apply_theme()
         assert panel.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         assert panel._scroll.testAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        assert panel._scroll.viewport().testAttribute(
+        assert cast(QWidget, panel._scroll.viewport()).testAttribute(
             Qt.WidgetAttribute.WA_StyledBackground
         )
         panel.deleteLater()
@@ -1028,6 +1032,7 @@ class TestReadmeUi:
 
         dialog = ProfileManagerDialog(profile_service, app_state)
         item_widget = dialog.list_widget.itemWidget(dialog.list_widget.item(0))
+        assert item_widget is not None
         detail_label = item_widget.findChild(QLabel, "profileDetailLabel")
 
         assert "3 mods for DELTARUNE" in detail_label.text()
@@ -1066,7 +1071,7 @@ class TestReadmeUi:
         event = SimpleNamespace(accepted=False)
         event.mimeData = lambda: mime
         event.source = lambda: None
-        event.acceptProposedAction = lambda: setattr(event, "accepted", True)
+        event.acceptProposedAction = lambda: vars(event).__setitem__("accepted", True)
         with patch("ui.dialogs.profile_manager_dialog.QMessageBox.information"):
             dialog.list_widget.dropEvent(cast(QDropEvent, event))
         assert event.accepted is True
@@ -1141,9 +1146,9 @@ class TestReadmeUi:
         event = SimpleNamespace(accepted=False)
         event.mimeData = lambda: mime
         event.source = lambda: None
-        event.acceptProposedAction = lambda: setattr(event, "accepted", True)
-        event.ignore = lambda: setattr(event, "accepted", False)
-        dialog.dropEvent(event)
+        event.acceptProposedAction = lambda: vars(event).__setitem__("accepted", True)
+        event.ignore = lambda: vars(event).__setitem__("accepted", False)
+        dialog.dropEvent(cast(QDropEvent, event))
         game_id = dialog._current_game()
         assert event.accepted is True
         actual_first_path = manager.import_game_version_from_file.call_args_list[0].args[1]
@@ -1201,7 +1206,7 @@ class TestReadmeUi:
         )
         imported_files = []
         imported_urls = []
-        dialog._import_from_path = lambda path, version_name=None, prompt_for_name=True: imported_files.append((path, prompt_for_name)) or dialog._process_next_import()
+        vars(dialog)["_import_from_path"] = lambda path, version_name=None, prompt_for_name=True: imported_files.append((path, prompt_for_name)) or dialog._process_next_import()
         dialog._start_url_worker = lambda url, version_name=None, prompt_for_name=True: imported_urls.append((url, prompt_for_name)) or dialog._process_next_import()
 
         mime = QMimeData()
@@ -1217,9 +1222,9 @@ class TestReadmeUi:
         event = SimpleNamespace(accepted=False)
         event.mimeData = lambda: mime
         event.source = lambda: None
-        event.acceptProposedAction = lambda: setattr(event, "accepted", True)
-        event.ignore = lambda: setattr(event, "accepted", False)
-        dialog.dropEvent(event)
+        event.acceptProposedAction = lambda: vars(event).__setitem__("accepted", True)
+        event.ignore = lambda: vars(event).__setitem__("accepted", False)
+        dialog.dropEvent(cast(QDropEvent, event))
         assert event.accepted is True
         assert [(os.path.normpath(path), flag) for path, flag in imported_files] == [(os.path.normpath(str(first)), False), (os.path.normpath(str(second)), False)]
         assert imported_urls == [

@@ -63,7 +63,6 @@ class WindowComposition:
             )
         window.mod_service.progress_updated.connect(window.set_progress_signal.emit)
         window.mod_service.status_changed.connect(window.update_status_signal.emit)
-        window.mod_service.url_prompt_required.connect(window._handle_url_install_prompt)
         window.game_launcher.status_changed.connect(window.update_status_signal.emit)
         window.game_launcher.progress_updated.connect(window.set_progress_signal.emit)
         window.game_launcher.game_launch_started.connect(

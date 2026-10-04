@@ -1,10 +1,10 @@
 """Builds the Library tab UI."""
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from PyQt6.QtCore import QObject, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QIcon
 from PyQt6.QtWidgets import (
     QWIDGETSIZE_MAX,
     QCheckBox,
@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -73,23 +74,27 @@ class _DropAreaWidget(QWidget):
             and any(url.isLocalFile() for url in mime.urls())
         )
 
-    def dragEnterEvent(self, e):
+    def dragEnterEvent(self, a0):
+        e = cast(QDragEnterEvent, a0)
         if self._is_external_file_drag(e):
             e.acceptProposedAction()
         else:
             e.ignore()
 
-    def dragMoveEvent(self, e):
+    def dragMoveEvent(self, a0):
+        e = cast(QDragMoveEvent, a0)
         if self._is_external_file_drag(e):
             e.acceptProposedAction()
         else:
             e.ignore()
 
-    def dropEvent(self, e):
-        if self._is_external_file_drag(e):
+    def dropEvent(self, a0):
+        e = cast(QDropEvent, a0)
+        mime = e.mimeData()
+        if mime is not None and self._is_external_file_drag(e):
             paths = [
                 normalize_local_path(u.toLocalFile())
-                for u in e.mimeData().urls()
+                for u in mime.urls()
                 if u.isLocalFile()
             ]
             if paths:
@@ -102,7 +107,7 @@ class _DropAreaWidget(QWidget):
 class LibraryTabBuilder(QObject):
     def __init__(self, app_state, parent=None) -> None:
         super().__init__(parent)
-        self.app_state, self.parent, self.widgets = app_state, parent, {}
+        self.app_state, self.parent_window, self.widgets = app_state, parent, {}
         self._library_actions_widget = None
         self._library_filters_layout = None
         self._library_controls_layout = None
@@ -382,7 +387,7 @@ class LibraryTabBuilder(QObject):
             )
             if getattr(mods_cont, "_library_layout_margin_key", None) != margin_key:
                 m_layout.setContentsMargins(*margin_key)
-                mods_cont._library_layout_margin_key = margin_key
+                vars(mods_cont)["_library_layout_margin_key"] = margin_key
             apply_stylesheet_if_changed(
                 scroll,
                 f"""QScrollArea {{ background-color: transparent; border: none; }}{scrollbar_qss}""",
@@ -406,15 +411,15 @@ class LibraryTabBuilder(QObject):
                     != viewport_margin_key
                 ):
                     scroll.setViewportMargins(*viewport_margin_key)
-                    scroll._library_viewport_margin_key = viewport_margin_key
+                    vars(scroll)["_library_viewport_margin_key"] = viewport_margin_key
             except (AttributeError, TypeError):
                 logger.exception(
                     "LibraryTabBuilder: setViewportMargins failed for viewport_inset=%s",
                     viewport_inset,
                 )
-            scroll._library_inner_clip_key = clip_key
+            vars(scroll)["_library_inner_clip_key"] = clip_key
 
-        mods_cont._inner_clip_callback = _apply_inner_clip
+        vars(mods_cont)["_inner_clip_callback"] = _apply_inner_clip
         install_scroll_area_update_handlers(
             scroll, _apply_inner_clip, "library_viewport_clip"
         )
@@ -545,7 +550,7 @@ class LibraryTabBuilder(QObject):
             search_btn.setVisible(show_search)
         current_parent = actions.parentWidget()
         if current_parent and current_parent.layout():
-            current_parent.layout().removeWidget(actions)
+            cast(QLayout, current_parent.layout()).removeWidget(actions)
         insert_index = (
             self._library_controls_aux_insert_index
             if target_layout is self._library_controls_layout

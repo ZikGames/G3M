@@ -7,7 +7,6 @@ from typing import Protocol
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
-    QDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -25,6 +24,7 @@ from PyQt6.QtWidgets import (
 from services.blocklist_service import BlocklistManager
 from services.localization_service import tr
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     get_dialog_theme_values,
 )
@@ -40,7 +40,7 @@ class _GameEntryLike(Protocol):
     def display_name(self) -> str: ...
 
 
-class BlocklistDialog(QDialog):
+class BlocklistDialog(DynamicDialog):
     blocklist_changed = pyqtSignal()
 
     def __init__(
@@ -151,15 +151,15 @@ class BlocklistDialog(QDialog):
 
     def apply_theme(self):
         parent = self.parent()
-        if parent and hasattr(parent, "app_state") and parent.app_state:
-            theme = get_dialog_theme_values(parent.app_state)
+        if parent and hasattr(parent, "app_state") and getattr(parent, "app_state", None):
+            theme = get_dialog_theme_values(getattr(parent, "app_state", None))
             bg_color = theme["background"]
             border_color = theme["border"]
             text_color = theme["main_text"]
             select_color = theme["hover"]
             br = theme["border_radius"]
-            self.setStyleSheet(
-                build_dialog_theme_stylesheet(parent.app_state)
+            self.set_theme_stylesheet(
+                build_dialog_theme_stylesheet(getattr(parent, "app_state", None))
                 + f"""
                 QComboBox {{
                     border: 2px solid {border_color};

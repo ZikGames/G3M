@@ -101,13 +101,13 @@ def test_launch_notifies_plugins_when_the_game_starts(qapp, tmp_path):
     game_root = tmp_path / "game"
     game_root.mkdir()
     parent = QObject()
-    parent.plugin_runtime_service = Mock()
+    vars(parent)["plugin_runtime_service"] = Mock()
     launcher = GameLauncher(_app_state(tmp_path, game_root), Mock(), Mock(), parent)
     launcher._commit_permanent_operation = Mock()
 
     launcher._on_game_process_detected(False)
 
-    parent.plugin_runtime_service.execute_hook.assert_called_once_with(
+    vars(parent)["plugin_runtime_service"].execute_hook.assert_called_once_with(
         "after_game_started", False
     )
 
@@ -255,19 +255,19 @@ def test_launch_can_apply_a_checked_dependency_arrangement(qapp, tmp_path):
     feedback = Mock()
     feedback.ask_relation_arrangement.return_value = "apply"
     parent = QObject()
-    parent.used_mods_service = Mock()
+    vars(parent)["used_mods_service"] = Mock()
     main_mod = SimpleNamespace(id="main")
     base_mod = SimpleNamespace(id="base")
-    parent.used_mods_service.get_mod_steps.return_value = [[main_mod, base_mod]]
+    vars(parent)["used_mods_service"].get_mod_steps.return_value = [[main_mod, base_mod]]
     launcher = GameLauncher(_app_state(tmp_path, game_root), feedback, service, parent)
 
     assert launcher._offer_operation_relation_recommendations(
         {"deltarune": [main_mod, base_mod]}, {"deltarune": [[main_mod, base_mod]]}
     )
-    parent.used_mods_service.set_mod_steps.assert_called_once_with(
+    vars(parent)["used_mods_service"].set_mod_steps.assert_called_once_with(
         "deltarune", [[base_mod, main_mod]], save_state=False
     )
-    parent.used_mods_service.save_used_mods_state.assert_called_once()
+    vars(parent)["used_mods_service"].save_used_mods_state.assert_called_once()
 
 
 def test_launch_can_activate_an_installed_operation_dependency(qapp, tmp_path):
@@ -287,10 +287,10 @@ def test_launch_can_activate_an_installed_operation_dependency(qapp, tmp_path):
     feedback = Mock()
     feedback.ask_dependency_activation.return_value = "activate"
     parent = QObject()
-    parent.used_mods_service = Mock()
+    vars(parent)["used_mods_service"] = Mock()
     main_mod = SimpleNamespace(id="main")
     base_mod = SimpleNamespace(id="base")
-    parent.used_mods_service.get_mod_steps.return_value = [[main_mod]]
+    vars(parent)["used_mods_service"].get_mod_steps.return_value = [[main_mod]]
     app_state = _app_state(tmp_path, game_root)
     app_state.all_mods = [main_mod, base_mod]
     launcher = GameLauncher(app_state, feedback, service, parent)
@@ -298,10 +298,10 @@ def test_launch_can_activate_an_installed_operation_dependency(qapp, tmp_path):
     assert launcher._offer_dependency_activation(
         {"deltarune": [main_mod]}, {"deltarune": [[main_mod]]}
     )
-    parent.used_mods_service.set_mod_steps.assert_called_once_with(
+    vars(parent)["used_mods_service"].set_mod_steps.assert_called_once_with(
         "deltarune", [[main_mod, base_mod]], save_state=False
     )
-    parent.used_mods_service.save_used_mods_state.assert_called_once()
+    vars(parent)["used_mods_service"].save_used_mods_state.assert_called_once()
 
 
 def test_launch_resolves_missing_gamebanana_and_inactive_dependencies_together(
@@ -323,10 +323,10 @@ def test_launch_resolves_missing_gamebanana_and_inactive_dependencies_together(
     feedback = Mock()
     feedback.ask_dependency_resolution.return_value = "resolve"
     parent = QObject()
-    parent.used_mods_service = Mock()
+    vars(parent)["used_mods_service"] = Mock()
     main_mod = SimpleNamespace(id="main")
     base_mod = SimpleNamespace(id="base")
-    parent.used_mods_service.get_mod_steps.return_value = [[main_mod]]
+    vars(parent)["used_mods_service"].get_mod_steps.return_value = [[main_mod]]
     app_state = _app_state(tmp_path, game_root)
     app_state.all_mods = [main_mod, base_mod]
     launcher = GameLauncher(app_state, feedback, service, parent)
@@ -337,14 +337,17 @@ def test_launch_resolves_missing_gamebanana_and_inactive_dependencies_together(
     assert not launcher._offer_dependency_activation(
         {"deltarune": [main_mod]}, {"deltarune": [[main_mod]]}
     )
-    parent.used_mods_service.set_mod_steps.assert_called_once_with(
+    vars(parent)["used_mods_service"].set_mod_steps.assert_called_once_with(
         "deltarune", [[main_mod, base_mod]], save_state=False
     )
     launcher._start_dependency_resolution.assert_called_once_with(
         {"gb_mod_123"}, "deltarune"
     )
+    assert launcher._pending_dependency_launch is not None
     assert launcher._pending_dependency_launch["mode"] is LaunchMode.KEEP_CHANGES
+    assert launcher._pending_dependency_launch is not None
     assert launcher._pending_dependency_launch["pre_hooks_done"] is True
+    assert launcher._pending_dependency_launch is not None
     assert launcher._pending_dependency_launch["download_scopes"] == {
         "deltarune": {"gb_mod_123"}
     }
@@ -406,10 +409,10 @@ def test_launch_restarts_duplicate_dependency_download_install(
     parent = QObject()
     manager = Mock()
     manager.enqueue.return_value = ("record-id", True)
-    parent.downloads_manager = manager
+    vars(parent)["downloads_manager"] = manager
     launcher = GameLauncher(_app_state(tmp_path, game_root), Mock(), Mock(), parent)
     source_thread = object()
-    launcher._dependency_resolution_thread = source_thread
+    vars(launcher)["_dependency_resolution_thread"] = source_thread
     launcher._pending_dependency_launch = {
         "selections": {},
         "failures": {},
@@ -445,12 +448,12 @@ def test_dependency_downloads_pin_the_originating_profile_mod_root(
     parent = QObject()
     manager = Mock()
     manager.enqueue.return_value = ("record-id", True)
-    parent.downloads_manager = manager
+    vars(parent)["downloads_manager"] = manager
     app_state = _app_state(tmp_path, game_root)
     app_state.mods_dir = str(profile_root)
     launcher = GameLauncher(app_state, Mock(), Mock(), parent)
     source_thread = object()
-    launcher._dependency_resolution_thread = source_thread
+    vars(launcher)["_dependency_resolution_thread"] = source_thread
     launcher._pending_dependency_launch = {
         "selections": {},
         "failures": {},
@@ -505,7 +508,7 @@ def test_launch_keeps_manual_dependency_visible_after_automatic_downloads(
         str(tmp_path / "installed") if mod_id == "gb_mod_123" else None
     )
     parent = QObject()
-    parent.used_mods_service = Mock()
+    vars(parent)["used_mods_service"] = Mock()
     main_mod = SimpleNamespace(id="main")
     other_mod = SimpleNamespace(id="other")
     downloaded_mod = SimpleNamespace(id="gb_mod_123")
@@ -531,7 +534,7 @@ def test_launch_keeps_manual_dependency_visible_after_automatic_downloads(
 
     assert launcher._pending_dependency_launch["manual_ids"] == {"manual_dependency"}
     assert "manual_dependency" in launcher._resume_pending_dependency_launch.call_args.args[0]
-    parent.used_mods_service.set_mod_steps.assert_called_once_with(
+    vars(parent)["used_mods_service"].set_mod_steps.assert_called_once_with(
         "deltarune", [[main_mod, downloaded_mod]], save_state=False
     )
 

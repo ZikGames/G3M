@@ -5,14 +5,21 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
 
 from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtGui import QFont, QTextCharFormat, QTextCursor
+from PyQt6.QtGui import (
+    QCloseEvent,
+    QFont,
+    QPalette,
+    QTextCharFormat,
+    QTextCursor,
+    QTextDocument,
+)
 from PyQt6.QtPdf import QPdfDocument
 from PyQt6.QtPdfWidgets import QPdfView
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -26,8 +33,10 @@ from PyQt6.QtWidgets import (
 from config.config import MOD_README_HEADING_FONT_FACTORS
 from services.localization_service import tr
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     get_dialog_theme_values,
+    scale_stylesheet,
 )
 from ui.common.rich_html import set_rich_html
 from utils.mod.archive import (
@@ -59,15 +68,35 @@ def _normalize_markdown_source(content: str) -> str:
     return "".join(lines)
 
 
-def _normalize_markdown_heading_formats(viewer: QTextBrowser) -> None:
-    document = viewer.document()
+def _normalize_markdown_formats(viewer: QTextBrowser) -> None:
+    viewer.ensurePolished()
+    document = cast(QTextDocument, viewer.document())
     base_size = document.defaultFont().pointSizeF()
+    if base_size <= 0:
+        pixel_size = document.defaultFont().pixelSize()
+        if pixel_size > 0:
+            base_size = pixel_size * 72 / viewer.logicalDpiY()
     if base_size <= 0:
         base_size = viewer.font().pointSizeF()
     if base_size <= 0:
         base_size = 9.0
     block = document.begin()
     while block.isValid():
+        anchors = []
+        iterator = block.begin()
+        while not iterator.atEnd():
+            fragment = iterator.fragment()
+            if fragment.charFormat().isAnchor():
+                anchors.append((fragment.position(), fragment.length()))
+            iterator += 1
+        for position, length in anchors:
+            cursor = QTextCursor(document)
+            cursor.setPosition(position)
+            cursor.setPosition(position + length, QTextCursor.MoveMode.KeepAnchor)
+            fmt = QTextCharFormat()
+            fmt.setForeground(viewer.palette().color(QPalette.ColorRole.Text))
+            fmt.setFontUnderline(True)
+            cursor.mergeCharFormat(fmt)
         level = block.blockFormat().headingLevel()
         if level:
             cursor = QTextCursor(block)
@@ -81,13 +110,17 @@ def _normalize_markdown_heading_formats(viewer: QTextBrowser) -> None:
         block = block.next()
 
 
-class _ReadmeTab(QWidget):
+class ReadmeFileViewer(QWidget):
+    """Lazy document viewer shared by INFO and manual installation."""
+
     def __init__(self, file_path: str, parent=None) -> None:
         super().__init__(parent)
         self.file_path = file_path
         self._content_file_path: str | None = None
         self._temporary_directory: TemporaryDirectory[str] | None = None
         self._loaded = False
+        self._load_error = False
+        self._content: str | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -119,6 +152,7 @@ class _ReadmeTab(QWidget):
             return
         content_path = self._resolve_content_path()
         if content_path is None:
+            self._load_error = True
             if self.viewer:
                 self.viewer.setPlainText(tr("status.loading_error"))
             elif self.pdf_viewer and self.pdf_error_label:
@@ -133,6 +167,7 @@ class _ReadmeTab(QWidget):
                 error != QPdfDocument.Error.None_
                 or self._pdf_document.status() == QPdfDocument.Status.Error
             ):
+                self._load_error = True
                 if self.pdf_error_label:
                     self.pdf_viewer.hide()
                     self.pdf_error_label.setText(tr("status.loading_error"))
@@ -142,21 +177,59 @@ class _ReadmeTab(QWidget):
             self.pdf_viewer.setDocument(self._pdf_document)
             self._loaded = True
             return
-        content = read_mod_readme(content_path)
-        if self.viewer is None:
+        try:
+            content = read_mod_readme(content_path)
+        except OSError:
+            self._load_error = True
+            if self.viewer:
+                self.viewer.setPlainText(tr("status.loading_error"))
+            self._loaded = True
             return
+        self._content = content
+        self._render_content()
+        self._loaded = True
+
+    def _render_content(self) -> None:
+        if self.viewer is None or self._content is None:
+            return
+        content = self._content
+        self.viewer.ensurePolished()
+        cast(QTextDocument, self.viewer.document()).setDefaultFont(self.viewer.font())
         if is_markdown_file(self.file_path):
             self.viewer.setMarkdown(_normalize_markdown_source(content))
-            _normalize_markdown_heading_formats(self.viewer)
+            _normalize_markdown_formats(self.viewer)
         elif is_html_file(self.file_path):
             set_rich_html(
                 self.viewer,
                 content,
-                base_path=os.path.dirname(os.path.abspath(content_path)),
+                base_path=os.path.dirname(os.path.abspath(self._content_file_path or self.file_path)),
             )
         else:
             self.viewer.setPlainText(content)
-        self._loaded = True
+
+    def relocalize_ui(self) -> None:
+        if self._load_error:
+            if self.viewer:
+                self.viewer.setPlainText(tr("status.loading_error"))
+            elif self.pdf_error_label:
+                self.pdf_error_label.setText(tr("status.loading_error"))
+
+    def apply_theme(self) -> None:
+        if self.viewer and self._content is not None:
+            cursor = self.viewer.textCursor()
+            position, anchor = cursor.position(), cursor.anchor()
+            scrollbar = self.viewer.verticalScrollBar()
+            scroll = scrollbar.value() if scrollbar else 0
+            self._render_content()
+            cursor = self.viewer.textCursor()
+            cursor.setPosition(anchor)
+            cursor.setPosition(position, QTextCursor.MoveMode.KeepAnchor)
+            self.viewer.setTextCursor(cursor)
+            if scrollbar:
+                scrollbar.setValue(scroll)
+
+    def rescale_ui(self) -> None:
+        self.apply_theme()
 
     def unload_content(self) -> None:
         if self.viewer:
@@ -168,6 +241,8 @@ class _ReadmeTab(QWidget):
             self._temporary_directory = None
         self._content_file_path = None
         self._loaded = False
+        self._load_error = False
+        self._content = None
 
     def dispose(self) -> None:
         self.unload_content()
@@ -201,7 +276,7 @@ class _ReadmeTab(QWidget):
         return self._content_file_path
 
 
-class ModReadmeDialog(QDialog):
+class ModReadmeDialog(DynamicDialog):
     """Tabbed README viewer with lazy per-tab loading."""
 
     def __init__(
@@ -273,7 +348,7 @@ class ModReadmeDialog(QDialog):
         self._current_index = -1
         while self._tabs.count():
             tab = self._tabs.widget(0)
-            if isinstance(tab, _ReadmeTab):
+            if isinstance(tab, ReadmeFileViewer):
                 tab.dispose()
             self._tabs.removeTab(0)
             if tab is not None:
@@ -293,7 +368,7 @@ class ModReadmeDialog(QDialog):
             label = os.path.basename(file_path)
             if basename_counts[label] > 1:
                 label = os.path.relpath(file_path, common_root) if common_root else file_path
-            tab = _ReadmeTab(file_path, self._tabs)
+            tab = ReadmeFileViewer(file_path, self._tabs)
             self._tabs.addTab(tab, label)
         self._sync_empty_state()
         if self._tabs.count():
@@ -305,12 +380,12 @@ class ModReadmeDialog(QDialog):
             return
         if 0 <= self._current_index < self._tabs.count():
             old_tab = self._tabs.widget(self._current_index)
-            if isinstance(old_tab, _ReadmeTab):
+            if isinstance(old_tab, ReadmeFileViewer):
                 old_tab.unload_content()
         self._current_index = index
         if 0 <= index < self._tabs.count():
             new_tab = self._tabs.widget(index)
-            if isinstance(new_tab, _ReadmeTab):
+            if isinstance(new_tab, ReadmeFileViewer):
                 new_tab.load_content()
 
     def refresh_theme(self) -> None:
@@ -339,7 +414,7 @@ class ModReadmeDialog(QDialog):
                 color: {theme["secondary_text"]};
             }}
         """
-        self.setStyleSheet(
+        self.set_theme_stylesheet(
             build_dialog_theme_stylesheet(self._app_state)
             + f"""
             QLabel {{
@@ -386,8 +461,8 @@ class ModReadmeDialog(QDialog):
         self._title_label.setObjectName("readmeTitle")
         for index in range(self._tabs.count()):
             tab = self._tabs.widget(index)
-            if isinstance(tab, _ReadmeTab) and tab.viewer and is_markdown_file(tab.file_path):
-                tab.viewer.document().setDefaultStyleSheet(markdown_css)
+            if isinstance(tab, ReadmeFileViewer) and tab.viewer and is_markdown_file(tab.file_path):
+                cast(QTextDocument, tab.viewer.document()).setDefaultStyleSheet(scale_stylesheet(markdown_css, self._app_state))
 
     def relocalize_ui(self) -> None:
         self.setWindowTitle(tr("dialogs.readme_viewer_title", mod_name=self._mod_name))
@@ -404,13 +479,15 @@ class ModReadmeDialog(QDialog):
     def _unload_tabs(self) -> None:
         for index in range(self._tabs.count()):
             tab = self._tabs.widget(index)
-            if isinstance(tab, _ReadmeTab):
+            if isinstance(tab, ReadmeFileViewer):
                 tab.dispose()
 
-    def done(self, result: int) -> None:
+    def done(self, a0: int) -> None:
+        result = a0
         self._unload_tabs()
         super().done(result)
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, a0) -> None:
+        event = cast(QCloseEvent, a0)
         self._unload_tabs()
         super().closeEvent(event)

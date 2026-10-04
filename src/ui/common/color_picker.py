@@ -1,5 +1,7 @@
 """Color picker utilities for QColorDialog customization."""
 
+from typing import cast
+
 from PyQt6.QtCore import QEvent, QObject
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import QColorDialog
@@ -23,7 +25,8 @@ class BlackColorPickerEventFilter(QObject):
         super().__init__(dialog)
         self._dialog = dialog
 
-    def eventFilter(self, watched, event):
+    def eventFilter(self, a0, a1):
+        event = cast(QEvent, a1)
         if event.type() == QEvent.Type.MouseButtonPress and is_pure_black_color(
             self._dialog.currentColor()
         ):

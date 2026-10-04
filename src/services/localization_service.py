@@ -280,7 +280,7 @@ class LocalizationManager:
             logger.error(f"Error loading language {language_code}: {e}")
             return False
 
-    def _resolve_key(self, source: dict, key: str, **kwargs) -> str | None:
+    def _resolve_key(self, source: dict, key: str, /, **kwargs) -> str | None:
         """Traverse nested dict by dotted key, process and format. Returns None on miss."""
         value = source
         try:

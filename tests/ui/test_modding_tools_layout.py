@@ -1,10 +1,18 @@
+
+from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
-from PyQt6.QtCore import QPoint
-from PyQt6.QtWidgets import QScrollArea
+from PyQt6.QtCore import QPoint, QRect, Qt
+from PyQt6.QtWidgets import QDialog, QLayout, QLayoutItem, QScrollArea
 
-from ui.dialogs.modding_tools_dialog import _DiffTab, _MergeTab, _PatchTab
+from ui.dialogs.modding_tools_dialog import (
+    ModdingToolsDialog,
+    _DiffTab,
+    _MergeTab,
+    _PatchTab,
+)
 
 
 @pytest.mark.parametrize("tab_type", [_MergeTab, _PatchTab])
@@ -33,5 +41,24 @@ def test_diff_tab_places_full_report_above_centered_compare(qtbot, app_state):
     tab.resize(1000, 500)
     tab.show()
 
-    assert tab.layout().itemAt(0).widget() is tab._full_report_cb
+    assert cast(QLayoutItem, cast(QLayout, tab.layout()).itemAt(0)).widget() is tab._full_report_cb
     assert abs(tab._run_btn.geometry().center().x() - tab.rect().center().x()) <= 1
+
+
+
+def test_modding_tools_tabs_and_actions_fit_small_screen(qtbot, app_state, monkeypatch):
+    available = QRect(0, 0, 800, 600)
+    monkeypatch.setattr(QDialog, "screen", lambda _self: SimpleNamespace(availableGeometry=lambda: available))
+    dialog = ModdingToolsDialog(Mock(), app_state)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert dialog.width() <= available.width()
+    assert dialog.height() <= available.height()
+    for index in range(dialog._tabs.count()):
+        dialog._tabs.setCurrentIndex(index)
+        page = dialog._tabs.currentWidget()
+        assert page is not None
+        assert page.isVisible()
+        assert dialog._close_btn.visibleRegion().boundingRect() == dialog._close_btn.rect()
+    qtbot.mouseClick(dialog._close_btn, Qt.MouseButton.LeftButton)
+    assert not dialog.isVisible()

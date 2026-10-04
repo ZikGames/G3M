@@ -2,10 +2,11 @@
 
 import logging
 import os
+from typing import cast
 
 from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -21,6 +22,7 @@ from PyQt6.QtWidgets import (
 from models.download_models import DownloadRecord, SourceKind, TargetKind
 from services.localization_service import tr
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     get_dialog_text_color,
     get_dialog_theme_values,
@@ -82,7 +84,7 @@ class _RecordWidget(QFrame):
         self._error_label.setVisible(False)
         layout.addWidget(self._error_label)
         self._btn_row = QHBoxLayout()
-        self._btn_row.setSpacing(6)
+        self._btn_row.setSpacing(8)
         self._btn_row.addStretch()
         self._buttons: dict[str, QPushButton] = {}
         for key, tr_key in self._BUTTON_KEYS:
@@ -184,7 +186,7 @@ class _RecordWidget(QFrame):
         self._refresh()
 
 
-class DownloadsDialog(QDialog):
+class DownloadsDialog(DynamicDialog):
     """Non-modal dialog listing all download records with actions."""
 
     def __init__(self, manager, app_state, parent=None) -> None:
@@ -286,14 +288,15 @@ class DownloadsDialog(QDialog):
                 border-radius: 3px;
             }}
         """
-        self.setStyleSheet(base + extra)
+        self.set_theme_stylesheet(base + extra)
 
     def _connect_signals(self):
         self._manager.record_added.connect(self._on_record_added)
         self._manager.record_updated.connect(self._on_record_updated)
         self._manager.record_removed.connect(self._on_record_removed)
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
+        event = cast(QCloseEvent, a0)
         self._manager.record_added.disconnect(self._on_record_added)
         self._manager.record_updated.disconnect(self._on_record_updated)
         self._manager.record_removed.disconnect(self._on_record_removed)
@@ -353,13 +356,21 @@ class DownloadsDialog(QDialog):
         for w in self._record_widgets.values():
             w.relocalize_ui()
 
-    def dragEnterEvent(self, event):
+    def dragEnterEvent(self, a0):
+        event = cast(QDragEnterEvent, a0)
         md = event.mimeData()
+        if md is None:
+            event.ignore()
+            return
         if md.hasUrls() or md.hasText():
             event.acceptProposedAction()
 
-    def dropEvent(self, event):
+    def dropEvent(self, a0):
+        event = cast(QDropEvent, a0)
         md = event.mimeData()
+        if md is None:
+            event.ignore()
+            return
         accepted = False
         if md.hasUrls():
             for u in md.urls():

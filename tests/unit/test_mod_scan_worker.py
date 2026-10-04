@@ -28,7 +28,7 @@ class _FailingSignal:
 
 def test_mod_scan_worker_suppresses_early_emit_failure(caplog, tmp_path):
     worker = ModScanThread(str(tmp_path), parent=_Parent())
-    worker.scan_completed = _FailingSignal()
+    vars(worker)["scan_completed"] = _FailingSignal()
 
     worker.run()
 

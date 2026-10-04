@@ -162,6 +162,29 @@ class _SaveManagerWidgetController:
             widget.updateGeometry()
             widget.update()
 
+    def refresh_language(self) -> None:
+        for name, key in (
+            ("save_back_btn", "ui.back_button"),
+            ("change_save_path_btn", "buttons.change_save_path"),
+            ("rename_collection_btn", "buttons.rename_collection"),
+            ("delete_collection_btn", "buttons.delete_collection"),
+            ("copy_from_main_btn", "buttons.copy_from_main"),
+            ("copy_to_main_btn", "buttons.copy_to_main"),
+            ("edit_btn", "buttons.edit"),
+            ("show_btn", "buttons.show"),
+            ("erase_btn", "buttons.erase"),
+            ("import_btn", "buttons.import"),
+            ("export_btn", "buttons.export"),
+        ):
+            self.widgets[name].setText(self.tr(key))
+        tabs = self.widgets["save_tabs"]
+        for index in range(tabs.count()):
+            tabs.setTabText(index, self.tr("ui.chapter_tab_title", chapter_num=index + 1))
+            for slot, (_, text) in self.save_manager.refresh_save_slots_data(index + 1).items():
+                self.widgets["slot_labels"][index + 1, slot].setText(text)
+        self._update_collection_ui()
+        self._update_action_bar()
+
     def _update_collection_ui(self) -> None:
         ui_state = self.save_manager.get_collection_ui_state()
         in_collection = ui_state["in_collection"]
@@ -281,13 +304,17 @@ class DRSaveManagerPlugin:
         self._context = context
 
     def _tr(self):
+        if self._context is None:
+            raise RuntimeError("plugin has not been loaded")
         return self._context.localization_service.get_plugin_tr("deltarune_save_manager")
 
     def _save_manager_instance(self, parent=None):
+        if self._context is None:
+            raise RuntimeError("plugin has not been loaded")
         if self._save_manager is not None:
             return self._save_manager
         module = _load_local_module("save_manager.py", "g3m_plugin_save_manager")
-        module.tr = self._tr()
+        vars(module)["tr"] = self._tr()
         self._save_manager = module.SaveManager(
             self._context.app_state,
             self._context.feedback_service,
@@ -302,7 +329,7 @@ class DRSaveManagerPlugin:
             "save_manager_view_builder.py",
             "g3m_plugin_save_manager_view_builder",
         )
-        builder_module.tr = self._tr()
+        vars(builder_module)["tr"] = self._tr()
         builder = builder_module.SaveManagerViewBuilder(ui_context.app_state, parent)
         widget = builder.build()
         save_manager = self._save_manager_instance(parent)
@@ -323,6 +350,12 @@ class DRSaveManagerPlugin:
         controller = getattr(self._ui_widget, "_plugin_controller", None)
         if controller is not None:
             controller.refresh_theme()
+
+    def on_language_changed(self, context, *_args):
+        if self._ui_widget is not None:
+            controller = getattr(self._ui_widget, "_plugin_controller", None)
+            if controller is not None:
+                controller.refresh_language()
 
     def on_shortcut_dialog(self, context, shortcut_context, *_args):
         if not shortcut_context.matches_game(allowed={"deltarune"}):

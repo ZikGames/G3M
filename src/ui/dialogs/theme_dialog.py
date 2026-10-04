@@ -1,13 +1,14 @@
 """Dialog for theme management and import actions."""
 
-from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from config.settings_schema import DEFAULT_APP_SETTINGS
 from services.localization_service import tr
+from ui.common.dialog_theme import DynamicDialog
 from ui.common.styling import get_border_radius
 
 
-class ThemeManagementDialog(QDialog):
+class ThemeManagementDialog(DynamicDialog):
     def __init__(self, parent_widget, theme_controller) -> None:
         super().__init__(parent_widget)
         self.theme_controller = theme_controller

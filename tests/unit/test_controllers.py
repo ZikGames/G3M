@@ -6,6 +6,7 @@ import tempfile
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -202,7 +203,7 @@ def test_mod_update_badge_hides_when_no_updates_are_available():
     worker = object()
     button = Mock()
     controller = GameLaunchController.__new__(GameLaunchController)
-    controller._mod_update_worker = worker
+    vars(controller)["_mod_update_worker"] = worker
     controller._mod_update_dialog = None
     controller._automatic_update_profiles = None
     controller.app = SimpleNamespace(update_mods_button=button)
@@ -219,7 +220,7 @@ def test_mod_update_badge_stays_available_during_automatic_updates():
     worker = object()
     button = Mock()
     controller = GameLaunchController.__new__(GameLaunchController)
-    controller._mod_update_worker = worker
+    vars(controller)["_mod_update_worker"] = worker
     controller._mod_update_dialog = None
     controller._automatic_update_profiles = None
     controller.app = SimpleNamespace(update_mods_button=button)
@@ -308,14 +309,16 @@ def test_gamebanana_install_keeps_upload_timestamp_and_constructs_file_url():
         SimpleNamespace(downloads_manager=downloads, search_display=Mock()),
     )
     controller._enqueue_gamebanana_download(
-        SimpleNamespace(id="gb_mod_42", name="Example", version="1.0"),
-        {"id": 88, "name": "mod.zip", "_tsDateAdded": 12345},
+        SimpleNamespace(id="gb_mod_42", name="Example", version="1.0", game_version="1.08"),
+        {"id": 88, "name": "mod.zip", "_tsDateAdded": 12345, "version": "0.9"},
     )
 
     queued = downloads.enqueue_with_feedback.call_args.kwargs
     assert queued["source_url"] == "https://gamebanana.com/dl/88"
     assert queued["metadata"]["timestamp"] == 12345
     assert queued["metadata"]["gb_file_id"] == 88
+    assert queued["metadata"]["game_version"] == "1.08"
+    assert queued["metadata"]["version"] == "0.9"
 
 
 def test_mod_update_profile_change_does_not_interrupt_an_active_batch():
@@ -627,7 +630,7 @@ class TestLibraryDisplayController:
         )
         controller.refresh_async = Mock()
         controller.update_mod_widgets_active_status = Mock()
-        controller._last_render_signature = (
+        vars(controller)["_last_render_signature"] = (
             controller._current_view_signature(),
             (("mod_id",),),
         )
@@ -663,7 +666,7 @@ class TestLibraryDisplayController:
             app_window=app_window,
         )
         controller.refresh_async = Mock()
-        controller._last_render_signature = (
+        vars(controller)["_last_render_signature"] = (
             controller._current_view_signature(),
             (("mod_id",),),
         )
@@ -704,16 +707,18 @@ class TestLibraryDisplayController:
             used_mods_service=Mock(),
             app_window=app_window,
         )
-        controller._last_render_signature = (1,)
+        vars(controller)["_last_render_signature"] = (1,)
 
         controller.refresh_async()
 
         assert controller._last_render_signature is None
 
     def test_library_display_refresh_async_accepts_non_qobject_controller_parent(
-        self, app_state, feedback_service
+        self, app_state, feedback_service, qtbot, qapp
     ):
         """Checks that library display refresh async accepts non qobject controller parent."""
+        from PyQt6.QtCore import QThread
+
         from controllers.library_display_controller import LibraryDisplayController
 
         app_window = Mock()
@@ -728,18 +733,26 @@ class TestLibraryDisplayController:
             used_mods_service=Mock(),
             app_window=app_window,
         )
-        controller.update_display_from_list = Mock()
+        delivered_threads = []
+        installed_mods = [{"id": "installed-mod"}]
+        display_callback = Mock(
+            side_effect=lambda _mods: delivered_threads.append(QThread.currentThread())
+        )
+        controller.update_display_from_list = display_callback
 
         def _slow_scan():
             time.sleep(0.2)
-            return []
+            return installed_mods
 
         mod_service.get_installed_mods_list.side_effect = _slow_scan
         controller.refresh_async()
 
         assert app_window._installed_scan_thread is not None
-        controller.update_display_from_list.assert_not_called()
+        display_callback.assert_not_called()
         app_window._installed_scan_thread.wait(1000)
+        qtbot.waitUntil(lambda: display_callback.called)
+        display_callback.assert_called_once_with(installed_mods)
+        assert delivered_threads == [qapp.thread()]
 
     def test_library_display_clears_summary_when_selected_mod_disappears(
         self, app_state, feedback_service
@@ -1750,7 +1763,7 @@ class TestSearchDisplayController:
         )
         controller._mod_list_column_count = Mock(return_value=3)
         controller._sync_mod_grid_metrics = Mock(return_value=True)
-        controller._iter_layout_cards = lambda: iter(cards)
+        vars(controller)["_iter_layout_cards"] = lambda: iter(cards)
         controller._maybe_load_more_for_short_viewport = Mock()
         controller._update_virtual_visibility = Mock()
         host.show()
@@ -2264,7 +2277,7 @@ class TestThemeController:
         assert app_window._last_tooltip_size_key is None
 
     def test_apply_theme_refreshes_open_version_dialogs(
-        self, app_state, feedback_service
+        self, app_state, feedback_service, qtbot
     ):
         """Checks that applying theme refreshes open version dialogs."""
         from PyQt6.QtWidgets import QApplication as RealQApplication
@@ -2275,14 +2288,13 @@ class TestThemeController:
         settings_service.is_valid_hex_color = lambda x: bool(x and x.startswith("#"))
         customization_service = Mock()
         app_window = _build_theme_test_window()
-        app_window._game_versions_dialog = Mock()
-        app_window._game_versions_dialog.refresh_theme = Mock()
-        app_window._mod_versions_dialog = Mock()
-        app_window._mod_versions_dialog.refresh_theme = Mock()
-        app_window._downloads_dialog = Mock()
-        app_window._downloads_dialog.refresh_theme = Mock()
-        app_window._modding_tools_dialog = Mock()
-        app_window._modding_tools_dialog.refresh_theme = Mock()
+        from PyQt6.QtWidgets import QWidget
+
+        for attr in ("_game_versions_dialog", "_mod_versions_dialog", "_downloads_dialog", "_modding_tools_dialog"):
+            dialog = QWidget()
+            qtbot.addWidget(dialog)
+            vars(dialog)["refresh_theme"] = Mock()
+            setattr(app_window, attr, dialog)
         with (
             patch(
                 "controllers.theme_controller.DEFAULT_THEME",
@@ -3107,3 +3119,25 @@ def test_modpack_step_plans_do_not_add_unrelated_chapters(
     controller.on_create_modpack_button_click()
 
     assert set(created) == {"deltarune_1"}
+
+
+
+@pytest.mark.parametrize("status", ["ready_to_use", "needs_manual_install", "failed", "cancelled"])
+def test_mod_update_queue_advances_once_for_each_completed_record(qtbot, status):
+    from controllers.game_launch_controller import GameLaunchController
+
+    controller = GameLaunchController.__new__(GameLaunchController)
+    QObject.__init__(controller)
+    batch = {"id": "batch", "record_id": "first", "completed": 0, "manual": [], "failed": []}
+    controller._mod_update_batch = batch
+    controller._start_next_mod_update = Mock()
+    record = SimpleNamespace(id="first", metadata={"update_batch_id": "batch"},
+                             use_status=status, ever_installed=status == "ready_to_use", display_name="First mod")
+    controller._on_mod_update_record(record)
+    controller._on_mod_update_record(record)
+    qtbot.waitUntil(lambda: cast(Mock, controller._start_next_mod_update).called)
+    controller._start_next_mod_update.assert_called_once()
+    assert batch["completed"] == 1
+    assert batch["record_id"] is None
+    assert batch["manual"] == (["First mod"] if status == "needs_manual_install" else [])
+    assert batch["failed"] == (["First mod"] if status in {"failed", "cancelled"} else [])

@@ -144,12 +144,12 @@ class _ScopeTracker(ast.NodeVisitor):
                 for alias in stmt.names:
                     n = alias.asname or alias.name
                     cond_imports.setdefault(n, []).append((stmt.lineno, block_node))
-            if hasattr(stmt, "body") and isinstance(stmt.body, list):
-                self._collect_imports_from(stmt.body, cond_imports, block_node)
-            if hasattr(stmt, "orelse") and isinstance(stmt.orelse, list):
-                self._collect_imports_from(stmt.orelse, cond_imports, block_node)
+            if hasattr(stmt, "body") and isinstance(getattr(stmt, "body", None), list):
+                self._collect_imports_from(getattr(stmt, "body", None), cond_imports, block_node)
+            if hasattr(stmt, "orelse") and isinstance(getattr(stmt, "orelse", None), list):
+                self._collect_imports_from(getattr(stmt, "orelse", None), cond_imports, block_node)
             if hasattr(stmt, "handlers"):
-                for h in stmt.handlers:
+                for h in getattr(stmt, "handlers", []):
                     self._collect_imports_from(h.body, cond_imports, block_node)
 
     @staticmethod

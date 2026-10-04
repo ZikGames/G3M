@@ -1,8 +1,10 @@
 """Unit tests for G3M tool diff viewer safety."""
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QApplication
 
 from ui.dialogs.g3mtool_diff_viewer import DiffViewerDialog
@@ -20,7 +22,7 @@ def test_diff_viewer_close_question_failure_keeps_dialog_open(tmp_path, monkeypa
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("dialog deleted")),
     )
 
-    dialog.closeEvent(event)
+    dialog.closeEvent(cast(QCloseEvent, event))
 
     event.ignore.assert_called_once_with()
     event.accept.assert_not_called()

@@ -271,6 +271,7 @@ class UseWorker(ManagedQThread):
     def _install_g3m_mod(self, content_path: str, gb_metadata: dict) -> bool:
         staging_root = ""
         previous_mod_dir = ""
+        target_mod_dir = ""
         try:
             from config.config import MOD_CONFIG_FILENAME
             from utils.file_utils import sanitize_filename

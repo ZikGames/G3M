@@ -2425,6 +2425,7 @@ class GameLauncher(QObject):
             return None
         self.launch_transaction = LaunchTransaction()
         self.launch_transaction.transition(LaunchState.RECOVERING)
+        journal = None
         try:
             journal = ModOperationJournal.load(journal_root)
             if journal.state not in {"restored", "retired"}:
@@ -2439,14 +2440,14 @@ class GameLauncher(QObject):
             resolve = getattr(self.feedback_service, "ask_operation_recovery_conflict", None)
             choice = resolve(str(error)) if callable(resolve) else "cancel"
             try:
-                if choice == "force":
+                if choice == "force" and journal is not None:
                     journal.restore(force=True)
                     self.launch_transaction.transition(LaunchState.COMPLETED)
                     self._safe_feedback_status(
                         tr("status.files_restored"), UI_COLORS["status_success"]
                     )
                     return True
-                if choice == "keep":
+                if choice == "keep" and journal is not None:
                     journal.retire()
                     self.launch_transaction.transition(LaunchState.COMPLETED)
                     self._safe_feedback_status(

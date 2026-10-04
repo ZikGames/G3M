@@ -96,8 +96,8 @@ def test_plugin_runtime_returns_only_validated_community_feeds():
         {"id": "updates", "label": "Updates", "url": "https://example.com/rss"},
         PluginCommunityFeed("bad url", "Unsafe", "http://example.com/rss"),
         {"id": "missing", "label": "", "url": "https://example.com/rss"},
-        PluginCommunityFeed(1, "Unsafe", "https://example.com/rss"),
-        PluginCommunityFeed("unsafe", "Unsafe", None),
+        PluginCommunityFeed(1, "Unsafe", "https://example.com/rss"),  # pyright: ignore[reportArgumentType] - intentionally malformed plugin input
+        PluginCommunityFeed("unsafe", "Unsafe", None),  # pyright: ignore[reportArgumentType] - intentionally malformed plugin input
     ]
     runtime._installed = {"news_plugin": record}
     runtime._instances = {"news_plugin": plugin}
@@ -119,9 +119,9 @@ def test_plugin_runtime_skips_launch_actions_with_non_string_text_fields():
     plugin = Mock()
     plugin.get_launch_actions.return_value = [
         PluginLaunchAction("refresh", "Refresh", "Refresh plugin data."),
-        PluginLaunchAction(1, "Unsafe", ""),
-        PluginLaunchAction("unsafe_label", None, ""),
-        PluginLaunchAction("unsafe_description", "Unsafe", None),
+        PluginLaunchAction(1, "Unsafe", ""),  # pyright: ignore[reportArgumentType] - intentionally malformed plugin input
+        PluginLaunchAction("unsafe_label", None, ""),  # pyright: ignore[reportArgumentType] - intentionally malformed plugin input
+        PluginLaunchAction("unsafe_description", "Unsafe", None),  # pyright: ignore[reportArgumentType] - intentionally malformed plugin input
     ]
     runtime._installed = {"news_plugin": record}
     runtime._instances = {"news_plugin": plugin}
@@ -143,7 +143,7 @@ def test_plugin_runtime_returns_and_updates_validated_launch_options():
     plugin = Mock()
     plugin.get_launch_options.return_value = [
         PluginLaunchOption("save_slot", "Use save slot", checked=True),
-        PluginLaunchOption("invalid", "Invalid", checked="yes"),
+        PluginLaunchOption("invalid", "Invalid", checked="yes"),  # pyright: ignore[reportArgumentType] - intentionally malformed plugin input
     ]
     runtime._installed = {"save_plugin": record}
     runtime._instances = {"save_plugin": plugin}
@@ -331,7 +331,9 @@ def test_plugin_catalog_service_uses_in_memory_cache(temp_dir):
     catalog = service.load_catalog()
 
     assert catalog["plugins"][0]["id"] == "cached_plugin"
-    assert service.get_entry("cached_plugin").name == "Cached"
+    entry = service.get_entry("cached_plugin")
+    assert entry is not None
+    assert entry.name == "Cached"
 
 
 def test_catalog_skips_malformed_records_and_preserves_themes_on_partial_refresh(temp_dir):
@@ -369,6 +371,7 @@ def test_removed_plugin_capabilities_are_incompatible_before_loading(tmp_path, h
     assert record.status == "installed"
     assert record.compatible is False
     assert record.error == tr("plugins.error_incompatible_api", plugin="legacy_plugin")
+    assert record.manifest is not None
     assert record.manifest.hooks == [hook]
     assert "legacy_plugin" not in runtime._instances
     assert runtime.get_settings_widget("legacy_plugin") is None
@@ -429,10 +432,14 @@ def test_incompatible_required_plugin_cannot_satisfy_dependency(tmp_path):
     assert "transitive_plugin" not in runtime._instances
     for plugin_id in ("dependent_plugin", "transitive_plugin"):
         record = runtime.get_plugin(plugin_id)
+        assert record is not None
         assert record.status == "broken"
+        assert record is not None
         assert not record.enabled
+        assert record is not None
         assert record.error == tr("plugins.error_missing_dependencies", plugin=plugin_id)
         runtime.disable_plugin(plugin_id, persist=False)
+        assert record is not None
         assert record.status == "broken"
     assert runtime.enable_plugin("transitive_plugin")[0] is False
 
@@ -961,6 +968,8 @@ def test_plugin_runtime_context_uses_plugin_scoped_feedback(temp_dir, monkeypatc
     box.setStandardButtons = Mock()
     box.setDefaultButton = Mock()
     box.exec = Mock(return_value=1)
+    box.set_localized_title = lambda key, **kwargs: box.setWindowTitle(box.translator(key, **kwargs))
+    box.localize = lambda setter, key, **kwargs: setter(box.translator(key, **kwargs))
     factory = Mock(return_value=box)
     factory.Icon = feedback_module.QMessageBox.Icon
     factory.StandardButton = feedback_module.QMessageBox.StandardButton
