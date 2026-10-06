@@ -5,6 +5,9 @@ from __future__ import annotations
 import importlib.util
 import os
 
+from PyQt6 import sip
+from PyQt6.QtCore import QObject, pyqtSlot
+
 from ui.common.styling import (
     apply_stylesheet_if_changed,
     get_border_radius,
@@ -34,12 +37,13 @@ class _PluginApiAdapter:
         self._settings.set(key, value)
 
 
-class _SaveManagerWidgetController:
+class _SaveManagerWidgetController(QObject):
     def __init__(self, app_state, save_manager, widgets, tr_func) -> None:
+        super().__init__(widgets['save_manager_widget'])
         self.app_state = app_state
         self.save_manager = save_manager
         self.widgets = widgets
-        self.tr = tr_func
+        self._tr = tr_func
         self._hovered_slot = None
         self._connect()
         self.refresh_slots()
@@ -135,6 +139,7 @@ class _SaveManagerWidgetController:
         if selected and self.save_manager.action_import_export(*selected, is_import):
             self.refresh_slots()
 
+    @pyqtSlot()
     def refresh_slots(self) -> None:
         if not self.save_manager.find_and_validate_save_path():
             return
@@ -176,10 +181,10 @@ class _SaveManagerWidgetController:
             ("import_btn", "buttons.import"),
             ("export_btn", "buttons.export"),
         ):
-            self.widgets[name].setText(self.tr(key))
+            self.widgets[name].setText(self._tr(key))
         tabs = self.widgets["save_tabs"]
         for index in range(tabs.count()):
-            tabs.setTabText(index, self.tr("ui.chapter_tab_title", chapter_num=index + 1))
+            tabs.setTabText(index, self._tr("ui.chapter_tab_title", chapter_num=index + 1))
             for slot, (_, text) in self.save_manager.refresh_save_slots_data(index + 1).items():
                 self.widgets["slot_labels"][index + 1, slot].setText(text)
         self._update_collection_ui()
@@ -189,9 +194,9 @@ class _SaveManagerWidgetController:
         ui_state = self.save_manager.get_collection_ui_state()
         in_collection = ui_state["in_collection"]
         self.widgets["switch_collection_btn"].setText(
-            self.tr("buttons.additional_slots")
+            self._tr("buttons.additional_slots")
             if not in_collection
-            else self.tr("dialogs.main_slots")
+            else self._tr("dialogs.main_slots")
         )
         self.widgets["left_col_btn"].setEnabled(ui_state["can_navigate_left"])
         self.widgets["right_col_btn"].setEnabled(ui_state["can_navigate_right"])
@@ -284,7 +289,7 @@ QFrame#slot_row_{chapter}_{slot} {{
         editor_module = _load_local_module(
             "save_editor.py", "g3m_plugin_save_editor"
         )
-        dialog = editor_module.SaveEditorDialog(file_path, self.app_state, self.save_manager.parent_widget, self.tr)
+        dialog = editor_module.SaveEditorDialog(file_path, self.app_state, self.save_manager.parent_widget, self._tr)
         if dialog.exec():
             self.refresh_slots()
 
@@ -345,14 +350,14 @@ class DRSaveManagerPlugin:
         return widget
 
     def on_theme_changed(self, context, *_args):
-        if self._ui_widget is None:
+        if self._ui_widget is None or sip.isdeleted(self._ui_widget):
             return
         controller = getattr(self._ui_widget, "_plugin_controller", None)
         if controller is not None:
             controller.refresh_theme()
 
     def on_language_changed(self, context, *_args):
-        if self._ui_widget is not None:
+        if self._ui_widget is not None and not sip.isdeleted(self._ui_widget):
             controller = getattr(self._ui_widget, "_plugin_controller", None)
             if controller is not None:
                 controller.refresh_language()
@@ -389,8 +394,12 @@ class DRSaveManagerPlugin:
         ]
 
     def on_before_mod_apply(self, context, *_args):
+        if getattr(getattr(context.app_state, 'game_mode', None), 'game_id', '') != 'deltarune':
+            return True
         manager = self._save_manager_instance()
-        collection_idx = manager.prompt_for_save_collection_on_launch()
+        collection_idx = manager.prompt_for_save_collection_on_launch(
+            getattr(context, 'task_runtime', None)
+        )
         if collection_idx is None:
             return False
         if collection_idx != -1:

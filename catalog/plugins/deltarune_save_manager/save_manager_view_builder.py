@@ -59,30 +59,38 @@ class _SlotRowFrame(QFrame):
         super().mouseDoubleClickEvent(ev)
 
 
-class _SlotHeightSyncMixin(QLabel):
+class _SlotHeightSyncMixin:
     def _sync_slot_height(self) -> None:
+        label = cast(QLabel, self)
         row = getattr(self, "_slot_row", None)
         if row is None:
             return
-        line_count = max(1, self.text().count("\n") + 1)
+        line_count = max(1, label.text().count("\n") + 1)
         vertical_padding = 16
-        target_height = max(self.sizeHint().height(), self.fontMetrics().lineSpacing() * line_count + vertical_padding)
-        self.setFixedHeight(target_height)
-        row.setFixedHeight(target_height)
-        row.updateGeometry()
-        self.updateGeometry()
+        target_height = max(label.sizeHint().height(), label.fontMetrics().lineSpacing() * line_count + vertical_padding)
+        if label.minimumHeight() != target_height or label.maximumHeight() != target_height:
+            label.setFixedHeight(target_height)
+        if row.minimumHeight() != target_height or row.maximumHeight() != target_height:
+            row.setFixedHeight(target_height)
 
     def _schedule_slot_height_sync(self) -> None:
-        QTimer.singleShot(0, self._sync_slot_height)
+        timer = getattr(self, '_height_sync_timer', None)
+        if timer is None:
+            timer = QTimer(cast(QLabel, self))
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._sync_slot_height)
+            self._height_sync_timer = timer
+        if not timer.isActive():
+            timer.start(0)
 
     def setText(self, a0: str | None) -> None:  # noqa: N802 - PyQt6 method override must use camelCase
         text = a0
-        super().setText(text)
+        cast(QLabel, super()).setText(text)
         self._schedule_slot_height_sync()
 
     def event(self, e):
         ev = cast(QEvent, e)
-        result = super().event(ev)
+        result = cast(QLabel, super()).event(ev)
         if ev is not None and ev.type() in {
             QEvent.Type.Show,
             QEvent.Type.Polish,

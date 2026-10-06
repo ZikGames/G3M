@@ -3,18 +3,23 @@ import os
 import re
 import shutil
 import tempfile
+from threading import Event
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
+    QApplication,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QVBoxLayout,
 )
 
 from config.config import UI_COLORS
 from models.game_modes import get_game
+from ui.common.dialog_theme import DynamicDialog
 from utils.native_integration import get_open_file_name, open_path_native
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,7 @@ def _load_save_utils():
 
 
 class SaveManager(QObject):
+    _collection_prompt_requested = pyqtSignal(object)
     slots_updated = pyqtSignal()
     status_changed = pyqtSignal(str, str)
     collection_ui_update_needed = pyqtSignal()
@@ -55,6 +61,10 @@ class SaveManager(QObject):
         self._current_collection_idx = -1
         self._selected_slot = None
         self._backup_info = {}
+        app = QApplication.instance()
+        if app is not None and self.thread() != app.thread():
+            self.moveToThread(app.thread())
+        self._collection_prompt_requested.connect(self._show_collection_prompt)
 
     @staticmethod
     def _has_save_data(path: str) -> bool:
@@ -555,7 +565,7 @@ class SaveManager(QObject):
             collection_name = cols[idx].rsplit('_', 1)[0]
         return {'in_collection': in_col, 'collection_name': collection_name, 'can_navigate_left': in_col and idx > 0, 'can_navigate_right': in_col, 'has_collections': len(cols) > 0}
 
-    def prompt_for_save_collection_on_launch(self) -> int | None:
+    def prompt_for_save_collection_on_launch(self, task_runtime=None) -> int | None:
         if not self.save_path:
             self.find_and_validate_save_path()
         if not self._is_usable_save_path(self.save_path):
@@ -563,20 +573,81 @@ class SaveManager(QObject):
         cols = self.list_collections()
         if not cols:
             return -1
-        choices = [tr('dialogs.main_slots')]
-        for col_folder in cols:
-            col_name = col_folder.rsplit('_', 1)[0]
-            choices.append(col_name)
-        choice, ok = QInputDialog.getItem(self.parent_widget, tr('dialogs.select_save_collection'), tr('dialogs.select_save_collection_question'), choices, 0, False)
-        if not ok:
-            return None
-        if choice == tr('dialogs.main_slots'):
-            return -1
-        for idx, col_folder in enumerate(cols):
-            col_name = col_folder.rsplit('_', 1)[0]
-            if col_name == choice:
-                return idx
-        return -1
+        app = QApplication.instance()
+        if app is None:
+            raise RuntimeError('Save collection selection requires a GUI application')
+        worker = QThread.currentThread()
+        if worker is None:
+            raise RuntimeError('Save collection selection requires a Qt thread')
+        cancelled = Event()
+        request = {
+            'collections': cols,
+            'done': Event(),
+            'result': None,
+            'cancelled': lambda: (
+                cancelled.is_set() or worker.isInterruptionRequested()
+                or bool(task_runtime and task_runtime.is_cancelled())
+            ),
+        }
+        if worker == app.thread():
+            self._show_collection_prompt(request)
+        else:
+            self._collection_prompt_requested.emit(request)
+            while not request['done'].wait(0.05):
+                if request['cancelled']():
+                    cancelled.set()
+                    return None
+        if error := request.get('error'):
+            raise error
+        return request['result']
+
+    @pyqtSlot(object)
+    def _show_collection_prompt(self, request) -> None:
+        dialog = None
+        timer = None
+        try:
+            if request['cancelled']():
+                return
+            dialog = DynamicDialog(self.parent_widget)
+            dialog._app_state = self.app_state
+            dialog.translator = tr
+            dialog.set_localized_title('dialogs.select_save_collection')
+            layout = QVBoxLayout(dialog)
+            question = dialog.localize_text(
+                QLabel(dialog), 'dialogs.select_save_collection_question'
+            )
+            question.setWordWrap(True)
+            layout.addWidget(question)
+            choices = QComboBox(dialog)
+            choices.addItem('', -1)
+            dialog.localize(
+                lambda text: choices.setItemText(0, text),
+                'dialogs.main_slots', owner=choices,
+            )
+            for idx, folder in enumerate(request['collections']):
+                choices.addItem(folder.rsplit('_', 1)[0], idx)
+            layout.addWidget(choices)
+            buttons = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+                dialog,
+            )
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addWidget(buttons)
+            timer = QTimer(dialog)
+            timer.timeout.connect(lambda: dialog.reject() if request['cancelled']() else None)
+            timer.start(100)
+            dialog.apply_theme()
+            if dialog.exec() == QDialog.DialogCode.Accepted and not request['cancelled']():
+                request['result'] = choices.currentData()
+        except Exception as error:
+            request['error'] = error
+        finally:
+            if timer is not None:
+                timer.stop()
+            if dialog is not None:
+                dialog.deleteLater()
+            request['done'].set()
 
     def apply_collection_saves_for_launch(self, collection_idx: int) -> dict:
         save_utils = _load_save_utils()

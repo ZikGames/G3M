@@ -62,6 +62,7 @@ skip_covered = true
 show_missing = true
 
 [tool.ruff]
+extend-include = ["*.spec"]
 target-version = "py314"
 src = ["src", "tests"]
 
