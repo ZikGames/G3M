@@ -1,3 +1,30 @@
+### Version 3.4.1 — 04.10.26 - Y114
+
+- **Manual installation improvements**
+
+    - Configure files from downloaded archives or local folders in one window before saving. G3M fills in available GameBanana information, including the description and icon.
+    - G3M checks `.xdelta` and `.g3mpatch` files against the selected game's installation and data folders, including subfolders, and fills in a destination after a successful check. Game files stay untouched during this check. Switching games repeats the check and preserves your choices for files with no confirmed match.
+    - Select multiple files to set their actions and destinations together. **Browse** selects destination files or folders and fills in the appropriate folder reference automatically.
+    - Expand folders to configure individual files, or choose an action for a whole folder. **Copy / Replace** copies a file or replaces the selected destination; **Extract** places a folder's or archive's contents into a destination folder or a supported writable archive.
+    - **Hide configured files** leaves only files that still need a choice. G3M remembers this option between installations and restarts.
+    - **Files and instructions** lets you read TXT, Markdown, HTML, and PDF files while configuring the mod, or open a file in your system's default application.
+    - Choose an action for every file or folder before saving. **Skip** keeps it in the mod without installing it. **Save** checks your setup and adds the mod to the Library. Hover over a disabled save button to see why saving is unavailable.
+    - If an xdelta or G3MPatch cannot be verified against the selected game files, **Save** offers a warning. You can save the mod anyway or cancel to change its configuration.
+    - **Save and configure** adds the mod and opens Mod Editor for further customization.
+
+- **Other improvements and bug fixes**
+
+    - Theme and plugin icons fit their containers without cropping or stretching out of proportion.
+    - Long patching warnings scroll while **Continue**, **Cancel**, and **Open Report** remain visible. Modding Tools and manual installation also fit smaller screens.
+    - Closing manual installation from **Continue setup** no longer reopens the setup prompt.
+    - Fixed manual installation losing available GameBanana descriptions, icons, and other mod details. The selected download's version is also preserved.
+    - Added more space between adjacent action buttons, including **Download** and **Close** in mod details.
+    - Fixed folder names ending in an archive extension being treated as archives during mod installation.
+    - Fixed URL installation failing when connecting the download worker.
+    - Manual installation is 25 pixels wider where screen space allows.
+    - Open dialogs update their language, theme, font, and scale without restarting G3M. Updates preserve entered text, selections, and operation progress.
+    - Markdown links in INFO/README files use the selected theme's text color.
+
 ### Version 3.4.0 — 01.10.26 - Y114
 
 - **System requirements update**
