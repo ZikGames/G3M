@@ -1610,7 +1610,31 @@ class TestCustomizationManager:
 class TestBackupManager:
     """Tests for managers."""
 
-    def test_backup_restoration_order(self, temp_dir):
+    def test_restore_removes_files_created_after_backup(self, tmp_path):
+        from services.backup_service import BackupManager
+
+        manager = BackupManager(str(tmp_path / "backups"))
+        created = tmp_path / "created.txt"
+        assert manager.backup_file("1", str(created))
+        created.write_text("mod file", encoding="utf-8")
+        assert manager.restore_backups("1")
+        assert not created.exists()
+
+    def test_failed_restore_preserves_target_and_backup(self, tmp_path, monkeypatch):
+        from services.backup_service import BackupManager
+
+        manager = BackupManager(str(tmp_path / "backups"))
+        target = tmp_path / "save.txt"
+        target.write_text("original", encoding="utf-8")
+        assert manager.backup_file("1", str(target))
+        target.write_text("modified", encoding="utf-8")
+        monkeypatch.setattr("services.backup_service.os.replace", Mock(side_effect=PermissionError("locked")))
+        assert not manager.restore_backups("1")
+        assert target.read_text(encoding="utf-8") == "modified"
+        assert next((tmp_path / "backups").iterdir()).read_text(encoding="utf-8") == "original"
+        assert not list(tmp_path.glob("*.g3m-restore"))
+
+    def test_backup_restoration_order(self, temp_dir, monkeypatch):
         """Checks that backup restoration order."""
         import logging
 
@@ -1635,7 +1659,10 @@ class TestBackupManager:
         for f in [file1, file2, file3]:
             with open(f, "w") as fh:
                 fh.write("modified")
-        backup_service.restore_backups(chapter_id)
+        replace = Mock(wraps=os.replace)
+        monkeypatch.setattr("services.backup_service.os.replace", replace)
+        assert backup_service.restore_backups(chapter_id)
+        assert [call.args[1] for call in replace.call_args_list] == [file3, file2, file1]
         for f in [file1, file2, file3]:
             with open(f) as fh:
                 content = fh.read()

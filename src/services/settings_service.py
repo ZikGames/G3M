@@ -432,15 +432,6 @@ class SettingsManager(QObject):
             )
             return False
 
-    def select_portproton_path(self) -> str | None:
-        filepath, _ = get_open_file_name(
-            self._dialog_parent(), tr("ui.select_portproton_path")
-        )
-        if filepath:
-            self._toggle_setting("portproton_path", filepath)
-            return filepath
-        return None
-
     def select_executable_path(self, title: str) -> str | None:
         filepath, _ = get_open_file_name(
             self._dialog_parent(),
@@ -1143,11 +1134,6 @@ class SettingsManager(QObject):
         )
         return True
 
-    def disable_direct_launch(self):
-        self.app_state.local_config["direct_launch_chapter"] = ""
-        self.write_local_config()
-        self.settings_changed.emit()
-
     def _get_saved_window_geometry_state(self) -> dict | None:
         saved = self.app_state.local_config.get("window_geometry_state")
         return saved if isinstance(saved, dict) else None
@@ -1250,18 +1236,3 @@ class SettingsManager(QObject):
         if widget is not None:
             self.save_window_geometry(widget)
         self._geometry_save_widget = None
-
-    def lock_window_size(self, widget: QWidget):
-        try:
-            sz = widget.size()
-            widget.setMinimumSize(sz)
-            widget.setMaximumSize(sz)
-        except (AttributeError, ValueError) as e:
-            logger.debug(f"lock_window_size: failed: {e}")
-
-    def unlock_window_size(self, widget: QWidget):
-        try:
-            widget.setMinimumSize(0, 0)
-            widget.setMaximumSize(16777215, 16777215)
-        except (AttributeError, ValueError) as e:
-            logger.debug(f"unlock_window_size: failed: {e}")

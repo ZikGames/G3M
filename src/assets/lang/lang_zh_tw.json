@@ -160,7 +160,6 @@
     "create_mod": "創建模組",
     "created_label": "創建時間：",
     "use_portproton": "使用PortProton代替Wine",
-    "select_portproton_path": "選擇PortProton可執行檔案",
     "delete_mod": "刪除模組",
     "descending": "降序",
     "details_button": "詳情",

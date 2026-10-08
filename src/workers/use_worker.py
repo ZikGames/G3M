@@ -103,6 +103,9 @@ class UseWorker(ManagedQThread):
                 self._safe_finish(False, False, "cancelled")
                 return
             gb_metadata = self._build_gb_metadata()
+            if self._cancelled:
+                self._safe_finish(False, False, "cancelled")
+                return
 
             from utils.file_utils import has_deltamod_info_file
 
@@ -224,7 +227,9 @@ class UseWorker(ManagedQThread):
     def _build_gb_metadata(self) -> dict:
         if not self._metadata.get("gb_mod_id"):
             return {}
-        return {
+        from adapters.gamebanana_adapter import GameBananaAPI
+
+        metadata = {
             "mod_id": self._metadata["gb_mod_id"],
             "item_type": self._metadata.get("item_type", "mod"),
             "name": self._metadata.get("name"),
@@ -239,6 +244,8 @@ class UseWorker(ManagedQThread):
             "category": self._metadata.get("category"),
             "game": self._metadata.get("game", "deltarune"),
         }
+        metadata.update(GameBananaAPI().get_install_metadata(metadata))
+        return metadata
 
     def _install_via_deltamod(self, content_path: str, gb_metadata: dict) -> bool:
         try:
@@ -462,7 +469,7 @@ class UseWorker(ManagedQThread):
             config_data["id"] = f"gb_{item_type}_{mod_id}"
         if gb_metadata.get("homepage") and not config_data.get("homepage"):
             config_data["homepage"] = gb_metadata["homepage"]
-        if gb_metadata.get("icon"):
+        if gb_metadata.get("icon") and not config_data.get("icon"):
             config_data["icon"] = gb_metadata["icon"]
         if gb_metadata.get("version"):
             config_data["version"] = str(gb_metadata["version"])

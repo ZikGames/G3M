@@ -112,6 +112,8 @@ class DeltamodConverter:
                     if os.path.basename(icon_path) == "_icon.png"
                     else "${mod_path}/icon.png"
                 )
+            elif self.gamebanana_metadata.get("icon"):
+                config_data["icon"] = self.gamebanana_metadata["icon"]
             config_path = os.path.join(target_mod_dir, "mod_config.json")
             write_mod_config(config_path, config_data)
             logger.info(

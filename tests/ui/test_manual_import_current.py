@@ -1209,6 +1209,38 @@ def test_manual_container_operations_save_execute_and_restore(
         assert sorted(path.name for path in destination.iterdir()) == ["old.bin"]
 
 
+def test_manual_music_copy_replace_saves_executes_and_restores(qtbot, manual_parent, tmp_path, monkeypatch):
+    from services.mod_operation_executor import ModOperationExecutor
+    from utils.mod.operation_plan import ModPathContext, build_mod_operation_plan
+
+    prepared, game_root = tmp_path / "prepared", tmp_path / "game"
+    prepared.mkdir()
+    game_root.mkdir()
+    (prepared / "music.ogg").write_bytes(b"OggS-new")
+    target = game_root / "music.ogg"
+    target.write_bytes(b"OggS-original")
+    game = get_game("undertale")
+    assert game is not None
+    manual_parent.app_state.local_config[game.path_config_key] = str(game_root)
+    dialog = ManualModInstallDialog(manual_parent, str(prepared), initial_game_type="undertale")
+    qtbot.addWidget(dialog)
+    dialog._stop_detection()
+    dialog._items["music.ogg"].setSelected(True)
+    assert dialog.action_combo.findData("overwrite") >= 0
+    assert dialog.action_combo.findData("extract") == -1
+    dialog._set_selected_action(dialog.action_combo.findData("overwrite"))
+    monkeypatch.setattr("ui.dialogs.manual_install.dialog.get_open_file_name", lambda *args: (str(target), ""))
+    dialog._browse_selected(folder=False)
+    assert dialog.save_button.isEnabled()
+    config, saved = _save_import(dialog, qtbot, monkeypatch)
+    assert config["files"] == [{"type": "overwrite", "source": "${mod_path}/files/music.ogg", "target": "${game_path}/music.ogg"}]
+    context = ModPathContext.create(mod_path=saved, game_path=game_root, game_data_path=None, user_path=tmp_path)
+    journal = ModOperationExecutor(tmp_path / "session").execute(build_mod_operation_plan(config, context))
+    assert target.read_bytes() == b"OggS-new"
+    journal.restore()
+    assert target.read_bytes() == b"OggS-original"
+
+
 def test_manual_mixed_selection_action_intersection_and_parent_precedence(qtbot, manual_parent, tmp_path):
     import zipfile
 

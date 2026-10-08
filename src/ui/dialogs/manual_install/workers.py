@@ -13,7 +13,6 @@ from PyQt6.QtCore import pyqtSignal
 
 from adapters.g3mtool_adapter import G3MToolManager
 from adapters.gamebanana_adapter import GameBananaAPI
-from config.config import NETWORK_TIMEOUT_SHORT
 from ui.dialogs.manual_install.detection import (
     copy_file,
     detect_operations,
@@ -209,44 +208,10 @@ class MetadataThread(ManagedQThread):
         self.metadata = dict(metadata)
 
     def run(self) -> None:
-        result = {}
         try:
-            api = GameBananaAPI()
-            is_wip = (
-                str(self.metadata.get("item_type", "mod")).strip().casefold() == "wip"
-            )
-            profile = api.get_mod_profile_page(
-                self.metadata["mod_id"],
-                itemtype="Wip" if is_wip else "Mod",
-                max_retries=0,
-                timeout=NETWORK_TIMEOUT_SHORT,
-            )
-            if isinstance(profile, dict):
-                mod = api._map_mod_data(
-                    profile, self.metadata.get("game", "deltarune"), is_wip=is_wip
-                )
-                if mod:
-                    for field, key in (
-                        ("name", "_sName"),
-                        ("description", "_sDescription"),
-                        ("version", "_sVersion"),
-                    ):
-                        if profile.get(key) and not (
-                            field == "version" and self.metadata.get("version")
-                        ):
-                            result[field] = getattr(mod, field)
-                    for field in ("homepage", "icon", "tags"):
-                        if value := getattr(mod, field):
-                            result[field] = value
-                    if isinstance(
-                        submitter := profile.get("_aSubmitter"), dict
-                    ) and submitter.get("_sName"):
-                        result["authors"] = mod.authors
-                    if mod.gamebanana_category:
-                        result["category"] = mod.gamebanana_category
+            result = GameBananaAPI().get_install_metadata(self.metadata)
         except Exception:
-            logger.warning(
-                "Could not refresh manual-install GameBanana metadata", exc_info=True
-            )
+            logger.warning("Could not initialize GameBanana metadata client", exc_info=True)
+            result = {}
         if not self.isInterruptionRequested():
             safe_emit(self.__class__.__name__, self.result_ready, result)

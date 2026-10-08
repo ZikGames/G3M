@@ -175,9 +175,6 @@ class ModUpdatesDialog(DynamicDialog):
         self._replace_current.setEnabled(not busy)
         self._update_button.setEnabled(not busy and self._tree.topLevelItemCount() > 0)
 
-    def set_error(self, message: str) -> None:
-        self._status.setText(message)
-
     def set_outcome(self, message: str) -> None:
         self._outcome.setText(message)
         self._outcome.setVisible(bool(message))

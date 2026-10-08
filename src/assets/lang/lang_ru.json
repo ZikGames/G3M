@@ -160,7 +160,6 @@
     "create_mod": "Создать мод",
     "created_label": "Создан:",
     "use_portproton": "Использовать PortProton вместо Wine",
-    "select_portproton_path": "Выбрать исполняемый файл PortProton",
     "delete_mod": "Удалить мод",
     "descending": "По убыванию",
     "details_button": "Подробнее",

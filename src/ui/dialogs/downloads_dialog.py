@@ -28,6 +28,7 @@ from ui.common.dialog_theme import (
     get_dialog_theme_values,
 )
 from ui.common.dialog_utils import safe_question
+from utils.mod.utils import parse_gamebanana_mod_url
 from utils.native_integration import open_path_native
 from utils.path_utils import colored_icon
 
@@ -392,28 +393,21 @@ class DownloadsDialog(DynamicDialog):
                         if not accepted:
                             event.acceptProposedAction()
                             accepted = True
-                        name = os.path.basename(s.split("?")[0]) or tr(
-                            "downloads.external_download"
-                        )
-                        self._manager.enqueue(
-                            display_name=name,
-                            source_kind=SourceKind.EXTERNAL_URL,
-                            target_kind=TargetKind.MOD,
-                            source_url=s,
-                        )
-        if md.hasText():
+                        self._enqueue_url(s)
+        elif md.hasText():
             text = md.text().strip()
             if text.startswith(("http://", "https://")):
                 event.acceptProposedAction()
-                name = os.path.basename(text.split("?")[0]) or tr(
-                    "downloads.external_download"
-                )
-                self._manager.enqueue(
-                    display_name=name,
-                    source_kind=SourceKind.EXTERNAL_URL,
-                    target_kind=TargetKind.MOD,
-                    source_url=text,
-                )
+                self._enqueue_url(text)
+
+    def _enqueue_url(self, url: str) -> None:
+        if parse_gamebanana_mod_url(url):
+            self._manager.parent().mod_service.install_from_url(url)
+        else:
+            self._manager.enqueue(
+                display_name=os.path.basename(url.split("?")[0]) or tr("downloads.external_download"),
+                source_kind=SourceKind.EXTERNAL_URL, target_kind=TargetKind.MOD, source_url=url,
+            )
 
     def refresh_theme(self):
         self._apply_theme()

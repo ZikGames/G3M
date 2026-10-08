@@ -1,16 +1,11 @@
 """Backup management for mod installation and restoration."""
 
-import hashlib
-import json
 import logging
 import os
 import shutil
 import tempfile
-import time
 
 from utils.file_utils import safe_remove, safe_rmtree
-
-logger = logging.getLogger(__name__)
 
 
 class BackupManager:
@@ -20,22 +15,15 @@ class BackupManager:
         self.backup_dir = backup_dir
         self.patching_logger = patching_logger or logging.getLogger(__name__)
         self.original_files: dict[str, dict[str, str | None]] = {}
-        self.added_files: dict[str, dict[str, bool]] = {}
-        self._session_manifest_path: str | None = None
-        self._modification_order: dict[str, list] = {}
-        self._deployed_state: dict[str, dict[str, str | int]] | None = None
-        self.external_changes: list[str] = []
         if backup_dir:
             os.makedirs(backup_dir, exist_ok=True)
 
     def backup_file(self, chapter_id: str, file_path: str) -> bool:
         self.original_files.setdefault(chapter_id, {})
-        self._modification_order.setdefault(chapter_id, [])
         if file_path in self.original_files[chapter_id]:
             return True
         if not os.path.exists(file_path):
             self.original_files[chapter_id][file_path] = None
-            self._modification_order[chapter_id].append(file_path)
             self.patching_logger.debug(
                 f"[BACKUP] File does not exist, will be removed on restore: {file_path} (chapter {chapter_id})"
             )
@@ -54,7 +42,6 @@ class BackupManager:
                 counter += 1
             shutil.copy2(file_path, backup_path)
             self.original_files[chapter_id][file_path] = backup_path
-            self._modification_order[chapter_id].append(file_path)
             self.patching_logger.info(
                 f"[BACKUP] Backed up file: {file_path} -> {backup_path} (chapter {chapter_id})"
             )
@@ -66,209 +53,14 @@ class BackupManager:
             )
             return False
 
-    def mark_file_added(self, chapter_id: str, file_path: str):
-        self.added_files.setdefault(chapter_id, {})[file_path] = True
-
-    def save_backups_to_manifest(self, manifest_path: str) -> bool:
-        self._session_manifest_path = manifest_path
-        temporary_path = ""
-        try:
-            manifest_data = {
-                "backup_dir": self.backup_dir,
-                "original_files": {},
-                "added_files": {},
-                "modification_order": {},
-                "deployed_state": self._deployed_state,
-            }
-            for chapter_id, files_dict in self.original_files.items():
-                manifest_data["original_files"][str(chapter_id)] = files_dict
-            for chapter_id, files_dict in self.added_files.items():
-                manifest_data["added_files"][str(chapter_id)] = list(files_dict.keys())
-            for chapter_id, file_order in self._modification_order.items():
-                manifest_data["modification_order"][str(chapter_id)] = file_order
-            manifest_dir = os.path.dirname(manifest_path) or "."
-            os.makedirs(manifest_dir, exist_ok=True)
-            descriptor, temporary_path = tempfile.mkstemp(
-                prefix=".session-", suffix=".tmp", dir=manifest_dir
-            )
-            with os.fdopen(descriptor, "w", encoding="utf-8") as f:
-                json.dump(manifest_data, f, indent=2, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temporary_path, manifest_path)
-            temporary_path = ""
-            self.patching_logger.info(
-                f"[BACKUP] Saved backup manifest to {manifest_path}"
-            )
-            return True
-        except Exception as e:
-            self.patching_logger.warning(
-                f"[BACKUP] Failed to save backup manifest: {e}"
-            )
-            return False
-        finally:
-            if temporary_path:
-                safe_remove(temporary_path)
-
-    @classmethod
-    def load_from_manifest(
-        cls, manifest_path: str, patching_logger=None
-    ) -> BackupManager:
-        """Reconstruct a BackupManager from a previously saved manifest (for crash recovery)."""
-        logger = patching_logger or logging.getLogger(__name__)
-        with open(manifest_path, encoding="utf-8") as f:
-            data = json.load(f)
-        backup_dir = data.get("backup_dir", "")
-        mgr = cls(backup_dir, patching_logger=logger)
-        mgr._session_manifest_path = manifest_path
-        for chapter_id, files_dict in data.get("original_files", {}).items():
-            mgr.original_files[chapter_id] = files_dict
-        for chapter_id, file_list in data.get("added_files", {}).items():
-            mgr.added_files[chapter_id] = dict.fromkeys(file_list, True)
-        for chapter_id, file_order in data.get("modification_order", {}).items():
-            mgr._modification_order[chapter_id] = file_order
-        deployed_state = data.get("deployed_state")
-        if isinstance(deployed_state, dict):
-            mgr._deployed_state = deployed_state
-        logger.info(
-            f"[BACKUP] Loaded backup manifest from {manifest_path} "
-            f"({sum(len(v) for v in mgr.original_files.values())} files tracked)"
-        )
-        return mgr
-
     def clear_backup_dir(self):
-        """Remove the persistent backup directory and session manifest."""
+        """Remove the backup directory and clear tracked files."""
         if self.backup_dir and os.path.isdir(self.backup_dir):
             safe_rmtree(self.backup_dir)
             self.patching_logger.info(
                 f"[BACKUP] Cleared backup directory: {self.backup_dir}"
             )
-        if self._session_manifest_path and os.path.isfile(self._session_manifest_path):
-            safe_remove(self._session_manifest_path)
-            self.patching_logger.info(
-                f"[BACKUP] Removed session manifest: {self._session_manifest_path}"
-            )
         self.original_files.clear()
-        self.added_files.clear()
-        self._modification_order.clear()
-        self._deployed_state = None
-        self.external_changes.clear()
-
-    @staticmethod
-    def _fingerprint_path(path: str) -> dict[str, str | int]:
-        if not os.path.exists(path):
-            return {"type": "missing"}
-        digest = hashlib.sha256()
-        if os.path.isfile(path):
-            with open(path, "rb") as file:
-                for chunk in iter(lambda: file.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            return {
-                "type": "file",
-                "size": os.path.getsize(path),
-                "sha256": digest.hexdigest(),
-            }
-        for root, directories, files in os.walk(path):
-            directories.sort()
-            for name in sorted(files):
-                file_path = os.path.join(root, name)
-                relative = os.path.relpath(file_path, path).replace(os.sep, "/")
-                digest.update(relative.encode("utf-8", errors="surrogatepass"))
-                with open(file_path, "rb") as file:
-                    for chunk in iter(lambda: file.read(1024 * 1024), b""):
-                        digest.update(chunk)
-        return {"type": "directory", "sha256": digest.hexdigest()}
-
-    def capture_deployed_state(self) -> bool:
-        try:
-            paths = {
-                path for files in self.original_files.values() for path in files
-            } | {path for files in self.added_files.values() for path in files}
-            self._deployed_state = {
-                path: self._fingerprint_path(path) for path in sorted(paths)
-            }
-            self.external_changes.clear()
-            if self._session_manifest_path:
-                return self.save_backups_to_manifest(self._session_manifest_path)
-            return True
-        except (OSError, ValueError) as error:
-            self.patching_logger.error(
-                "[BACKUP] Failed to fingerprint deployed files: %s", error
-            )
-            return False
-
-    def deployed_state_matches(self) -> bool:
-        self.external_changes.clear()
-        if self._deployed_state is None:
-            return True
-        originals = {
-            path: backup
-            for files in self.original_files.values()
-            for path, backup in files.items()
-        }
-        added = {path for files in self.added_files.values() for path in files}
-        for path, expected in self._deployed_state.items():
-            try:
-                current = self._fingerprint_path(path)
-                if current == expected:
-                    continue
-                # A previous recovery may have restored only part of the session.
-                if path in originals:
-                    backup = originals[path]
-                    if backup is None and current == {"type": "missing"}:
-                        continue
-                    if (
-                        backup
-                        and os.path.isfile(backup)
-                        and current == self._fingerprint_path(backup)
-                    ):
-                        continue
-                elif path in added and current == {"type": "missing"}:
-                    continue
-                self.external_changes.append(path)
-            except (OSError, ValueError):
-                self.external_changes.append(path)
-        if self.external_changes:
-            self.patching_logger.warning(
-                "[RESTORE] Refusing to overwrite %d externally changed path(s): %s",
-                len(self.external_changes),
-                self.external_changes[:3],
-            )
-        return not self.external_changes
-
-    def archive_conflicted_session(self) -> str | None:
-        if not self.external_changes:
-            return None
-        archive_root = os.path.join(
-            os.path.dirname(self.backup_dir), "recovery_conflicts"
-        )
-        archive_dir = os.path.join(
-            archive_root, f"session_{int(time.time() * 1000)}_{os.getpid()}"
-        )
-        try:
-            os.makedirs(archive_root, exist_ok=True)
-            if self.backup_dir and os.path.isdir(self.backup_dir):
-                shutil.move(self.backup_dir, archive_dir)
-            else:
-                os.makedirs(archive_dir, exist_ok=True)
-            if self._session_manifest_path and os.path.isfile(
-                self._session_manifest_path
-            ):
-                shutil.copy2(
-                    self._session_manifest_path,
-                    os.path.join(archive_dir, "session.json"),
-                )
-                safe_remove(self._session_manifest_path)
-            self.original_files.clear()
-            self.added_files.clear()
-            self._modification_order.clear()
-            self._deployed_state = None
-            return archive_dir
-        except OSError as error:
-            self.patching_logger.error(
-                "[RESTORE] Failed to archive conflicted recovery session: %s", error
-            )
-            return None
 
     def restore_backups(self, chapter_id: str) -> bool:
         success = True
@@ -276,16 +68,9 @@ class BackupManager:
             self.patching_logger.info(
                 f"[RESTORE] Restoring backups for chapter {chapter_id}"
             )
-            file_order = self._modification_order.get(
-                chapter_id, list(self.original_files[chapter_id].keys())
-            )
-            file_order = list(reversed(file_order))
             restored_files = []
             failed_files = []
-            for file_path in file_order:
-                if file_path not in self.original_files[chapter_id]:
-                    continue
-                backup_path = self.original_files[chapter_id][file_path]
+            for file_path, backup_path in reversed(self.original_files[chapter_id].items()):
                 if backup_path is None:
                     if os.path.exists(file_path):
                         if safe_remove(file_path):
@@ -367,96 +152,4 @@ class BackupManager:
                 self.patching_logger.info(
                     f"[RESTORE] Successfully restored {len(restored_files)} file(s) for chapter {chapter_id}"
                 )
-        if chapter_id in self.added_files:
-            self.patching_logger.info(
-                f"[RESTORE] Removing added files for chapter {chapter_id}"
-            )
-            added_paths = sorted(
-                self.added_files[chapter_id].keys(),
-                key=lambda p: p.count(os.sep),
-                reverse=True,
-            )
-            removed_dirs = set()
-            for file_path in added_paths:
-                if not os.path.exists(file_path):
-                    self.patching_logger.debug(
-                        f"[RESTORE] Added file/directory already removed: {file_path} (chapter {chapter_id})"
-                    )
-                    continue
-                try:
-                    if os.path.isdir(file_path):
-                        if safe_rmtree(file_path):
-                            self.patching_logger.info(
-                                f"[RESTORE] Removed directory added by mod: {file_path} (chapter {chapter_id})"
-                            )
-                            removed_dirs.add(file_path)
-                        else:
-                            self.patching_logger.error(
-                                f"[RESTORE] Failed to remove directory added by mod: {file_path} (chapter {chapter_id})"
-                            )
-                            success = False
-                    elif safe_remove(file_path):
-                        self.patching_logger.info(
-                            f"[RESTORE] Removed file added by mod: {file_path} (chapter {chapter_id})"
-                        )
-                        self._remove_empty_parent_dirs(
-                            file_path, chapter_id, removed_dirs
-                        )
-                    else:
-                        self.patching_logger.error(
-                            f"[RESTORE] Failed to remove file added by mod: {file_path} (chapter {chapter_id})"
-                        )
-                        success = False
-                except Exception as e:
-                    self.patching_logger.error(
-                        f"[RESTORE] Failed to remove added file/directory {file_path} (chapter {chapter_id}): {e}",
-                        exc_info=True,
-                    )
-                    success = False
         return success
-
-    def restore_all_backups(self) -> bool:
-        if not self.original_files and (not self.added_files):
-            return True
-        if not self.deployed_state_matches():
-            return False
-        try:
-            all_chapter_ids = set(self.original_files.keys()) | set(
-                self.added_files.keys()
-            )
-            results = [
-                self.restore_backups(chapter_id) for chapter_id in all_chapter_ids
-            ]
-            return all(results)
-        except Exception as e:
-            self.patching_logger.error(
-                f"[RESTORE] Critical error during restore_all_backups: {e}",
-                exc_info=True,
-            )
-            return False
-
-    def _remove_empty_parent_dirs(
-        self, file_path: str, chapter_id: str, removed_dirs: set
-    ):
-        try:
-            parent_dir = os.path.dirname(file_path)
-            if not parent_dir or parent_dir == file_path or parent_dir in removed_dirs:
-                return
-            if os.path.exists(parent_dir) and os.path.isdir(parent_dir):
-                try:
-                    if not os.listdir(parent_dir) and safe_rmtree(parent_dir):
-                        self.patching_logger.debug(
-                            f"[RESTORE] Removed empty parent directory: {parent_dir} (chapter {chapter_id})"
-                        )
-                        removed_dirs.add(parent_dir)
-                        self._remove_empty_parent_dirs(
-                            parent_dir, chapter_id, removed_dirs
-                        )
-                except OSError as error:
-                    logger.debug(
-                        "Best-effort operation failed: %s", error, exc_info=True
-                    )
-        except Exception as e:
-            self.patching_logger.debug(
-                f"[RESTORE] Could not remove parent directory for {file_path}: {e}"
-            )

@@ -1,6 +1,5 @@
 """Changelog fetching worker."""
 
-import logging
 import os
 
 import requests
@@ -10,8 +9,6 @@ from config.config import NETWORK_TIMEOUT_MEDIUM
 from services.localization_service import tr
 from ui.utils.thread_lifetime import safe_emit as _safe_emit
 from utils.network_utils import get_session
-
-logger = logging.getLogger(__name__)
 
 
 class FetchChangelogWorker(QObject):

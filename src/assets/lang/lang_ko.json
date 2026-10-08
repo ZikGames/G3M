@@ -160,7 +160,6 @@
     "create_mod": "모드 만들기",
     "created_label": "만들어진 날짜:",
     "use_portproton": "PortProton을 Wine 대신 사용",
-    "select_portproton_path": "PortProton 실행 파일 선택",
     "delete_mod": "모드 제거",
     "descending": "내림차순",
     "details_button": "세부 사항",

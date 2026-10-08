@@ -160,7 +160,6 @@
     "create_mod": "创建模组",
     "created_label": "创建时间：",
     "use_portproton": "使用PortProton代替Wine",
-    "select_portproton_path": "选择PortProton可执行文件",
     "delete_mod": "删除模组",
     "descending": "降序",
     "details_button": "详情",

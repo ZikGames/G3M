@@ -160,7 +160,6 @@
     "create_mod": "MODの作成",
     "created_label": "作成日:",
     "use_portproton": "Wine の代わりに PortProton を使用する",
-    "select_portproton_path": "PortProton 実行可能ファイルを選択します",
     "delete_mod": "Modの削除",
     "descending": "降順",
     "details_button": "詳細",

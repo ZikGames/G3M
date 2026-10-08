@@ -160,7 +160,6 @@
     "create_mod": "Create Mod",
     "created_label": "Created:",
     "use_portproton": "Use PortProton instead of Wine",
-    "select_portproton_path": "Select PortProton executable",
     "delete_mod": "Delete Mod",
     "descending": "Descending",
     "details_button": "Details",

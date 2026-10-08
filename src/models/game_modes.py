@@ -73,16 +73,8 @@ class GameEntry:
         return bool(self.gamebanana_id)
 
     @property
-    def supports_chapter_mode(self) -> bool:
-        return self.game_definition.is_multi_tab
-
-    @property
     def supports_full_install(self) -> bool:
         return self.game_definition.supports_full_install
-
-    @property
-    def supports_direct_launch(self) -> bool:
-        return self.game_definition.direct_launch_allowed
 
     @property
     def path_config_key(self) -> str:
@@ -146,13 +138,6 @@ class GameDefinition:
             if translated in ("", self.display_name_key, f"[{self.display_name_key}]")
             else translated
         )
-
-    @property
-    def tab_names(self) -> list[str]:
-        return [
-            tr(t.name_key) if t.name_key else self.get_tab_display_name(t.tab_id)
-            for t in self.tabs
-        ]
 
     def get_game_path(self, config: dict) -> str:
         return config.get(self.path_config_key, "")
@@ -234,16 +219,6 @@ class GameDefinition:
             None,
         )
 
-    def get_tab_display_name(self, tab_id: str) -> str:
-        tab = self.get_tab(tab_id)
-        if not tab:
-            return self.display_label
-        if not tab.name_key:
-            return self.display_label
-        if self.is_multi_tab:
-            return f"{self.display_label} {tr(tab.name_key)}"
-        return self.display_label
-
     def get_folder_name(self, tab_id: str) -> str:
         tab = self.get_tab(tab_id)
         if tab and tab.folder_name:
@@ -251,13 +226,6 @@ class GameDefinition:
         if tab:
             return self.game_id
         return tab_id
-
-    def get_tab_by_index(self, ui_index: int) -> GameTab | None:
-        return self.tabs[ui_index] if 0 <= ui_index < len(self.tabs) else None
-
-    def get_chapter_id(self, ui_index: int) -> str:
-        tab = self.get_tab_by_index(ui_index)
-        return tab.tab_id if tab else self.default_tab
 
     def get_executable_candidates(self, os_type: str) -> tuple[str, ...]:
         return self.executables.get(os_type, ())
