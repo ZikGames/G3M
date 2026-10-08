@@ -2,13 +2,15 @@
 
 import logging
 import os
+from typing import cast
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QDrag, QPixmap
+from PyQt6.QtGui import QDrag, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -110,6 +112,7 @@ class InstalledModWidget(BaseModWidget):
         game_version_label_value = QLabel(
             f" {game_version_text}", game_version_container
         )
+        self.game_version_label_value = game_version_label_value
         game_version_label_value.setObjectName("secondaryText")
         game_version_container_layout.addWidget(self.game_version_label_title)
         game_version_container_layout.addWidget(game_version_label_value)
@@ -156,8 +159,8 @@ class InstalledModWidget(BaseModWidget):
         self.main_layout.addWidget(self.actions_widget)
         self._update_style()
 
-    def _apply_metrics(self):
-        super()._apply_metrics()
+    def _apply_metrics(self) -> bool:
+        changed = super()._apply_metrics()
         scale = self._layout_scale()
         indicator_size = max(14, round(16 * scale))
         if hasattr(self, "status_indicator") and self.status_indicator:
@@ -169,7 +172,9 @@ class InstalledModWidget(BaseModWidget):
             and self.actions_widget
             and self.actions_widget.layout()
         ):
-            self.actions_widget.layout().setSpacing(max(4, round(5 * scale)))
+            cast(QLayout, self.actions_widget.layout()).setSpacing(max(4, round(5 * scale)))
+
+        return changed
 
     def _update_style(self):
         super()._update_style()
@@ -417,18 +422,24 @@ class InstalledModWidget(BaseModWidget):
 
     def update_labels_text(self):
         super().update_labels_text()
+        self.game_version_label_title.setText(tr("ui.game_version_label"))
+        self.game_version_label_value.setText(f" {getattr(self.mod_data, 'game_version', None) or tr('defaults.not_specified')}")
+        self._update_indicator()
         if hasattr(self, "use_button") and self.use_button:
             self._update_button_from_status()
 
     def update_status(self):
         self._sync_status()
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, a0):
+        event = cast(QMouseEvent, a0)
+        event = cast(QMouseEvent, a0)
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.pos()
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, a0):
+        event = cast(QMouseEvent, a0)
         if not (event.buttons() & Qt.MouseButton.LeftButton):
             return
         if self._drag_in_progress:
@@ -465,7 +476,8 @@ class InstalledModWidget(BaseModWidget):
                 f"InstalledModWidget: drag export failed: {e}", exc_info=True
             )
 
-    def mouseDoubleClickEvent(self, event):
+    def mouseDoubleClickEvent(self, a0):
+        event = cast(QMouseEvent, a0)
         if event.button() == Qt.MouseButton.LeftButton:
             self.details_requested.emit(self.mod_data)
             return

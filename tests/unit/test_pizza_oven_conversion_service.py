@@ -216,6 +216,7 @@ def test_presenter_reuses_existing_valid_pizzatower_path_without_prompt(tmp_path
     app_state = Mock()
     app_state.local_config = {}
     app_state.game_mode = get_game("deltarune")
+    assert game is not None
     game.set_game_path(app_state.local_config, str(tmp_path))
     conversion_service = Mock()
     conversion_service.validate_game_path.return_value = None
@@ -400,6 +401,7 @@ def test_presenter_worker_status_suppresses_broken_feedback(tmp_path, monkeypatc
         temp_dir=None,
         gamebanana_metadata={},
     )
+    assert _FakeWorker.last is not None
     _FakeWorker.last.status.emit("working", "status_info")
 
     feedback_service.update_status.assert_any_call("working", "status_info")
@@ -424,7 +426,7 @@ def test_pizza_oven_worker_suppresses_emit_failure_after_conversion_error(caplog
         mods_dir="mods",
         game_path="game",
     )
-    worker.conversion_finished = _FailingSignal()
+    vars(worker)["conversion_finished"] = _FailingSignal()
 
     worker.run()
 
@@ -535,6 +537,7 @@ def test_converted_mod_applies_expected_files_to_clean_game(tmp_path):
 
     mod_config = load_mod_config(Path(result.mod_dir) / "mod_config.json")
     mod_id = mod_config["id"]
+    assert isinstance(mod_id, str)
     plan = build_profile_operation_plan(
         {mod_id: mod_config},
         {

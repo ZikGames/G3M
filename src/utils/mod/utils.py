@@ -2,8 +2,25 @@
 
 import os
 from collections.abc import Mapping
+from urllib.parse import urlparse
 
 from utils.mod.config import mod_local_relative_path
+
+
+def parse_gamebanana_mod_url(url: str) -> tuple[str, int] | None:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    parts = parsed.path.strip("/").split("/")
+    if (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc.casefold() in {"gamebanana.com", "www.gamebanana.com"}
+        and len(parts) == 2 and parts[0].casefold() in {"mods", "wips"}
+        and parts[1].isascii() and parts[1].isdigit()
+    ):
+        return ("Wip" if parts[0].casefold() == "wips" else "Mod", int(parts[1]))
+    return None
 
 
 def _get_mod_field(mod_data, field, default=None):

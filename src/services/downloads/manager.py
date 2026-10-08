@@ -645,6 +645,7 @@ class DownloadsManager(QObject):
             "name": m.get("name") or record.display_name,
             "authors": m.get("authors") or [],
             "version": m.get("version"),
+            "game_version": m.get("game_version"),
             "description": m.get("description"),
             "file_name": m.get("file_name"),
             "homepage": m.get("homepage") or m.get("profile_url"),

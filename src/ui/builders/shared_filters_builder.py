@@ -28,9 +28,9 @@ def _install_themed_button_icon(
 ) -> None:
     if not button:
         return
-    button._themed_icon_name = icon_name
-    button._themed_icon_app_state = app_state
-    button._themed_icon_size = icon_size
+    vars(button)["_themed_icon_name"] = icon_name
+    vars(button)["_themed_icon_app_state"] = app_state
+    vars(button)["_themed_icon_size"] = icon_size
     install_widget_update_handler(
         button,
         lambda target=button: (
@@ -63,11 +63,11 @@ def set_themed_button_icon(
     """Update a themed button icon and keep its theme-refresh state in sync."""
     if not button:
         return
-    button._themed_icon_name = icon_name
+    vars(button)["_themed_icon_name"] = icon_name
     if app_state is not None:
-        button._themed_icon_app_state = app_state
+        vars(button)["_themed_icon_app_state"] = app_state
     size = icon_size or getattr(button, "_themed_icon_size", None) or QSize(16, 16)
-    button._themed_icon_size = size
+    vars(button)["_themed_icon_size"] = size
     target_state = getattr(button, "_themed_icon_app_state", app_state)
     _apply_themed_button_icon(button, icon_name, target_state, size)
 
@@ -115,7 +115,7 @@ def create_tag_checkboxes(app_state, tag_names):
                 else tr("ui.only_gamebanana")
             )
         checkbox = QCheckBox(label)
-        checkbox._tag_value = tag_value
+        vars(checkbox)["_tag_value"] = tag_value
         tags[widget_key] = checkbox
     style = build_tag_checkbox_style(
         get_theme_color(app_state.local_config, "main_text")

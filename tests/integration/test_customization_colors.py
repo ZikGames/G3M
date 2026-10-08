@@ -2,9 +2,11 @@
 
 import re
 from pathlib import Path
+from typing import cast
 from unittest.mock import Mock, patch
 
 import pytest
+from PyQt6.QtWidgets import QScrollBar
 
 from ui.common.styling import get_theme_color, rgba_from_color
 
@@ -423,15 +425,21 @@ class TestBorderRadius:
     def test_button_radii_in_stylesheet_saturate_to_control_geometry(self):
         """Checks that buttoning radii in stylesheet saturate to control geometry."""
         sheet = _build_test_stylesheet("50px")
-        button_section = re.search(
+        match = re.search(
             r"\nQPushButton \{(?P<section>.*?)\n\}", sheet, re.DOTALL
-        ).group("section")
-        top_refresh_section = re.search(
+        )
+        assert match is not None
+        button_section = match.group("section")
+        match = re.search(
             r"\nQPushButton#topRefreshBtn \{(?P<section>.*?)\n\}", sheet, re.DOTALL
-        ).group("section")
-        field_section = re.search(
+        )
+        assert match is not None
+        top_refresh_section = match.group("section")
+        match = re.search(
             r"\nQLineEdit \{(?P<section>.*?)\n\}", sheet, re.DOTALL
-        ).group("section")
+        )
+        assert match is not None
+        field_section = match.group("section")
         assert "border-radius: 17px;" in button_section
         assert "border-radius: 22px;" in top_refresh_section
         assert "border-radius: 17px;" in field_section
@@ -439,11 +447,13 @@ class TestBorderRadius:
     def test_title_bar_window_button_radius_uses_safe_scaled_geometry(self):
         """Checks that titleing bar window button radius uses safe scaled geometry."""
         sheet = _build_test_stylesheet("50px", zoom_factor=1.5)
-        title_bar_section = re.search(
+        match = re.search(
             r"\nQPushButton#titleBarMinimizeButton, QPushButton#titleBarMaximizeButton, QPushButton#titleBarCloseButton \{(?P<section>.*?)\n\}",
             sheet,
             re.DOTALL,
-        ).group("section")
+        )
+        assert match is not None
+        title_bar_section = match.group("section")
         assert "min-width: 39px;" in title_bar_section
         assert "max-width: 39px;" in title_bar_section
         assert "border-radius: 22px;" in title_bar_section
@@ -491,11 +501,11 @@ class TestBorderRadius:
         scroll.setWidget(content)
         container.show()
         qapp.processEvents()
-        assert not scroll.verticalScrollBar().isVisible()
+        assert not cast(QScrollBar, scroll.verticalScrollBar()).isVisible()
         assert apply_scroll_area_chrome(scroll) == 0
         content.setMinimumHeight(1200)
         qapp.processEvents()
-        assert scroll.verticalScrollBar().isVisible()
+        assert cast(QScrollBar, scroll.verticalScrollBar()).isVisible()
         assert apply_scroll_area_chrome(scroll) >= 16
         container.deleteLater()
 

@@ -9,12 +9,27 @@ import pytest
 
 from utils.mod.archive import (
     ArchiveValidationError,
+    archive_format,
     archive_write_supported,
     list_archive_members,
     materialize_archive,
     rebuild_archive,
     split_archive_virtual_path,
 )
+
+
+def test_archive_named_directory_can_contain_a_real_archive(tmp_path):
+    folder = tmp_path / "pack.zip"
+    folder.mkdir()
+    archive = folder / "mod.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("README.txt", "Guide")
+    assert archive_format(folder) is None
+    assert split_archive_virtual_path(folder / "file.txt") is None
+    virtual = split_archive_virtual_path(archive / "README.txt")
+    assert virtual is not None
+    assert virtual.archive == archive
+    assert virtual.member == "README.txt"
 
 
 @pytest.mark.parametrize(
@@ -96,7 +111,9 @@ def test_virtual_paths_use_longest_extension_and_lzma_has_no_members():
     assert virtual.archive.as_posix().endswith("example.tar.gz")
     assert virtual.member == "assets/icon.png"
     assert virtual.directory is False
-    assert split_archive_virtual_path("C:/mods/example.zip/").member == ""  # type: ignore[union-attr]
+    archive_root = split_archive_virtual_path("C:/mods/example.zip/")
+    assert archive_root is not None
+    assert archive_root.member == ""
     with pytest.raises(ArchiveValidationError, match="do not have virtual members"):
         split_archive_virtual_path("C:/mods/example.lzma/member")
     assert not archive_write_supported("C:/mods/example.rar")

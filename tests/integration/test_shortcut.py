@@ -753,7 +753,7 @@ def test_shortcut_requires_explicit_direct_path_approval(
     )
     monkeypatch.setattr("services.game_runner.get_profile_mods_root", lambda _profile: str(mods_dir))
     monkeypatch.setattr("services.game_runner.get_user_data_root", lambda: str(tmp_path))
-    config = {"warning_preferences": {"skip_all": True}}
+    config: dict[str, dict[str, object]] = {"warning_preferences": {"skip_all": True}}
 
     assert _execute_operation_plan(("direct_paths",), str(game_path), game_mode, config) is None
     assert target.read_text(encoding="utf-8") == "original"

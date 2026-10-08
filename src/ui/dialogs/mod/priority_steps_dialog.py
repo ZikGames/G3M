@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, override
+from typing import Any, cast, override
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QDropEvent, QFocusEvent, QMouseEvent
+from PyQt6.QtCore import QAbstractItemModel, Qt
+from PyQt6.QtGui import QDropEvent, QFocusEvent, QMouseEvent, QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
-    QDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -16,12 +15,19 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QScrollArea,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
 
 from services.localization_service import tr
-from ui.common.dialog_theme import apply_dialog_theme, get_dialog_theme_values
+from ui.common.dialog_theme import (
+    DynamicDialog,
+    apply_dialog_theme,
+    get_dialog_theme_values,
+    scale_stylesheet,
+)
+from ui.common.styling import get_ui_scale_factor
 
 
 class _StepListWidget(QListWidget):
@@ -32,19 +38,22 @@ class _StepListWidget(QListWidget):
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.model().rowsMoved.connect(self.owner._persist_change)
+        cast(QAbstractItemModel, self.model()).rowsMoved.connect(self.owner._persist_change)
 
     @override
-    def wheelEvent(self, event) -> None:
+    def wheelEvent(self, e) -> None:
+        event = cast(QWheelEvent, e)
         event.ignore()
 
     @override
-    def focusInEvent(self, event: QFocusEvent | None) -> None:
+    def focusInEvent(self, e: QFocusEvent | None) -> None:
+        event = cast(QFocusEvent, e)
         self.owner._set_active_step(self.step_index)
         super().focusInEvent(event)
 
     @override
-    def mousePressEvent(self, event: QMouseEvent | None) -> None:
+    def mousePressEvent(self, e: QMouseEvent | None) -> None:
+        event = cast(QMouseEvent, e)
         self.owner._set_active_step(self.step_index)
         super().mousePressEvent(event)
 
@@ -80,7 +89,7 @@ class _StepGroupBox(QGroupBox):
         super().mousePressEvent(event)
 
 
-class ModPriorityStepsDialog(QDialog):
+class ModPriorityStepsDialog(DynamicDialog):
     def __init__(
         self,
         mod_steps: list[list[Any]],
@@ -213,6 +222,7 @@ class ModPriorityStepsDialog(QDialog):
             self._step_lists.append(widget)
         self.steps_layout.addStretch()
         self._refresh_active_step_style()
+        self.rescale_ui()
 
     def _add_step(self) -> None:
         self._steps = self._capture_steps()
@@ -265,8 +275,8 @@ class ModPriorityStepsDialog(QDialog):
     def _refresh_active_step_style(self) -> None:
         for index, group in enumerate(self._step_groups):
             group.setProperty("activeStep", index == self._active_step_index)
-            group.style().unpolish(group)
-            group.style().polish(group)
+            cast(QStyle, group.style()).unpolish(group)
+            cast(QStyle, group.style()).polish(group)
             group.update()
 
     def _move_selected_mod(self, offset: int) -> None:
@@ -343,15 +353,25 @@ class ModPriorityStepsDialog(QDialog):
     def apply_theme(self) -> None:
         apply_dialog_theme(self, self.app_state)
         theme = get_dialog_theme_values(self.app_state)
-        self.setStyleSheet(
-            self.styleSheet()
+        self.set_theme_stylesheet(
+            self._theme_stylesheet
             + f'''\nQGroupBox {{ margin-top: 14px; padding-top: 10px; border: 1px solid #d8d8d8; }}
 QGroupBox::title {{ subcontrol-origin: margin; top: 1px; left: 8px; padding: 0 6px; background: {theme["background"]}; }}
 QGroupBox[activeStep="true"] {{ border: 2px dashed {theme["select"]}; }}'''
         )
         self.instructions_label.setStyleSheet(
-            f"color: {theme['secondary_text']}; font-size: 11px;"
+            scale_stylesheet(f"color: {theme['secondary_text']}; font-size: 11px;", self.app_state)
         )
+
+    def rescale_ui(self) -> None:
+        self.apply_theme()
+        scale = get_ui_scale_factor(self.app_state.local_config)
+        for group, widget in zip(self._step_groups, self._step_lists, strict=True):
+            widget.ensurePolished()
+            row_heights = sum(max(widget.sizeHintForRow(row), round(76 * scale)) for row in range(widget.count()))
+            height = max(round(130 * scale), row_heights + round(8 * scale))
+            widget.setFixedHeight(height)
+            group.setFixedHeight(height + round(70 * scale))
 
     def _apply_theme(self) -> None:
         self.apply_theme()

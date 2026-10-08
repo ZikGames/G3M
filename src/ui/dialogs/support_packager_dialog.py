@@ -10,7 +10,6 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -25,12 +24,12 @@ from PyQt6.QtWidgets import (
 from config.config import QSS_BOLD_TRANSPARENT
 from services.localization_service import tr
 from services.support_package_service import SupportPackageService
-from ui.common.dialog_theme import apply_dialog_theme
+from ui.common.dialog_theme import DynamicDialog, apply_dialog_theme
 from ui.widgets.shared.custom_controls import SectionToggle
 from workers.support_package_worker import SupportPackageWorker
 
 
-class SupportPackagerDialog(QDialog):
+class SupportPackagerDialog(DynamicDialog):
     def __init__(self, app_state, parent=None, service=None) -> None:
         super().__init__(parent)
         self._app_state = app_state

@@ -46,7 +46,7 @@ def restore_startup_diagnostics():
         if startup_module._fault_log_handle is not None:
             startup_module._fault_log_handle.close()
             startup_module._fault_log_handle = None
-        if fault_enabled:
+        if fault_enabled and sys.__stderr__ is not None:
             faulthandler.enable(file=sys.__stderr__, all_threads=True)
         for handler in root.handlers:
             if handler not in handlers:
@@ -297,7 +297,7 @@ def test_install_crash_diagnostics_logs_unraisable_exceptions(temp_dir):
             err_msg=None,
             object=BrokenFinalizer(),
         )
-        sys.unraisablehook(cast("types.UnraisableHookArgs", args))
+        sys.unraisablehook(cast("sys.UnraisableHookArgs", args))
         for handler in logging.getLogger().handlers:
             handler.flush()
 
@@ -1190,18 +1190,13 @@ def _test_startup_with_archive(
                     cwd=cwd,
                     env=env,
                 )
+                returncode = result.returncode
                 output = (result.stdout or "") + (result.stderr or "")
             else:
                 returncode, output = _run_packaged_binary_smoke(
                     target_to_run, cwd, env
                 )
-            if startup_target.endswith(".py") and result.returncode != 0:
-                sys.stderr.write(
-                    f"Startup command failed for {startup_target} with code {result.returncode}\n"
-                )
-                sys.stderr.write(output)
-                return False
-            if not startup_target.endswith(".py") and returncode != 0:
+            if returncode != 0:
                 sys.stderr.write(
                     f"Startup command failed for {startup_target} with code {returncode}\n"
                 )

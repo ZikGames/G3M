@@ -74,6 +74,26 @@ class ModPathContext:
         )
 
 
+def portable_operation_path(path: str | Path, context: ModPathContext) -> str:
+    """Use the most specific standard root, matching complete path components."""
+    selected = Path(path).resolve(strict=False)
+    roots = (
+        ("mod_path", context.mod_path),
+        ("game_path", context.game_path),
+        ("game_data_path", context.game_data_path),
+        ("user_path", context.user_path),
+    )
+    for name, root in sorted(roots, key=lambda pair: len(pair[1].parts) if pair[1] else -1, reverse=True):
+        if root is None:
+            continue
+        try:
+            relative = selected.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            continue
+        return f"${{{name}}}/" + (relative if relative != "." else "")
+    return selected.as_posix()
+
+
 @dataclass(frozen=True, slots=True)
 class PlanFinding:
     """A non-mutating issue discovered while resolving an operation."""

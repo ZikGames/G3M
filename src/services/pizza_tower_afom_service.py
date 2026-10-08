@@ -114,7 +114,6 @@ class PizzaTowerAFOMService:
     @staticmethod
     def _has_afom_properties(ini_path: str) -> bool:
         parser = configparser.ConfigParser(interpolation=None)
-        parser.optionxform = str.lower
         try:
             with open(ini_path, encoding="utf-8", errors="ignore") as handle:
                 parser.read_file(handle)

@@ -2,13 +2,16 @@
 
 import contextlib
 import logging
+from typing import cast
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QFocusEvent, QKeyEvent, QMouseEvent, QResizeEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -138,12 +141,12 @@ class SearchModCardWidget(ModCardWidget):
         if hasattr(self, "metadata_layout"):
             self.metadata_layout.setSpacing(metadata_spacing)
         if hasattr(self, "expanded_widget") and self.expanded_widget.layout():
-            self.expanded_widget.layout().setContentsMargins(
+            cast(QLayout, self.expanded_widget.layout()).setContentsMargins(
                 0, expanded_top_margin, 0, 0
             )
-            self.expanded_widget.layout().setSpacing(expanded_spacing)
+            cast(QLayout, self.expanded_widget.layout()).setSpacing(expanded_spacing)
         if hasattr(self, "actions_widget") and self.actions_widget.layout():
-            self.actions_widget.layout().setSpacing(metadata_spacing)
+            cast(QLayout, self.actions_widget.layout()).setSpacing(metadata_spacing)
         if hasattr(self, "name_label"):
             self.name_label.setMaximumWidth(content_width)
         if hasattr(self, "metadata_widget"):
@@ -408,7 +411,7 @@ class SearchModCardWidget(ModCardWidget):
         self.updateGeometry()
         parent = self.parentWidget()
         if invalidate_parent and parent and parent.layout():
-            parent.layout().invalidate()
+            cast(QLayout, parent.layout()).invalidate()
             parent.updateGeometry()
         self._last_geometry_refresh_key = geometry_key
         return True
@@ -533,12 +536,14 @@ class SearchModCardWidget(ModCardWidget):
             self.updated_label.setToolTip(tr("ui.updated_label"))
         self.update_mod_data()
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, a0):
+        event = cast(QMouseEvent, a0)
         if event.button() == Qt.MouseButton.LeftButton:
             self.setFocus(Qt.FocusReason.MouseFocusReason)
         super().mousePressEvent(event)
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, a0):
+        event = cast(QKeyEvent, a0)
         if (
             event.key() == Qt.Key.Key_Tab
             and event.modifiers() == Qt.KeyboardModifier.NoModifier
@@ -550,11 +555,13 @@ class SearchModCardWidget(ModCardWidget):
             return
         super().keyPressEvent(event)
 
-    def focusOutEvent(self, event):
+    def focusOutEvent(self, a0):
+        event = cast(QFocusEvent, a0)
         super().focusOutEvent(event)
         QTimer.singleShot(0, self._clear_selection_if_focus_is_outside)
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, a0):
+        event = cast(QResizeEvent, a0)
         super().resizeEvent(event)
         self._update_name_text()
         self._update_description_text()

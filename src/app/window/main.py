@@ -91,6 +91,7 @@ from services.localization_service import (
 )
 from services.profile_service import is_profile_key
 from ui.builders.shared_filters_builder import set_themed_button_icon
+from ui.common.live_updates import refresh_live_widgets
 from ui.common.styling import (
     apply_rounded_mask,
     clamp_border_radius,
@@ -295,10 +296,6 @@ class AppWindow(QWidget):
         self.activateWindow()
         self.raise_()
         self._schedule_window_layout_refresh(160)
-
-    def _handle_url_install_prompt(self, title, message):
-        reply = self.feedback_service.ask_question(title, message)
-        self.mod_service.handle_url_prompt_response(reply)
 
     def _handle_permission_error(self, path: str):
         self._safe_show_message("error", "errors.access_denied", path=path)
@@ -871,24 +868,7 @@ class AppWindow(QWidget):
                 self.search_display.update_display()
             if getattr(self, "library_display", None) is not None:
                 self.library_display.update_display()
-            for dialog_attr in (
-                "_game_versions_dialog",
-                "_mod_versions_dialog",
-                "_downloads_dialog",
-                "_log_viewer_dialog",
-                "_support_packager_dialog",
-                "_modding_tools_dialog",
-                "_diagnostics_dialog",
-            ):
-                dialog = getattr(self, dialog_attr, None)
-                if not dialog:
-                    continue
-                if hasattr(dialog, "refresh_theme"):
-                    dialog.refresh_theme()
-                elif hasattr(dialog, "apply_theme"):
-                    dialog.apply_theme()
-                if hasattr(dialog, "scale_ui"):
-                    dialog.scale_ui()
+            refresh_live_widgets(self, "rescale_ui")
         finally:
             self._scaled_refresh_in_progress = False
             if getattr(self, "_scaled_refresh_pending", False):

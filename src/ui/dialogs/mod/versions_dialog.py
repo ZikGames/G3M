@@ -1,11 +1,19 @@
 """Mod Versions dialog - manage per-mod version snapshots stored as zips in mod_versions/."""
 
+from __future__ import annotations
+
 import contextlib
 import logging
 import os
 import shutil
 import tempfile
 import time
+from typing import TYPE_CHECKING, cast
+
+from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
+
+if TYPE_CHECKING:
+    from services.mod.service import ModManager
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -30,6 +38,7 @@ from presentation.drag_drop import (
 )
 from services.localization_service import tr
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     build_progress_bar_stylesheet,
     get_dialog_text_color,
@@ -329,7 +338,7 @@ class _VersionItemWidget(QFrame):
         self._delete_btn.setText(tr("mod_versions.delete"))
 
 
-class ModVersionsDialog(QDialog):
+class ModVersionsDialog(DynamicDialog):
     def __init__(self, mod_folder: str, mod_data, app_state, parent=None) -> None:
         super().__init__(parent)
         self._mod_folder = mod_folder
@@ -451,7 +460,7 @@ class ModVersionsDialog(QDialog):
                 color: {theme["secondary_text"]};
             }}
         """
-        self.setStyleSheet(base + extra + build_progress_bar_stylesheet(theme))
+        self.set_theme_stylesheet(base + extra + build_progress_bar_stylesheet(theme))
 
     def _populate(self):
         self._clear_list()
@@ -503,19 +512,19 @@ class ModVersionsDialog(QDialog):
     def _on_add_local(self):
         if self._is_busy():
             return
-        dialog = QDialog(self)
-        dialog.setWindowTitle(tr("mod_versions.add_local"))
+        dialog = DynamicDialog(self)
+        dialog.set_localized_title("mod_versions.add_local")
         dialog.setModal(True)
         layout = QVBoxLayout(dialog)
         btn_layout = QHBoxLayout()
-        create_btn = QPushButton(tr("mod_versions.create_snapshot"))
+        create_btn = dialog.localize_text(QPushButton(), "mod_versions.create_snapshot")
         create_btn.clicked.connect(lambda: dialog.done(1))
         btn_layout.addWidget(create_btn)
-        import_btn = QPushButton(tr("mod_versions.import_file"))
+        import_btn = dialog.localize_text(QPushButton(), "mod_versions.import_file")
         import_btn.clicked.connect(lambda: dialog.done(2))
         btn_layout.addWidget(import_btn)
         layout.addLayout(btn_layout)
-        dialog.setStyleSheet(build_dialog_theme_stylesheet(self._app_state))
+        dialog.set_theme_stylesheet(build_dialog_theme_stylesheet(self._app_state))
         result = dialog.exec()
         if result == 1:
             name = self._ask_version_name()
@@ -753,7 +762,7 @@ class ModVersionsDialog(QDialog):
         return getattr(self._mod_data, attr, default)
 
     @staticmethod
-    def _resolve_mod_service(parent) -> object | None:
+    def _resolve_mod_service(parent) -> ModManager | None:
         if parent and hasattr(parent, "mod_service"):
             return parent.mod_service
         parent_app = getattr(parent, "parent_app", None)
@@ -811,7 +820,8 @@ class ModVersionsDialog(QDialog):
                 format_filesystem_error(e, path=version_info["path"]),
             )
 
-    def dragEnterEvent(self, event):
+    def dragEnterEvent(self, a0):
+        event = cast(QDragEnterEvent, a0)
         if getattr(event, "source", lambda: None)() is not None:
             event.ignore()
             return
@@ -821,7 +831,8 @@ class ModVersionsDialog(QDialog):
         else:
             event.ignore()
 
-    def dropEvent(self, event):
+    def dropEvent(self, a0):
+        event = cast(QDropEvent, a0)
         if getattr(event, "source", lambda: None)() is not None:
             event.ignore()
             return
@@ -844,7 +855,8 @@ class ModVersionsDialog(QDialog):
                 self._import_queue.append(("url", url))
             self._process_next_import()
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
+        event = cast(QCloseEvent, a0)
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(2000)

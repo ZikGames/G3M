@@ -122,9 +122,9 @@ class PizzaOvenConversionPresenter:
                     on_success=on_success,
                     target_mods_dir=target_mods_dir,
                 )
-                if accepted:
-                    return True
-                continue
+                if not accepted and temp_dir:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                return accepted
             if po_convert_btn is not None and clicked == po_convert_btn:
                 if self._run_conversion_flow(
                     parent,

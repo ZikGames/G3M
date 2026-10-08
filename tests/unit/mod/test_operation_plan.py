@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -573,4 +574,8 @@ def test_profile_planner_flattens_selected_mods_in_profile_order(tmp_path):
     plan = build_profile_operation_plan(configs, contexts, ["second", "first", "second"])
 
     assert [operation.index for operation in plan.operations] == [1, 2]
-    assert [operation.source.name for operation in plan.operations] == ["second.txt", "first.txt"]
+    names = []
+    for operation in plan.operations:
+        assert isinstance(operation.source, Path)
+        names.append(operation.source.name)
+    assert names == ["second.txt", "first.txt"]

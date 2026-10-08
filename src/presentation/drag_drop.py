@@ -50,7 +50,9 @@ class LazyFileExportMimeData(QMimeData):
         return [QUrl.fromLocalFile(path)] if path else []
 
     @override
-    def retrieveData(self, mime_type, meta_type):
+    def retrieveData(self, mimetype, preferredType):
+        mime_type = mimetype
+        meta_type = preferredType
         if mime_type == self._internal_format:
             return b"1"
         if mime_type == "text/uri-list":
@@ -89,9 +91,9 @@ class LazyFileExportMimeData(QMimeData):
         return None
 
 
-def collect_drop_file_paths(mime_data: QMimeData) -> list[str]:
+def collect_drop_file_paths(mime_data: QMimeData | None) -> list[str]:
     paths = []
-    if not mime_data.hasUrls():
+    if mime_data is None or not mime_data.hasUrls():
         return paths
     for url in mime_data.urls():
         if not url.isLocalFile():
@@ -102,8 +104,10 @@ def collect_drop_file_paths(mime_data: QMimeData) -> list[str]:
     return paths
 
 
-def collect_drop_urls(mime_data: QMimeData) -> list[str]:
+def collect_drop_urls(mime_data: QMimeData | None) -> list[str]:
     urls = []
+    if mime_data is None:
+        return urls
     if mime_data.hasUrls():
         for url in mime_data.urls():
             value = url.toString().strip()

@@ -4,11 +4,12 @@ import contextlib
 import logging
 import os
 import weakref
+from typing import cast
 
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QRegion
-from PyQt6.QtWidgets import QLabel
+from PyQt6.QtWidgets import QLabel, QWidget
 
 from config.config import (
     DEFAULT_COLORS,
@@ -31,7 +32,8 @@ class _WidgetUpdateFilter(QObject):
         self._widget_ref = weakref.ref(widget)
         self._callback = callback
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, a0, a1):
+        event = cast(QEvent, a1)
         if event.type() in self._events:
             widget = self._widget_ref()
             if not widget:
@@ -106,7 +108,7 @@ def install_scroll_area_update_handlers(scroll_area, callback, attr_prefix: str)
 def apply_rounded_mask(widget, radius, inset=0):
     if not widget:
         return
-    if not isinstance(widget, QObject):
+    if not isinstance(widget, QWidget):
         return
     try:
         if sip.isdeleted(widget):
@@ -123,8 +125,8 @@ def apply_rounded_mask(widget, radius, inset=0):
         if getattr(widget, "_rounded_mask_applied", False):
             with contextlib.suppress(RuntimeError, AttributeError):
                 widget.clearMask()
-            widget._rounded_mask_applied = False
-            widget._rounded_mask_cache_key = None
+            vars(widget)["_rounded_mask_applied"] = False
+            vars(widget)["_rounded_mask_cache_key"] = None
         return
     radius_value = clamp_border_radius(
         radius, width=width - (inset_value * 2), height=height - (inset_value * 2)
@@ -133,8 +135,8 @@ def apply_rounded_mask(widget, radius, inset=0):
         if getattr(widget, "_rounded_mask_applied", False):
             with contextlib.suppress(RuntimeError, AttributeError):
                 widget.clearMask()
-            widget._rounded_mask_applied = False
-            widget._rounded_mask_cache_key = None
+            vars(widget)["_rounded_mask_applied"] = False
+            vars(widget)["_rounded_mask_cache_key"] = None
         return
     cache_key = (width, height, inset_value, radius_value)
     if getattr(widget, "_rounded_mask_cache_key", None) == cache_key and getattr(
@@ -154,8 +156,8 @@ def apply_rounded_mask(widget, radius, inset=0):
     )
     try:
         widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
-        widget._rounded_mask_applied = True
-        widget._rounded_mask_cache_key = cache_key
+        vars(widget)["_rounded_mask_applied"] = True
+        vars(widget)["_rounded_mask_cache_key"] = cache_key
     except (RuntimeError, AttributeError):
         logger.debug("Failed to apply rounded mask to widget")
 
@@ -1022,10 +1024,19 @@ def load_mod_icon_universal(
     border_width=0,
     border_color=None,
     prefer_screenshot=False,
+    fit=False,
 ):
     from utils.path_utils import resource_path
 
+    request = object()
+    icon_label._icon_loader_request = request
+
     def _crop_and_scale_pixmap(pixmap, allow_empty=False):
+        if fit:
+            return pixmap.scaled(
+                target_width, target_height, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
         source_width = pixmap.width()
         source_height = pixmap.height()
         if source_width <= 0 or source_height <= 0:
@@ -1069,6 +1080,7 @@ def load_mod_icon_universal(
         cache_key = (
             path,
             _stat_key(path) if path else None,
+            fit,
             target_width,
             target_height,
             border_radius,
@@ -1199,6 +1211,8 @@ def load_mod_icon_universal(
                                 return
                         except (RuntimeError, AttributeError):
                             return
+                        if getattr(lbl, "_icon_loader_request", None) is not request:
+                            return
                         try:
                             if not hasattr(lbl, "parent") or (
                                 hasattr(lbl, "parent")
@@ -1249,7 +1263,7 @@ def load_mod_icon_universal(
                             continue
                         try:
                             lbl = label_ref()
-                            if lbl and not sip.isdeleted(lbl):
+                            if lbl and not sip.isdeleted(lbl) and getattr(lbl, "_icon_loader_request", None) is request:
                                 pm = QPixmap(fallback_path)
                                 if not pm.isNull():
                                     fb_pm = _crop_and_scale_pixmap(pm)

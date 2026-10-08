@@ -7,6 +7,7 @@ from config.config import PRIMARY_URL_SCHEME, URL_PROTOCOL_PREFIXES
 from services.game_detection_service import is_game_running
 from services.localization_service import tr
 from ui.common.feedback import safe_show_message
+from utils.mod.utils import parse_gamebanana_mod_url
 
 
 def _parse_g3m_url(url: str) -> str:
@@ -53,6 +54,9 @@ def _enqueue_g3m_url(w, url: str):
         download_url, getattr(w, "app_state", None), w
     )
     if not dialog.exec():
+        return
+    if parse_gamebanana_mod_url(download_url):
+        w.mod_service.install_from_url(download_url)
         return
     if local_path:
         w.downloads_manager.enqueue_with_feedback(

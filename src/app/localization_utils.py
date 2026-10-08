@@ -4,8 +4,6 @@ import contextlib
 import logging
 import os
 
-from PyQt6.QtWidgets import QApplication
-
 from app.game_ui import (
     full_install_tooltip,
     refresh_game_lists,
@@ -33,33 +31,9 @@ logger = logging.getLogger(__name__)
 
 
 def _relocalize_widgets(main_window) -> None:
-    """Refresh every live G3M widget that exposes a localization contract."""
-    for widget in QApplication.allWidgets():
-        if widget is main_window:
-            continue
-        callback = getattr(widget, "relocalize_ui", None)
-        if not callable(callback):
-            callback = getattr(widget, "update_labels_text", None)
-        if callable(callback):
-            try:
-                callback()
-            except RuntimeError as exc:
-                if "deleted" in str(exc).casefold():
-                    continue
-                logger.exception(
-                    "Failed to relocalize widget %s",
-                    type(widget).__name__,
-                )
-            except AttributeError:
-                logger.exception(
-                    "Failed to relocalize widget %s",
-                    type(widget).__name__,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to relocalize widget %s",
-                    type(widget).__name__,
-                )
+    from ui.common.live_updates import refresh_live_widgets
+
+    refresh_live_widgets(main_window, "relocalize_ui")
 
 
 def relocalize_texts(w):

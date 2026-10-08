@@ -74,7 +74,7 @@ def test_diff_tab_binds_full_report_by_keyword_and_keeps_progress(monkeypatch, t
     calls = []
 
     class _RecordingG3M:
-        def is_available(self):
+        def is_available(self) -> bool:
             return True
 
         def diff(
@@ -87,6 +87,7 @@ def test_diff_tab_binds_full_report_by_keyword_and_keeps_progress(monkeypatch, t
             full_report=False,
         ):
             calls.append((file1, file2, output_dir, progress_callback, full_report))
+            assert progress_callback is not None
             progress_callback(50, "Diffing")
             return 0, "", ""
 
@@ -277,7 +278,7 @@ class _FakeG3M:
         self._emit_progress(progress_callback, "Diffing")
         return 0, f"diff:{file1}:{file2}:{output_dir}", ""
 
-    def is_available(self):
+    def is_available(self) -> bool:
         return True
 
 
@@ -303,12 +304,12 @@ def _operation_data_config(
 
 
 class _LossyFakeG3M(_FakeG3M):
-    def patch_create(self, original, modified, output):
+    def patch_create(self, original, modified, output, include_xdelta_fallback=False, progress_callback=None):
         with open(output, "w", encoding="utf-8") as f:
             f.write("lossy patch")
         return 0, "", ""
 
-    def apply_patch(self, original, patch, output):
+    def apply_patch(self, original, patch, output, progress_callback=None):
         with open(output, "w", encoding="utf-8") as f:
             f.write("broken output")
         return 0, "", ""
@@ -348,7 +349,7 @@ def test_data_convert_tab_requires_available_g3mtool(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
 
     class _UnavailableG3M(_FakeG3M):
-        def is_available(self):
+        def is_available(self) -> bool:
             return False
 
     monkeypatch.setattr(_DataConvertTab, "_populate_profiles", lambda self: None)
@@ -554,6 +555,8 @@ def test_data_convert_preserves_integrity_and_shared_sources(tmp_path):
     game_dir.mkdir()
     (game_dir / "data.win").write_text("original", encoding="utf-8")
     config_data = _operation_data_config("data.xdelta")
+    assert isinstance(config_data["files"], list)
+    assert isinstance(config_data["files"][0], dict)
     config_data["files"][0]["source_hash"] = sha256_path(patch_path)
     config_data["files"].append({
         "source": "${mod_path}/data.xdelta",
@@ -592,6 +595,8 @@ def test_data_convert_uses_the_result_of_preceding_operations(tmp_path, precedin
     (mod / "second.xdelta").write_bytes(_FakeG3M._XPATCH_PREFIX + b"final")
     config = _operation_data_config(preceding_source, "second.xdelta")
     if preceding_source.endswith("win"):
+        assert isinstance(config["files"], list)
+        assert isinstance(config["files"][0], dict)
         config["files"][0]["type"] = "overwrite"
     config_path = mod / "mod_config.json"
     config_path.write_text(json.dumps(config), encoding="utf-8")
@@ -620,6 +625,8 @@ def test_data_convert_resolves_game_data_placeholder(tmp_path):
     data_dir.mkdir()
     (data_dir / "data.win").write_text("original", encoding="utf-8")
     config_data = _operation_data_config("data.xdelta")
+    assert isinstance(config_data["files"], list)
+    assert isinstance(config_data["files"][0], dict)
     config_data["files"][0]["target"] = "${game_data_path}/data.win"
     worker = _DataConvertWorkerThread(
         _FakeG3M(), str(mod_folder), config_data, str(game_dir), "g3mpatch",
@@ -642,6 +649,8 @@ def test_data_convert_accepts_current_full_data_overwrite(tmp_path):
     game_dir.mkdir()
     (game_dir / "data.win").write_text("original", encoding="utf-8")
     config_data = _operation_data_config("replacement.win")
+    assert isinstance(config_data["files"], list)
+    assert isinstance(config_data["files"][0], dict)
     config_data["files"][0]["type"] = "overwrite"
     worker = _DataConvertWorkerThread(_FakeG3M(), str(mod_folder), config_data, str(game_dir), "g3mpatch")
     results = []
@@ -869,7 +878,10 @@ def test_data_convert_reuses_csx_source_for_multiple_game_files(tmp_path, monkey
         assert "build.csx" not in zf.namelist()
     assert converted_config["files"][0]["source"] == "${mod_path}/build_1.g3mpatch"
     assert converted_config["files"][1]["source"] == "${mod_path}/build_2.g3mpatch"
+    assert isinstance(config_data["files"], list)
+    assert isinstance(config_data["files"][0], dict)
     assert config_data["files"][0]["source"] == "${mod_path}/build.csx"
+    assert isinstance(config_data["files"][1], dict)
     assert config_data["files"][1]["source"] == "${mod_path}/build.csx"
 
 
@@ -1002,9 +1014,9 @@ def test_convert_worker_keeps_generated_patch_even_if_roundtrip_would_fail(tmp_p
 
 def test_convert_worker_uses_the_original_data_extension_for_temporary_output(tmp_path):
     class _StrictFakeG3M(_FakeG3M):
-        def xpatch_apply(self, _original, _patch, output, **kwargs):
+        def xpatch_apply(self, original, patch, output, progress_callback=None):
             assert output and output.endswith(".ios")
-            return super().xpatch_apply(_original, _patch, output, **kwargs)
+            return super().xpatch_apply(original, patch, output, progress_callback=progress_callback)
 
     original_path = tmp_path / "original.ios"
     source_patch = tmp_path / "source.xdelta"
@@ -1133,7 +1145,7 @@ def test_patch_tab_csx_apply_uses_execute(tmp_path):
                 progress_callback,
             )
 
-        def is_available(self):
+        def is_available(self) -> bool:
             return True
 
     tab = _PatchTab(_RecordingG3M(), SimpleNamespace(local_config={}))
@@ -1149,6 +1161,7 @@ def test_patch_tab_csx_apply_uses_execute(tmp_path):
     tab._output_row.set_path(str(output_data))
 
     tab._on_run()
+    assert tab._worker is not None
     tab._worker.wait(5000)
     app.processEvents()
 
@@ -1208,6 +1221,7 @@ def test_patch_tab_batch_create_uses_batch_adapter(tmp_path):
         tab._batch_list.addItem(item)
 
     tab._on_run()
+    assert tab._worker is not None
     tab._worker.wait(5000)
     app.processEvents()
 
@@ -1296,6 +1310,7 @@ def test_merge_tab_single_run_uses_report_and_merge_flags(tmp_path):
         tab._file_list.addItem(item)
 
     tab._on_run()
+    assert tab._worker is not None
     tab._worker.wait(5000)
     app.processEvents()
 
@@ -1377,6 +1392,7 @@ def test_merge_tab_batch_uses_sets_and_flags(tmp_path):
         tab._set_list.addItem(item)
 
     tab._on_run()
+    assert tab._worker is not None
     tab._worker.wait(5000)
     app.processEvents()
 
@@ -1469,8 +1485,9 @@ def test_patch_tab_updates_status_during_apply_progress(tmp_path):
         updates.append(text)
         original_set_text(text)
 
-    tab._status_label.setText = capture
+    vars(tab._status_label)["setText"] = capture
     tab._on_run()
+    assert tab._worker is not None
     tab._worker.wait(5000)
     app.processEvents()
 

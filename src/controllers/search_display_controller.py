@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+from typing import cast
 
 from PyQt6.QtCore import QEvent, QMetaObject, QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QGridLayout, QInputDialog
@@ -108,7 +109,7 @@ class SearchDisplayController(QObject):
 
     def _iter_loading_indicators(self):
         for widget in self._iter_layout_widgets():
-            if getattr(widget, "objectName", lambda: "")() == "loading_indicator":
+            if widget is not None and widget.objectName() == "loading_indicator":
                 yield widget
 
     def _mod_list_column_count(self) -> int:
@@ -267,7 +268,7 @@ class SearchDisplayController(QObject):
         row, column = divmod(max(0, position), self._mod_list_column_count())
         item = layout.itemAtPosition(row, column)
         widget = item.widget() if item else None
-        if getattr(widget, "objectName", lambda: "")() == "loading_indicator":
+        if widget is not None and widget.objectName() == "loading_indicator":
             layout.removeWidget(widget)
             widget.deleteLater()
 
@@ -450,7 +451,9 @@ class SearchDisplayController(QObject):
                 with contextlib.suppress(Exception):
                     viewport.update()
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, a0, a1):
+        obj = a0
+        event = cast(QEvent, a1)
         try:
             scroll = getattr(self.app, "mods_browser_scroll", None)
             viewport = (
@@ -1049,7 +1052,7 @@ class SearchDisplayController(QObject):
                         and widget_container.updatesEnabled()
                         and pending_card_placements
                     )
-                    if updates_enabled:
+                    if updates_enabled and widget_container is not None:
                         widget_container.setUpdatesEnabled(False)
                     try:
                         for card, position, animate in pending_card_placements:
@@ -1087,7 +1090,7 @@ class SearchDisplayController(QObject):
                         self._finalize_mod_list_layout_refresh()
                         self._remove_centered_loading_indicator()
                     finally:
-                        if updates_enabled:
+                        if updates_enabled and widget_container is not None:
                             widget_container.setUpdatesEnabled(True)
                             widget_container.update()
                         if viewport_snapshot:

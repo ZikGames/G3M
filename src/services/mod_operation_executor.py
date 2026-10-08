@@ -792,7 +792,7 @@ def _copy_link(source: Path, target: Path) -> None:
 
 
 _DARWIN_SYSTEM_LINKS = (
-    frozenset({Path("/var"), Path("/tmp"), Path("/etc")})
+    frozenset(Path("/") / name for name in ("var", "tmp", "etc"))
     if sys.platform == "darwin"
     else frozenset()
 )
@@ -801,11 +801,10 @@ _DARWIN_SYSTEM_LINKS = (
 def _assert_target_parents_safe(path: Path) -> None:
     current = path.parent
     while True:
-        if _is_link(current):
-            if current not in _DARWIN_SYSTEM_LINKS:
-                raise ModOperationExecutionError(
-                    f"target is inside a link or reparse point: {current}"
-                )
+        if _is_link(current) and current not in _DARWIN_SYSTEM_LINKS:
+            raise ModOperationExecutionError(
+                f"target is inside a link or reparse point: {current}"
+            )
         if current.parent == current:
             return
         current = current.parent

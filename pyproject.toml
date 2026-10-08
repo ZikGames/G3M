@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "G3M"
-version = "3.4.0"
+version = "3.4.1"
 description = "G3M - GameMaker Mod Manager"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -30,7 +30,7 @@ test = [
     "pytest-qt==4.5.0",
     "responses==0.26.3",
 ]
-dev = ["pyright==1.1.414", "ruff==0.16.10"]
+dev = ["basedpyright==1.40.1", "ruff==0.16.10"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -62,6 +62,7 @@ skip_covered = true
 show_missing = true
 
 [tool.ruff]
+extend-include = ["*.spec"]
 target-version = "py314"
 src = ["src", "tests"]
 
@@ -121,18 +122,13 @@ ignore = [
     "T201", # command-line tools write their reports to stdout
 ]
 
-[tool.pyright]
-include = ["src"]
-exclude = [".venv", "build", "dist", "tests", "**/node_modules", "**/__pycache__", "**/.*"]
-venvPath = "."
-venv = ".venv"
+[tool.basedpyright]
+include = ["src", "tests", "catalog", "builds"]
+exclude = [".venv", "build", "dist", "**/node_modules", "**/__pycache__", "**/.*"]
+extraPaths = ["src", "tests", "tests/unit"]
 pythonVersion = "3.14"
-typeCheckingMode = "basic"
-# PyQt's generated stubs cannot model dynamic QObject attributes and expose
-# override parameter names such as a0/a1 that are irrelevant at runtime.
-reportAttributeAccessIssue = false
-reportIncompatibleMethodOverride = false
-reportOptionalMemberAccess = false
+typeCheckingMode = "standard"
+reportUnnecessaryTypeIgnoreComment = "error"
 
 [tool.ruff.format]
 quote-style = "double"

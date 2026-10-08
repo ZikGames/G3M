@@ -27,7 +27,7 @@ def test_manual_import_batch_flattens_single_enclosing_directory(matching_child)
             (nested / "enclosing").write_text("payload", encoding="utf-8")
         return str(nested)
 
-    controller._materialize_local_import = materialize
+    vars(controller)["_materialize_local_import"] = materialize
     controller._show_manual_import_batch(["mod.zip"])
 
     prepared = captured["prepared_path"]

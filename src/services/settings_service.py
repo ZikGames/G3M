@@ -43,6 +43,7 @@ from services.settings_validation import (
     has_unix_executable_signature,
     validate_windows_executable_path,
 )
+from ui.common.dialog_theme import DynamicMessageBox
 from ui.common.styling import display_hex_to_qt_hex, get_border_radius
 from utils.file_utils import get_file_filter
 from utils.native_integration import (
@@ -64,6 +65,8 @@ logger = logging.getLogger(__name__)
 
 class SettingsManager(QObject):
     """Manages application settings and configuration."""
+
+    profile_service: object | None = None
 
     settings_changed = pyqtSignal()
     language_changed = pyqtSignal(str)
@@ -171,16 +174,12 @@ class SettingsManager(QObject):
         )
 
     def _ask_user_data_root_copy(self, destination: str) -> bool | None:
-        box = QMessageBox(self._dialog_parent())
+        box = DynamicMessageBox(self._dialog_parent())
         box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle(tr("data_root.change_title"))
-        box.setText(tr("data_root.change_question", path=destination))
-        copy_button = box.addButton(
-            tr("data_root.copy_current"), QMessageBox.ButtonRole.AcceptRole
-        )
-        use_button = box.addButton(
-            tr("data_root.use_selected"), QMessageBox.ButtonRole.DestructiveRole
-        )
+        box.set_localized_title("data_root.change_title")
+        box.localize(box.setText, "data_root.change_question", path=destination)
+        copy_button = box.add_localized_button("data_root.copy_current", QMessageBox.ButtonRole.AcceptRole)
+        use_button = box.add_localized_button("data_root.use_selected", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
         box.exec()
         clicked = box.clickedButton()
@@ -432,15 +431,6 @@ class SettingsManager(QObject):
                 tr("errors.g3mtool_cache_clear_failed", error=str(e)),
             )
             return False
-
-    def select_portproton_path(self) -> str | None:
-        filepath, _ = get_open_file_name(
-            self._dialog_parent(), tr("ui.select_portproton_path")
-        )
-        if filepath:
-            self._toggle_setting("portproton_path", filepath)
-            return filepath
-        return None
 
     def select_executable_path(self, title: str) -> str | None:
         filepath, _ = get_open_file_name(
@@ -1144,11 +1134,6 @@ class SettingsManager(QObject):
         )
         return True
 
-    def disable_direct_launch(self):
-        self.app_state.local_config["direct_launch_chapter"] = ""
-        self.write_local_config()
-        self.settings_changed.emit()
-
     def _get_saved_window_geometry_state(self) -> dict | None:
         saved = self.app_state.local_config.get("window_geometry_state")
         return saved if isinstance(saved, dict) else None
@@ -1251,18 +1236,3 @@ class SettingsManager(QObject):
         if widget is not None:
             self.save_window_geometry(widget)
         self._geometry_save_widget = None
-
-    def lock_window_size(self, widget: QWidget):
-        try:
-            sz = widget.size()
-            widget.setMinimumSize(sz)
-            widget.setMaximumSize(sz)
-        except (AttributeError, ValueError) as e:
-            logger.debug(f"lock_window_size: failed: {e}")
-
-    def unlock_window_size(self, widget: QWidget):
-        try:
-            widget.setMinimumSize(0, 0)
-            widget.setMaximumSize(16777215, 16777215)
-        except (AttributeError, ValueError) as e:
-            logger.debug(f"unlock_window_size: failed: {e}")

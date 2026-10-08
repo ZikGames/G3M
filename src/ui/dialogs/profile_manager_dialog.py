@@ -3,11 +3,12 @@
 import logging
 import os
 from collections.abc import Callable
+from typing import cast
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QAbstractItemModel, QSize, Qt
+from PyQt6.QtGui import QDragEnterEvent, QDragMoveEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
-    QDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -22,8 +23,18 @@ from PyQt6.QtWidgets import (
 from presentation.drag_drop import collect_drop_file_paths
 from services.localization_service import tr
 from services.profile_service import DEFAULT_PROFILE
-from ui.common.dialog_theme import apply_dialog_theme, get_dialog_theme_values
-from ui.common.styling import build_button_style, clamp_border_radius, get_border_radius
+from ui.common.dialog_theme import (
+    DynamicDialog,
+    apply_dialog_theme,
+    get_dialog_theme_values,
+    scale_stylesheet,
+)
+from ui.common.styling import (
+    build_button_style,
+    clamp_border_radius,
+    get_border_radius,
+    get_ui_scale_factor,
+)
 from utils.native_integration import get_open_file_name, get_save_file_name
 from utils.path_utils import colored_icon
 from utils.process_utils import format_filesystem_error
@@ -39,7 +50,8 @@ class _ProfileListWidget(QListWidget):
         self._owner = owner
         self.setAcceptDrops(True)
 
-    def dragEnterEvent(self, event):
+    def dragEnterEvent(self, e):
+        event = cast(QDragEnterEvent, e)
         if getattr(event, "source", lambda: None)() is None and collect_drop_file_paths(
             event.mimeData()
         ):
@@ -47,7 +59,8 @@ class _ProfileListWidget(QListWidget):
             return
         super().dragEnterEvent(event)
 
-    def dragMoveEvent(self, event):
+    def dragMoveEvent(self, e):
+        event = cast(QDragMoveEvent, e)
         if getattr(event, "source", lambda: None)() is None and collect_drop_file_paths(
             event.mimeData()
         ):
@@ -56,7 +69,9 @@ class _ProfileListWidget(QListWidget):
         super().dragMoveEvent(event)
 
     def dropEvent(self, event):
-        if getattr(event, "source", lambda: None)() is None:
+        if event is None:
+            return
+        if event.source() is None:
             mime_data = event.mimeData()
             paths = collect_drop_file_paths(mime_data) if mime_data else []
             if paths:
@@ -66,7 +81,15 @@ class _ProfileListWidget(QListWidget):
         super().dropEvent(event)
 
 
-class ProfileManagerDialog(QDialog):
+class ProfileManagerDialog(DynamicDialog):
+
+    add_btn: QPushButton
+    dup_btn: QPushButton
+    edit_btn: QPushButton
+    del_btn: QPushButton
+    export_btn: QPushButton
+    import_btn: QPushButton
+    export_all_btn: QPushButton
     def __init__(self, profile_service, app_state, parent=None) -> None:
         super().__init__(parent)
         self.profile_service = profile_service
@@ -118,7 +141,7 @@ class ProfileManagerDialog(QDialog):
             QAbstractItemView.SelectionMode.SingleSelection
         )
         self.list_widget.setToolTip(tr("tooltips.profile_reorder"))
-        self.list_widget.model().rowsMoved.connect(self._on_rows_moved)
+        cast(QAbstractItemModel, self.list_widget.model()).rowsMoved.connect(self._on_rows_moved)
         self.list_widget.currentRowChanged.connect(self._on_selection_changed)
         layout.addWidget(self.list_widget, 1)
 
@@ -144,6 +167,9 @@ class ProfileManagerDialog(QDialog):
         self._refresh_list()
 
     def _refresh_list(self):
+        selected = self._selected_name()
+        scrollbar = self.list_widget.verticalScrollBar()
+        scroll = scrollbar.value() if scrollbar else 0
         self.list_widget.clear()
         self._selected_row = -1
         active = self.profile_service.active_name
@@ -151,12 +177,14 @@ class ProfileManagerDialog(QDialog):
             summary = self.profile_service.get_profile_summary(name)
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, name)
-            item.setSizeHint(QSize(0, _ITEM_HEIGHT))
+            item.setSizeHint(QSize(0, round(_ITEM_HEIGHT * get_ui_scale_factor(self.app_state.local_config))))
             widget = self._build_item_widget(summary, is_active=(name == active))
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, widget)
         if self.list_widget.count():
-            self.list_widget.setCurrentRow(0)
+            self.list_widget.setCurrentRow(next((row for row in range(self.list_widget.count()) if cast(QListWidgetItem, self.list_widget.item(row)).data(Qt.ItemDataRole.UserRole) == selected), 0))
+        if scrollbar:
+            scrollbar.setValue(scroll)
         self._on_selection_changed()
 
     def _build_item_widget(self, summary: dict, is_active: bool = False) -> QWidget:
@@ -395,8 +423,13 @@ class ProfileManagerDialog(QDialog):
 
     def _apply_theme(self):
         apply_dialog_theme(self, self.app_state)
+        scale = get_ui_scale_factor(self.app_state.local_config)
+        for row in range(self.list_widget.count()):
+            if item := self.list_widget.item(row):
+                item.setSizeHint(QSize(0, round(_ITEM_HEIGHT * scale)))
         theme = get_dialog_theme_values(self.app_state)
         icon_color = theme["main_text"]
+        self._chk_icon = colored_icon("checkmark", icon_color)
         br = clamp_border_radius(
             get_border_radius(self.app_state.local_config),
             width=38,
@@ -429,7 +462,13 @@ class ProfileManagerDialog(QDialog):
         ):
             btn = getattr(self, attr)
             btn.setIcon(colored_icon(icon_name, icon_color))
-            btn.setStyleSheet(sq_btn_qss)
+            btn.setFixedSize(round(38 * scale), round(38 * scale))
+            btn.setIconSize(QSize(round(20 * scale), round(20 * scale)))
+            btn.setStyleSheet(scale_stylesheet(sq_btn_qss, self.app_state))
+        for button in self.findChildren(QPushButton, "profileCheckmark"):
+            button.setIcon(self._chk_icon)
+            button.setFixedSize(round(36 * scale), round(36 * scale))
+            button.setIconSize(QSize(round(22 * scale), round(22 * scale)))
         use_qss = build_button_style(
             "profileUseBtn",
             theme["border"],
@@ -442,12 +481,11 @@ class ProfileManagerDialog(QDialog):
             border_radius=br,
         )
         chk_qss = "QPushButton#profileCheckmark { background: transparent; border: none; padding: 0px; min-width: 36px; max-width: 36px; min-height: 36px; max-height: 36px; }"
-        self.setStyleSheet(
-            self.styleSheet()
+        self.set_theme_stylesheet(
+            self._theme_stylesheet
             + f"""
             QLabel#profileDetailLabel {{ color: {theme["secondary_text"]}; font-size: 11px; }}
             {use_qss}
             {chk_qss}
         """
         )
-        self._chk_icon = colored_icon("checkmark", icon_color)

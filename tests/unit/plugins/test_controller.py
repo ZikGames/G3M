@@ -1,11 +1,20 @@
 """Unit tests for test controller."""
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
+import pytest
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage
-from PyQt6.QtWidgets import QLabel, QPushButton, QTabWidget, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QLabel,
+    QLayoutItem,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.dialogs import on_downloads_record_updated
 from controllers.plugins_controller import PluginsController
@@ -71,6 +80,7 @@ def test_compatible_legacy_plugin_card_keeps_its_display_metadata(qapp, temp_dir
     from models.plugin_models import InstalledPluginRecord, PluginManifest
 
     controller, _downloads_manager, _catalog = _make_controller(temp_dir)
+    assert controller.app is not None
     controller.app.plugins_widget = QWidget()
     image = QImage(1, 1, QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.white)
@@ -210,10 +220,12 @@ def test_plugin_active_download_update_does_not_rerender_tab(qapp, temp_dir):
 
     controller.render.assert_not_called()
     controller.refresh_main_tabs.assert_not_called()
+    assert controller.plugin_runtime_service is not None
     controller.plugin_runtime_service.scan_installed_plugins.assert_not_called()
 
     controller.render.reset_mock()
     controller.refresh_main_tabs.reset_mock()
+    assert controller.plugin_runtime_service is not None
     controller.plugin_runtime_service.scan_installed_plugins.reset_mock()
 
     completed_record = DownloadRecord(
@@ -229,6 +241,7 @@ def test_plugin_active_download_update_does_not_rerender_tab(qapp, temp_dir):
 
     controller.render.assert_not_called()
     controller.refresh_main_tabs.assert_called_once()
+    assert controller.plugin_runtime_service is not None
     controller.plugin_runtime_service.scan_installed_plugins.assert_called_once()
 
 
@@ -251,6 +264,7 @@ def test_plugin_installed_record_update_scans_on_main_thread(qapp, temp_dir):
 
     controller._on_download_record_updated(record)
 
+    assert controller.plugin_runtime_service is not None
     controller.plugin_runtime_service.scan_installed_plugins.assert_called_once()
     controller.refresh_main_tabs.assert_called_once()
     controller.render.assert_called_once()
@@ -259,14 +273,20 @@ def test_plugin_installed_record_update_scans_on_main_thread(qapp, temp_dir):
 def test_plugin_list_render_does_not_detach_removed_cards(qapp, temp_dir):
     """Checks that plugin list refresh cannot flash removed cards as windows."""
     controller, _downloads_manager, _catalog = _make_controller(temp_dir)
+    assert controller.plugin_catalog_service is not None
     controller.plugin_catalog_service.list_entries.return_value = []
+    assert controller.plugin_state_service is not None
     controller.plugin_state_service.get_filters.return_value = {
         "installed_only": False,
         "tags": [],
     }
+    assert controller.app is not None
     controller.app.plugins_container = QWidget()
+    assert controller.app is not None
     controller.app.plugins_widget = QWidget(controller.app.plugins_container)
+    assert controller.app is not None
     controller.app.plugins_layout = QVBoxLayout(controller.app.plugins_widget)
+    assert controller.app is not None
     controller.app.plugins_layout.addStretch()
     plugin = SimpleNamespace(
         plugin_id="sample_plugin",
@@ -281,24 +301,33 @@ def test_plugin_list_render_does_not_detach_removed_cards(qapp, temp_dir):
             tags=[],
         ),
     )
+    assert controller.plugin_runtime_service is not None
     controller.plugin_runtime_service.list_installed_plugins.return_value = [plugin]
 
     controller.render()
-    old_card = controller.app.plugins_layout.itemAt(0).widget()
+    assert controller.app is not None
+    old_card = cast(QLayoutItem, controller.app.plugins_layout.itemAt(0)).widget()
+    assert controller.app is not None
     controller.app.plugins_widget.show()
+    assert old_card is not None
     old_card.show()
     qapp.processEvents()
 
     controller.render()
 
+    assert controller.app is not None
+    assert old_card is not None
     assert old_card.parent() is controller.app.plugins_widget
+    assert old_card is not None
     assert old_card.isWindow() is False
+    assert old_card is not None
     assert old_card.isVisible() is False
 
 
 def test_plugin_main_view_widget_is_reparented_before_tab_insert(qapp, temp_dir):
     """Checks that plugin main view widgets cannot stay as transient windows."""
     controller, _downloads_manager, _catalog = _make_controller(temp_dir)
+    assert controller.app is not None
     controller.app.main_tab_widget = QTabWidget()
     plugin = SimpleNamespace(
         plugin_id="sample_plugin",
@@ -311,13 +340,16 @@ def test_plugin_main_view_widget_is_reparented_before_tab_insert(qapp, temp_dir)
     widget = QWidget()
     widget.setWindowFlag(Qt.WindowType.Window, True)
     widget.show()
+    assert controller.plugin_runtime_service is not None
     controller.plugin_runtime_service.list_installed_plugins.return_value = [plugin]
+    assert controller.plugin_runtime_service is not None
     controller.plugin_runtime_service.get_main_widget.return_value = widget
 
     controller.refresh_main_tabs()
 
     assert widget.parent() is not None
     assert widget.isWindow() is False
+    assert controller.app is not None
     assert controller.app.main_tab_widget.indexOf(widget) >= 0
 
 
@@ -347,7 +379,9 @@ def test_delete_plugin_reports_filesystem_error_with_plugin_path(temp_dir):
         manifest=SimpleNamespace(name="Sample Plugin", version="1.0.0"),
         path="C:/plugins/sample_plugin",
     )
+    assert controller.plugin_runtime_service is not None
     controller.plugin_runtime_service.get_plugin.return_value = plugin
+    assert controller.plugin_install_service is not None
     controller.plugin_install_service.delete_plugin.side_effect = PermissionError(
         13, "Permission denied", "C:/plugins/sample_plugin"
     )
@@ -371,7 +405,9 @@ def test_delete_plugin_error_does_not_crash_if_feedback_fails(temp_dir):
         manifest=SimpleNamespace(name="Sample Plugin", version="1.0.0"),
         path="C:/plugins/sample_plugin",
     )
+    assert controller.plugin_runtime_service is not None
     controller.plugin_runtime_service.get_plugin.return_value = plugin
+    assert controller.plugin_install_service is not None
     controller.plugin_install_service.delete_plugin.side_effect = PermissionError(
         13, "Permission denied", "C:/plugins/sample_plugin"
     )
@@ -385,3 +421,31 @@ def test_delete_plugin_error_does_not_crash_if_feedback_fails(temp_dir):
 
     controller.refresh_main_tabs.assert_called_once()
     controller.render.assert_called_once()
+
+
+@pytest.mark.parametrize("kind", ["theme", "plugin", "installed_plugin"])
+def test_catalog_icons_fit_inside_border(qapp, qtbot, temp_dir, kind):
+    from models.catalog_models import CatalogThemeEntry
+
+    controller, _downloads_manager, _catalog = _make_controller(temp_dir)
+    assert controller.app is not None
+    controller.app.catalog_widget = QWidget()
+    assert controller.app is not None
+    qtbot.addWidget(controller.app.catalog_widget)
+    image = QImage(32, 16, QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.green)
+    path = f"{temp_dir}/wide-icon.png"
+    assert image.save(path)
+    if kind == "theme":
+        entry = CatalogThemeEntry("sample", "Sample", "Desc", "Author", "1.0", icon=path)
+        card = controller._build_theme_card(entry, None)
+    elif kind == "plugin":
+        entry = CatalogPluginEntry(id="sample", name="Sample", description="Desc", author="Author", version="1.0", api_version=">=1.0", icon=path)
+        card = controller._build_catalog_card(entry)
+    else:
+        card, label, _body, _actions = controller._build_card_shell()
+        controller._set_local_icon(label, path)
+    qtbot.addWidget(card)
+    pixmap = vars(card)["icon_label"].pixmap()
+    assert pixmap.width() == vars(card)["icon_label"].width() - 4
+    assert pixmap.height() == pixmap.width() // 2

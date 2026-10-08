@@ -14,18 +14,21 @@ from PyQt6 import sip as _sip
 from PyQt6.QtCore import QPoint, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QColor,
+    QContextMenuEvent,
     QGuiApplication,
     QIcon,
+    QMouseEvent,
     QPainter,
     QPen,
     QPixmap,
     QPolygon,
+    QResizeEvent,
 )
 from PyQt6.QtWidgets import (
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayoutItem,
     QMenu,
     QPushButton,
     QScrollArea,
@@ -42,12 +45,19 @@ from config.config import UI_COLORS
 from models.mod_models import format_mod_authors
 from services.background_operations import background_operations
 from services.localization_service import tr
+from ui.common.dialog_theme import (
+    DynamicDialog,
+    build_dialog_theme_stylesheet,
+    scale_stylesheet,
+)
+from ui.common.localized_label import LocalizedLabel
 from ui.common.styling import (
     apply_scroll_area_chrome,
     build_button_style,
     build_scrollbar_qss,
     get_border_radius,
     get_theme_colors,
+    get_ui_scale_factor,
     get_widget_border_radius,
     install_scroll_area_update_handlers,
     install_widget_update_handler,
@@ -91,21 +101,24 @@ def _dot_pixmap(color: str, *, filled: bool) -> QPixmap:
 
 class _ScreenshotContextMenu(QMenu):
     @override
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, a0):
+        event = cast(QMouseEvent, a0)
         if event.button() == Qt.MouseButton.RightButton:
             self.close()
             return
         super().mousePressEvent(event)
 
     @override
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, a0):
+        event = cast(QMouseEvent, a0)
         if event.button() == Qt.MouseButton.RightButton:
             self.close()
             return
         super().mouseReleaseEvent(event)
 
     @override
-    def contextMenuEvent(self, event):
+    def contextMenuEvent(self, a0):
+        event = cast(QContextMenuEvent, a0)
         event.ignore()
 
 
@@ -321,7 +334,7 @@ class LoadModDetailsThread(ManagedQThread):
                 logger.error(f"Error loading mod details: {e}", exc_info=True)
 
 
-class ScreenshotViewerDialog(QDialog):
+class ScreenshotViewerDialog(DynamicDialog):
     def __init__(self, urls, index=0, parent=None) -> None:
         super().__init__(parent)
         self._urls = urls
@@ -329,7 +342,7 @@ class ScreenshotViewerDialog(QDialog):
         self._loader = get_image_loader_pool()
         self._load_signals = []
         self._source_pixmap = QPixmap()
-        self._label = QLabel()
+        self._label = LocalizedLabel()
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._label.setMinimumSize(320, 180)
@@ -371,9 +384,17 @@ class ScreenshotViewerDialog(QDialog):
         self.relocalize_ui()
         self._load()
 
+    def apply_theme(self) -> None:
+        state = self.theme_state()
+        colors = get_theme_colors(getattr(state, "local_config", None))
+        self.set_theme_stylesheet(build_dialog_theme_stylesheet(state))
+        for button in (self._prev, self._next):
+            button.setStyleSheet(scale_stylesheet(f"QToolButton {{ background: {colors['elements']}; border: 2px solid {colors['border']}; border-radius: 6px; padding: 4px; }} QToolButton:hover {{ background: {colors['hover']}; }}", state))
+        self._update_dots()
+
     def _load(self):
         if not self._urls:
-            self._label.setText(tr("ui.no_screenshots"))
+            self._label.set_localized_text("ui.no_screenshots")
             return
         signals = WorkerSignals()
         self._load_signals.append(signals)
@@ -400,7 +421,8 @@ class ScreenshotViewerDialog(QDialog):
         self._next.setAccessibleName(following)
         self._next.setToolTip(following)
         if not self._urls:
-            self._label.setText(tr("ui.no_screenshots"))
+            self._label.set_localized_text("ui.no_screenshots")
+        self._label.relocalize_ui()
 
     def _on_image_loaded(self, signals, index, qimg):
         with contextlib.suppress(ValueError):
@@ -415,7 +437,7 @@ class ScreenshotViewerDialog(QDialog):
             self._load_signals.remove(signals)
         if index == self._index:
             self._label.clear()
-            self._label.setText(tr("errors.file_not_available"))
+            self._label.set_localized_text("errors.file_not_available")
 
     def _render_image(self) -> None:
         if self._source_pixmap.isNull():
@@ -428,7 +450,8 @@ class ScreenshotViewerDialog(QDialog):
             )
         )
 
-    def resizeEvent(self, event) -> None:
+    def resizeEvent(self, a0) -> None:
+        event = cast(QResizeEvent, a0)
         super().resizeEvent(event)
         self._render_image()
 
@@ -454,10 +477,10 @@ class ScreenshotViewerDialog(QDialog):
         while self._dots_layout.count() < len(self._urls):
             self._dots_layout.addWidget(QLabel())
         while self._dots_layout.count() > len(self._urls):
-            item = self._dots_layout.takeAt(self._dots_layout.count() - 1)
-            item.widget().deleteLater()
+            item = cast(QLayoutItem, self._dots_layout.takeAt(self._dots_layout.count() - 1))
+            cast(QWidget, item.widget()).deleteLater()
         for index in range(self._dots_layout.count()):
-            self._dots_layout.itemAt(index).widget().setPixmap(
+            cast(QLabel, cast(QLayoutItem, self._dots_layout.itemAt(index)).widget()).setPixmap(
                 _dot_pixmap(color, filled=index == self._index)
             )
 
@@ -471,7 +494,6 @@ class ModDetailsOverlay(QWidget):
     LEFT_COLUMN_WIDTH = 450
     EXTERNAL_BUTTON_WIDTH = 400
     NAV_BUTTON_SIZE = (35, 25)
-    LOADING_TEXT = "Loading..."
     NO_SCREENSHOTS_TEXT_KEY = "ui.no_screenshots"
     SCREENSHOT_LIMIT = 10
 
@@ -487,6 +509,8 @@ class ModDetailsOverlay(QWidget):
         self._ss_load_signals = []
         self._ss_index = 0
         self._description_html = ""
+        self._description_message: tuple[str, dict[str, Any]] | None = None
+        self._appearance_callbacks = []
         self._last_description_width = 0
         self._thread_pool = get_image_loader_pool()
         self._original_resize_event = None
@@ -525,6 +549,52 @@ class ModDetailsOverlay(QWidget):
         self._colors["btn_hover"] = self._colors["hover"]
         self._colors["btn_select"] = self._colors["select"]
         self._border_radius = get_border_radius(local_cfg)
+
+    def _scale(self) -> float:
+        return get_ui_scale_factor(getattr(self._app_state, "local_config", None))
+
+    def apply_theme(self) -> None:
+        self._setup_theme()
+        self.setStyleSheet(f"QWidget {{ background-color: {self._colors['background']}; }}")
+        for callback in self._appearance_callbacks:
+            callback()
+        self._desc_default_color = self._colors["main_text"]
+        self.title_label.setText(f'<h2 style="color:{self._colors["main_text"]};margin:8px 0;font-size:{round(18 * self._scale())}px;">{html.escape(self.mod_data.name or "")}</h2>')
+        self._update_description_label(getattr(self.mod_data, "description", None))
+        self.relocalize_ui()
+        self.close_button.setStyleSheet(self._button_style("cardButtonClose"))
+        if hasattr(self, "homepage_button"):
+            self.homepage_button.setStyleSheet(self._button_style("overlayHomepageButton", text_color=self._colors["secondary_text"], width=None))
+        for button, points_left in ((self._prev_btn, True), (self._next_btn, False)):
+            button.setStyleSheet(self._button_style("overlayNavButton", width=self.NAV_BUTTON_SIZE[0], height=self.NAV_BUTTON_SIZE[1], font_size=16, padding="0px"))
+            button.setIcon(_arrow_icon(self._colors["main_text"], points_left=points_left))
+        if self.source_card:
+            self._sync_button_from_card()
+        else:
+            self._set_action_button_style(self._colors["border"])
+        scrollbar = self.desc_text.verticalScrollBar()
+        scroll = scrollbar.value() if scrollbar else 0
+        self._refresh_description_html(force=True)
+        if scrollbar:
+            scrollbar.setValue(scroll)
+        self._rebuild_dots()
+
+    def rescale_ui(self) -> None:
+        self.apply_theme()
+        scale = self._scale()
+        container = self._img_label.parentWidget()
+        if container is not None:
+            container.setFixedSize(round(self.IMG_W * scale), round(self.IMG_H * scale))
+        self._img_label.setFixedSize(round(self.IMG_W * scale), round(self.IMG_H * scale))
+        for button in (self._prev_btn, self._next_btn):
+            button.setFixedSize(*(round(value * scale) for value in self.NAV_BUTTON_SIZE))
+        left = self.title_label.parentWidget()
+        if left is not None:
+            left.setFixedWidth(round(self.LEFT_COLUMN_WIDTH * scale))
+        self.desc_text.setMinimumHeight(round(400 * scale))
+        if self._ss_urls and self._ss_images[self._ss_index] is not None:
+            self._ss_set_pixmap(self._ss_images[self._ss_index])
+        self._apply_overlay_geometry(force=True)
 
     @staticmethod
     def _layout(layout_cls, parent=None, margins=None, spacing=None) -> Any:
@@ -613,7 +683,7 @@ class ModDetailsOverlay(QWidget):
         font_size: int = 15,
         padding: str = "1px",
     ) -> str:
-        return build_button_style(
+        return scale_stylesheet(build_button_style(
             obj_name,
             bg or self._colors["elements"],
             hover or self._colors["hover"],
@@ -624,7 +694,7 @@ class ModDetailsOverlay(QWidget):
             font_size,
             border_radius=self._border_radius,
             padding=padding,
-        )
+        ), self._app_state)
 
     def _scrollbar_qss(self, corner_inset: int) -> str:
         return build_scrollbar_qss(
@@ -671,10 +741,10 @@ class ModDetailsOverlay(QWidget):
             rules = [
                 f"{selector} {{",
                 f"  background-color: {self._colors['background']};",
-                *([f"  color: {text_color};"] if text_color else []),
+                *([f"  color: {self._colors['main_text']};"] if text_color else []),
                 f"  border: 2px solid {self._colors['border']};",
                 f"  border-radius: {radius}px;",
-                *([f"  font-size: {font_size}px;"] if font_size is not None else []),
+                *([f"  font-size: {round(font_size * self._scale())}px;"] if font_size is not None else []),
                 *(["  padding: 0px;"] if document_margin else []),
                 "}",
                 scrollbar_qss,
@@ -742,6 +812,7 @@ class ModDetailsOverlay(QWidget):
                     f"{attr_name}_viewport_stylesheet_cache",
                 )
 
+        self._appearance_callbacks.append(_apply)
         install_scroll_area_update_handlers(
             target, _apply, attr_name.removeprefix("_").removesuffix("_filter")
         )
@@ -790,6 +861,7 @@ class ModDetailsOverlay(QWidget):
                 "_overlay_image_label_stylesheet_cache",
             )
 
+        self._appearance_callbacks.append(_apply)
         install_widget_update_handler(
             container, _apply, attr_name="_overlay_image_style_filter"
         )
@@ -797,7 +869,8 @@ class ModDetailsOverlay(QWidget):
     def _meta_row_html(self, key: str, value: str) -> str:
         title = html.escape(str(tr(key)))
         text = html.escape(str(value))
-        return f'<span style="color:{self._colors["main_text"]};font-weight:bold;font-size:13px;">{title}</span> <span style="color:{self._colors["secondary_text"]};font-size:13px;">{text}</span>'
+        size = round(13 * self._scale())
+        return f'<span style="color:{self._colors["main_text"]};font-weight:bold;font-size:{size}px;">{title}</span> <span style="color:{self._colors["secondary_text"]};font-size:{size}px;">{text}</span>'
 
     def _translated_tags(self) -> str:
         tags = getattr(self.mod_data, "tags", None)
@@ -819,7 +892,7 @@ class ModDetailsOverlay(QWidget):
         carousel = self._layout(QVBoxLayout, spacing=8)
         img_container = QWidget()
         img_container.setFixedSize(self.IMG_W, self.IMG_H)
-        self._img_label = QLabel(img_container)
+        self._img_label = LocalizedLabel(img_container)
         self._img_label.setFixedSize(self.IMG_W, self.IMG_H)
         self._img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._img_label.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -833,7 +906,7 @@ class ModDetailsOverlay(QWidget):
         dots_wrap.addLayout(self._dots_layout)
         dots_wrap.addStretch()
         carousel.addLayout(dots_wrap)
-        nav = self._layout(QHBoxLayout, margins=(0, 0, 0, 0), spacing=4)
+        nav = self._layout(QHBoxLayout, margins=(0, 0, 0, 0), spacing=8)
         nav.addStretch()
         for attr, points_left, slot in (
             ("_prev_btn", True, self._ss_prev),
@@ -978,7 +1051,7 @@ class ModDetailsOverlay(QWidget):
             )
 
     def _build_action_buttons(self):
-        buttons = self._layout(QHBoxLayout)
+        buttons = self._layout(QHBoxLayout, spacing=8)
         buttons.addStretch()
         self.action_button = QPushButton()
         self._configure_action_button()
@@ -1028,6 +1101,10 @@ class ModDetailsOverlay(QWidget):
 
     def relocalize_ui(self) -> None:
         """Refresh G3M-owned labels while preserving remote mod content."""
+        self._img_label.relocalize_ui()
+        if self._description_message is not None:
+            key, parameters = self._description_message
+            self.desc_text.setPlainText(tr(key, **parameters))
         if hasattr(self, "homepage_button"):
             self.homepage_button.setText(tr("ui.view_homepage"))
         self._prev_btn.setAccessibleName(tr("onboarding.back_button"))
@@ -1049,11 +1126,12 @@ class ModDetailsOverlay(QWidget):
             self.action_button.setText(tr("buttons.download"))
 
     def _show_loading_description(self):
-        self._set_description_message(tr("status.loading_description"))
+        self._set_description_message("status.loading_description")
 
-    def _set_description_message(self, text: str):
+    def _set_description_message(self, key: str, **parameters):
         self._description_html = ""
-        self.desc_text.setPlainText(text)
+        self._description_message = (key, parameters)
+        self.desc_text.setPlainText(tr(key, **parameters))
 
     def _start_thread(self, attr_name: str, thread, signal_pairs=()):
         setattr(self, attr_name, thread)
@@ -1092,7 +1170,7 @@ class ModDetailsOverlay(QWidget):
         clean_description = (description or "").strip()
         if clean_description:
             self.description_label.setText(
-                f'<p style="color:{self._colors["secondary_text"]};margin:0 0 15px 0;font-size:14px;font-style:italic;">{html.escape(clean_description)}</p>'
+                f'<p style="color:{self._colors["secondary_text"]};margin:0 0 15px 0;font-size:{round(14 * self._scale())}px;font-style:italic;">{html.escape(clean_description)}</p>'
             )
             if self.description_label.parent() is not None:
                 self.description_label.setVisible(True)
@@ -1162,14 +1240,14 @@ class ModDetailsOverlay(QWidget):
     ):
         """Set action button stylesheet."""
         self.action_button.setStyleSheet(
-            build_button_style(
+            scale_stylesheet(build_button_style(
                 obj_name,
                 bg or border,
                 hover or self._colors["hover"],
                 self._colors["main_text"],
                 border,
                 border_radius=self._border_radius,
-            )
+            ), self._app_state)
         )
 
     def _sync_button_from_card(self):
@@ -1214,7 +1292,7 @@ class ModDetailsOverlay(QWidget):
 
     def _ss_show_current(self):
         if not self._ss_urls:
-            self._set_screenshot_text(tr(self.NO_SCREENSHOTS_TEXT_KEY))
+            self._set_screenshot_text(self.NO_SCREENSHOTS_TEXT_KEY)
             self._update_ss_nav()
             return
 
@@ -1223,19 +1301,19 @@ class ModDetailsOverlay(QWidget):
         else:
             self._ss_load_image(self._ss_index) if not self._ss_loading[
                 self._ss_index
-            ] else self._set_screenshot_text(self.LOADING_TEXT)
+            ] else self._set_screenshot_text("status.loading")
 
         self._rebuild_dots()
         self._update_ss_nav()
 
-    def _set_screenshot_text(self, text: str):
+    def _set_screenshot_text(self, key: str):
         if not self._can_update_screenshot():
             return
         self._img_label.clear()
-        self._img_label.setText(text)
+        self._img_label.set_localized_text(key)
 
     def _ss_load_image(self, idx):
-        self._set_screenshot_text(self.LOADING_TEXT)
+        self._set_screenshot_text("status.loading")
         self._queue_screenshot_load(idx, self._ss_on_loaded)
 
     def _queue_screenshot_load(self, idx, on_loaded):
@@ -1319,7 +1397,7 @@ class ModDetailsOverlay(QWidget):
         if not self._can_update_screenshot():
             return
         if idx == self._ss_index:
-            self._set_screenshot_text(tr("errors.file_not_available"))
+            self._set_screenshot_text("errors.file_not_available")
 
     def _ss_preload_neighbors(self):
         for offset in (-1, 1):
@@ -1346,7 +1424,9 @@ class ModDetailsOverlay(QWidget):
                 self._ss_images[i] = None
 
     def _update_ss_nav(self):
-        self._img_label.parentWidget().setVisible(bool(self._ss_urls))
+        parent = self._img_label.parentWidget()
+        if parent is not None:
+            parent.setVisible(bool(self._ss_urls))
         show = len(self._ss_urls) > 1
         self._prev_btn.setVisible(show)
         self._next_btn.setVisible(show)
@@ -1451,7 +1531,7 @@ class ModDetailsOverlay(QWidget):
         ):
             self._load_description_from_url()
         else:
-            self._set_description_message(tr("ui.no_description"))
+            self._set_description_message("ui.no_description")
 
     def _refresh_description_html(self, force=False):
         if not self._description_html:
@@ -1486,6 +1566,7 @@ class ModDetailsOverlay(QWidget):
     def _set_description_html(self, content):
         """Set description HTML with error handling."""
         self._description_html = content if isinstance(content, str) else str(content)
+        self._description_message = None
         self._refresh_description_html(force=True)
 
     def _load_description_from_url(self):
@@ -1516,11 +1597,11 @@ class ModDetailsOverlay(QWidget):
                 return
             if error_msg == "http_error":
                 self._set_description_message(
-                    tr("errors.description_http_error_code", code=status_code)
+                    "errors.description_http_error_code", code=status_code
                 )
             else:
                 self._set_description_message(
-                    tr("errors.description_load_error_details", error=error_msg)
+                    "errors.description_load_error_details", error=error_msg
                 )
         except Exception as e:
             logger.error(f"Error in _on_url_description_error: {e}", exc_info=True)

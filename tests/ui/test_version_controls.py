@@ -1,5 +1,7 @@
+
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -28,8 +30,8 @@ def test_game_snapshot_resolves_selected_profile_and_patch_steps(qapp, app_state
             "version": "1.0.0", "authors": [], "game": "undertale", "files": [],
         }), encoding="utf-8")
     parent = QWidget()
-    parent.feedback_service = Mock()
-    parent.settings_service = Mock()
+    vars(parent)["feedback_service"] = Mock()
+    vars(parent)["settings_service"] = Mock()
     manager = Mock()
     manager.records_for_game.return_value = []
     profile_service = SimpleNamespace(_read_profile=lambda _name: data, _profile_dir=lambda _name: profile_root)
@@ -38,6 +40,7 @@ def test_game_snapshot_resolves_selected_profile_and_patch_steps(qapp, app_state
 
     selections, state, mods = dialog._resolve_profile_mods("Other", "undertale", profile_service)
 
+    assert selections is not None
     assert [[entry["id"] for entry in step] for step in selections["undertale"]] == [["beta", "alpha"], ["gamma"]]
     assert state.game_mode.game_id == "undertale"
     assert state.local_config["active_profile"] == "Other"
@@ -94,7 +97,7 @@ def test_long_version_name_keeps_actions_inside_viewport(qtbot, app_state, kind)
     scroll.setWidget(row)
     scroll.show()
     qtbot.waitUntil(lambda: row.isVisible())
-    assert row.width() <= scroll.viewport().width()
+    assert row.width() <= cast(QWidget, scroll.viewport()).width()
     assert row._name_label.wordWrap()
     for button in buttons:
         assert button.visibleRegion().boundingRect() == button.rect()

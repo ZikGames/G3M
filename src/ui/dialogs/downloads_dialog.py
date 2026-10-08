@@ -2,10 +2,11 @@
 
 import logging
 import os
+from typing import cast
 
 from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -21,11 +22,13 @@ from PyQt6.QtWidgets import (
 from models.download_models import DownloadRecord, SourceKind, TargetKind
 from services.localization_service import tr
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     get_dialog_text_color,
     get_dialog_theme_values,
 )
 from ui.common.dialog_utils import safe_question
+from utils.mod.utils import parse_gamebanana_mod_url
 from utils.native_integration import open_path_native
 from utils.path_utils import colored_icon
 
@@ -82,7 +85,7 @@ class _RecordWidget(QFrame):
         self._error_label.setVisible(False)
         layout.addWidget(self._error_label)
         self._btn_row = QHBoxLayout()
-        self._btn_row.setSpacing(6)
+        self._btn_row.setSpacing(8)
         self._btn_row.addStretch()
         self._buttons: dict[str, QPushButton] = {}
         for key, tr_key in self._BUTTON_KEYS:
@@ -184,7 +187,7 @@ class _RecordWidget(QFrame):
         self._refresh()
 
 
-class DownloadsDialog(QDialog):
+class DownloadsDialog(DynamicDialog):
     """Non-modal dialog listing all download records with actions."""
 
     def __init__(self, manager, app_state, parent=None) -> None:
@@ -286,14 +289,15 @@ class DownloadsDialog(QDialog):
                 border-radius: 3px;
             }}
         """
-        self.setStyleSheet(base + extra)
+        self.set_theme_stylesheet(base + extra)
 
     def _connect_signals(self):
         self._manager.record_added.connect(self._on_record_added)
         self._manager.record_updated.connect(self._on_record_updated)
         self._manager.record_removed.connect(self._on_record_removed)
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
+        event = cast(QCloseEvent, a0)
         self._manager.record_added.disconnect(self._on_record_added)
         self._manager.record_updated.disconnect(self._on_record_updated)
         self._manager.record_removed.disconnect(self._on_record_removed)
@@ -353,13 +357,21 @@ class DownloadsDialog(QDialog):
         for w in self._record_widgets.values():
             w.relocalize_ui()
 
-    def dragEnterEvent(self, event):
+    def dragEnterEvent(self, a0):
+        event = cast(QDragEnterEvent, a0)
         md = event.mimeData()
+        if md is None:
+            event.ignore()
+            return
         if md.hasUrls() or md.hasText():
             event.acceptProposedAction()
 
-    def dropEvent(self, event):
+    def dropEvent(self, a0):
+        event = cast(QDropEvent, a0)
         md = event.mimeData()
+        if md is None:
+            event.ignore()
+            return
         accepted = False
         if md.hasUrls():
             for u in md.urls():
@@ -381,28 +393,21 @@ class DownloadsDialog(QDialog):
                         if not accepted:
                             event.acceptProposedAction()
                             accepted = True
-                        name = os.path.basename(s.split("?")[0]) or tr(
-                            "downloads.external_download"
-                        )
-                        self._manager.enqueue(
-                            display_name=name,
-                            source_kind=SourceKind.EXTERNAL_URL,
-                            target_kind=TargetKind.MOD,
-                            source_url=s,
-                        )
-        if md.hasText():
+                        self._enqueue_url(s)
+        elif md.hasText():
             text = md.text().strip()
             if text.startswith(("http://", "https://")):
                 event.acceptProposedAction()
-                name = os.path.basename(text.split("?")[0]) or tr(
-                    "downloads.external_download"
-                )
-                self._manager.enqueue(
-                    display_name=name,
-                    source_kind=SourceKind.EXTERNAL_URL,
-                    target_kind=TargetKind.MOD,
-                    source_url=text,
-                )
+                self._enqueue_url(text)
+
+    def _enqueue_url(self, url: str) -> None:
+        if parse_gamebanana_mod_url(url):
+            self._manager.parent().mod_service.install_from_url(url)
+        else:
+            self._manager.enqueue(
+                display_name=os.path.basename(url.split("?")[0]) or tr("downloads.external_download"),
+                source_kind=SourceKind.EXTERNAL_URL, target_kind=TargetKind.MOD, source_url=url,
+            )
 
     def refresh_theme(self):
         self._apply_theme()

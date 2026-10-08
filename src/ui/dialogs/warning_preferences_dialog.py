@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QDialog,
     QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QToolButton,
     QVBoxLayout,
@@ -22,11 +24,11 @@ from services.warning_service import (
     iter_warning_definitions,
     normalize_warning_preferences,
 )
-from ui.common.dialog_theme import apply_dialog_theme
+from ui.common.dialog_theme import DynamicDialog, apply_dialog_theme
 from ui.widgets.shared.custom_controls import SectionToggle
 
 
-class WarningPreferencesDialog(QDialog):
+class WarningPreferencesDialog(DynamicDialog):
     def __init__(self, local_config: dict, parent=None) -> None:
         super().__init__(parent)
         self.local_config = local_config
@@ -155,8 +157,8 @@ class WarningPreferencesDialog(QDialog):
             tooltip = tr(definition.tooltip_key)
             checkbox.setToolTip(tooltip)
             self.warning_help_buttons[warning_id].setToolTip(tooltip)
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText(tr("ui.ok"))
-        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText(
+        cast(QPushButton, self.button_box.button(QDialogButtonBox.StandardButton.Ok)).setText(tr("ui.ok"))
+        cast(QPushButton, self.button_box.button(QDialogButtonBox.StandardButton.Cancel)).setText(
             tr("ui.cancel_button")
         )
 

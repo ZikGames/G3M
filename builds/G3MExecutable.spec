@@ -1,9 +1,14 @@
-# -*- mode: python ; coding: utf-8 -*-
-
-block_cipher = None
-
-import os, sys
+import logging
+import os
+import sys
 from pathlib import Path
+
+from PyInstaller.building.api import EXE, PYZ
+from PyInstaller.building.build_main import Analysis
+from PyInstaller.building.osx import BUNDLE
+
+logger = logging.getLogger("G3M.spec")
+block_cipher = None
 
 binaries_extra = []
 # Support multiple VC runtime DLLs via VCREDIST_DLLS (pathsep-separated),
@@ -32,10 +37,10 @@ if spec_path is not None:
     spec_dir = spec_path.parent
     project_root = None
     marker_names = ('builds', '.git', 'pyproject.toml')
-    search_roots = (spec_dir,) + tuple(spec_dir.parents)
+    search_roots = (spec_dir, *spec_dir.parents)
     for candidate in search_roots:
         if debug_spec:
-            print(f"[spec debug] checking project root candidate: {candidate}")
+            logger.info("[spec debug] checking project root candidate: %s", candidate)
         if any((candidate / marker).exists() for marker in marker_names):
             project_root = candidate
             break
@@ -52,21 +57,21 @@ env_candidates = [
 found_env_path = None
 for env_path in env_candidates:
     if debug_spec:
-        print(f"[spec debug] checking .env candidate: {env_path}")
+        logger.info("[spec debug] checking .env candidate: %s", env_path)
     if os.path.exists(env_path):
         found_env_path = env_path
         datas_extra.append((env_path, 'src'))
         break
 if found_env_path:
-    print(f"Looking for .env: found at {found_env_path}")
+    logger.info("Looking for .env: found at %s", found_env_path)
 else:
-    print("WARNING: .env not found")
+    logger.warning(".env not found")
 
 a = Analysis(
     ['../src/main.py'],
     pathex=['..'],
     binaries=binaries_extra,
-    datas=[('../src', 'src')] + datas_extra,
+    datas=[('../src', 'src'), *datas_extra],
     optimize=2,
     hiddenimports=[
         'psutil',

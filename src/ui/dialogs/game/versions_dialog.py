@@ -1,8 +1,10 @@
 """Non-modal Game Versions dialog with per-game filtering."""
 
 import logging
+from typing import cast
 
 from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -26,6 +28,7 @@ from presentation.drag_drop import (
 )
 from services.localization_service import tr
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     build_progress_bar_stylesheet,
     get_dialog_text_color,
@@ -94,7 +97,7 @@ class _VersionRecordWidget(QFrame):
         layout.addWidget(self._info_label)
 
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(6)
+        btn_row.setSpacing(8)
         btn_row.addStretch()
         tc = get_dialog_text_color(self._app_state)
         self._cancel_btn = QPushButton(tr("game_versions.action_cancel"))
@@ -219,7 +222,7 @@ class _VersionRecordWidget(QFrame):
         )
 
 
-class GameVersionsDialog(QDialog):
+class GameVersionsDialog(DynamicDialog):
     """Non-modal Game Versions dialog with per-game filtering."""
 
     def __init__(
@@ -348,7 +351,7 @@ class GameVersionsDialog(QDialog):
                 color: {theme["secondary_text"]};
             }}
         """
-        self.setStyleSheet(base + extra + build_progress_bar_stylesheet(theme))
+        self.set_theme_stylesheet(base + extra + build_progress_bar_stylesheet(theme))
 
     def _connect_signals(self):
         self._manager.record_added.connect(self._on_record_added)
@@ -363,7 +366,8 @@ class GameVersionsDialog(QDialog):
         except Exception:
             logger.exception("game_versions: failed to show warning dialog")
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
+        event = cast(QCloseEvent, a0)
         self.hide()
         super().closeEvent(event)
 
@@ -421,12 +425,12 @@ class GameVersionsDialog(QDialog):
 
     def _on_add_clicked(self):
         game = self._current_game()
-        dialog = QDialog(self)
-        dialog.setWindowTitle(tr("game_versions.add_tooltip"))
+        dialog = DynamicDialog(self)
+        dialog.set_localized_title("game_versions.add_tooltip")
         dialog.setModal(True)
         layout = QVBoxLayout(dialog)
         btn_layout = QHBoxLayout()
-        create_btn = QPushButton(tr("game_versions.action_create"))
+        create_btn = dialog.localize_text(QPushButton(), "game_versions.action_create")
         create_btn.setMinimumWidth(create_btn.sizeHint().width() + 18)
 
         def on_create():
@@ -435,7 +439,7 @@ class GameVersionsDialog(QDialog):
 
         create_btn.clicked.connect(on_create)
         btn_layout.addWidget(create_btn)
-        import_btn = QPushButton(tr("game_versions.action_import"))
+        import_btn = dialog.localize_text(QPushButton(), "game_versions.action_import")
         import_btn.setMinimumWidth(import_btn.sizeHint().width() + 18)
 
         def on_import():
@@ -445,7 +449,7 @@ class GameVersionsDialog(QDialog):
         import_btn.clicked.connect(on_import)
         btn_layout.addWidget(import_btn)
         layout.addLayout(btn_layout)
-        dialog.setStyleSheet(build_dialog_theme_stylesheet(self._app_state))
+        dialog.set_theme_stylesheet(build_dialog_theme_stylesheet(self._app_state))
         dialog.exec()
 
     def _do_create(self, game_id: str):
@@ -581,7 +585,8 @@ class GameVersionsDialog(QDialog):
         for w in self._record_widgets.values():
             w.relocalize_ui()
 
-    def dragEnterEvent(self, event):
+    def dragEnterEvent(self, a0):
+        event = cast(QDragEnterEvent, a0)
         if getattr(event, "source", lambda: None)() is not None:
             event.ignore()
             return
@@ -589,7 +594,8 @@ class GameVersionsDialog(QDialog):
         if collect_drop_file_paths(md) or collect_drop_urls(md):
             event.acceptProposedAction()
 
-    def dropEvent(self, event):
+    def dropEvent(self, a0):
+        event = cast(QDropEvent, a0)
         if getattr(event, "source", lambda: None)() is not None:
             event.ignore()
             return

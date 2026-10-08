@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import override
+from typing import cast, override
 
 from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtGui import QCloseEvent, QShowEvent, QTextCursor
 from PyQt6.QtWidgets import (
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QScrollBar,
     QTabBar,
     QVBoxLayout,
 )
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 from services.localization_service import tr
 from services.log_viewer_service import LogSnapshotState, LogViewerService
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     get_dialog_text_color,
     get_dialog_theme_values,
@@ -50,7 +51,7 @@ def _get_app_font(app_state) -> str:
     return f"'{ff}', {_DEFAULT_MONOSPACE}" if ff else _DEFAULT_MONOSPACE
 
 
-class LogViewerDialog(QDialog):
+class LogViewerDialog(DynamicDialog):
     """Window for viewing current application logs in real time."""
 
     def __init__(
@@ -168,7 +169,7 @@ class LogViewerDialog(QDialog):
         should_update = force or path_changed
 
         follow_output = self._is_at_bottom()
-        scrollbar = self._viewer.verticalScrollBar()
+        scrollbar = cast(QScrollBar, self._viewer.verticalScrollBar())
         previous_value = scrollbar.value()
 
         snapshot = self._service.read_snapshot(path, self._states.get(key))
@@ -238,12 +239,12 @@ class LogViewerDialog(QDialog):
         )
 
     def _is_at_bottom(self) -> bool:
-        scrollbar = self._viewer.verticalScrollBar()
+        scrollbar = cast(QScrollBar, self._viewer.verticalScrollBar())
         return scrollbar.value() >= max(0, scrollbar.maximum() - 2)
 
     def _scroll_to_bottom(self) -> None:
         self._viewer.moveCursor(QTextCursor.MoveOperation.End)
-        scrollbar = self._viewer.verticalScrollBar()
+        scrollbar = cast(QScrollBar, self._viewer.verticalScrollBar())
         scrollbar.setValue(scrollbar.maximum())
 
     def _open_logs_folder(self) -> None:
@@ -253,7 +254,8 @@ class LogViewerDialog(QDialog):
             logger.warning("Failed to open logs folder: %s", logs_dir)
 
     @override
-    def showEvent(self, event) -> None:
+    def showEvent(self, a0) -> None:
+        event = cast(QShowEvent, a0)
         super().showEvent(event)
         self.relocalize_ui()
         self.refresh_theme()
@@ -319,10 +321,11 @@ class LogViewerDialog(QDialog):
                 max-height: 34px;
             }}
         """
-        self.setStyleSheet(base + extra)
+        self.set_theme_stylesheet(base + extra)
 
     @override
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, a0) -> None:
+        event = cast(QCloseEvent, a0)
         self._poll_timer.stop()
         self._states.clear()
         self._paths.clear()

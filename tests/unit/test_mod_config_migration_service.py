@@ -176,9 +176,13 @@ def test_migrate_managed_mods_rewrites_tar_snapshot(tmp_path):
     assert report.snapshots == (snapshot_path,)
     assert report.issues == ()
     with tarfile.open(snapshot_path, "r:gz") as snapshot:
-        migrated = json.loads(snapshot.extractfile(MOD_CONFIG_FILENAME).read())  # type: ignore[union-attr]
+        config_member = snapshot.extractfile(MOD_CONFIG_FILENAME)
+        assert config_member is not None
+        migrated = json.loads(config_member.read())
         assert migrated["config_version"] == MOD_CONFIG_VERSION
-        assert snapshot.extractfile("chapter_1/lang/en.txt").read() == b"English"  # type: ignore[union-attr]
+        language_member = snapshot.extractfile("chapter_1/lang/en.txt")
+        assert language_member is not None
+        assert language_member.read() == b"English"
 
 
 @pytest.mark.parametrize("config_version", ["2.0.1", "3.0.0", None])

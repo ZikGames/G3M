@@ -60,7 +60,7 @@ class BackgroundOperationManager:
             return
         try:
             thread.finished.connect(lambda key=key: self._thread_finished(key))
-            thread._g3m_lifetime_connected = True
+            vars(thread)["_g3m_lifetime_connected"] = True
         except (AttributeError, RuntimeError, TypeError):
             with self._lock:
                 self._threads.pop(key, None)

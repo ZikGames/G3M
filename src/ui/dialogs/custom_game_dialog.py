@@ -1,19 +1,25 @@
 """Dialog for creating or editing a custom game."""
 
+from typing import cast
+
 from PyQt6.QtWidgets import (
-    QDialog,
     QDialogButtonBox,
     QFormLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QVBoxLayout,
 )
 
 from services.localization_service import tr
-from ui.common.dialog_theme import apply_dialog_theme, get_dialog_theme_values
+from ui.common.dialog_theme import (
+    DynamicDialog,
+    apply_dialog_theme,
+    get_dialog_theme_values,
+)
 
 
-class CustomGameDialog(QDialog):
+class CustomGameDialog(DynamicDialog):
     """Minimal custom-game editor."""
 
     def __init__(self, app_state, record=None, parent=None) -> None:
@@ -27,10 +33,13 @@ class CustomGameDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(420)
         self._build_ui()
+        self.apply_theme()
+
+    def apply_theme(self) -> None:
         apply_dialog_theme(self, self.app_state)
         theme = get_dialog_theme_values(self.app_state)
-        self.setStyleSheet(
-            self.styleSheet()
+        self.set_theme_stylesheet(
+            self._theme_stylesheet
             + f" QLabel#customGameHelpLabel {{ color: {theme['secondary_text']}; font-size: 11px; }}"
         )
 
@@ -127,8 +136,8 @@ class CustomGameDialog(QDialog):
             field.setPlaceholderText(tr(placeholder_key))
         self.executable_help.setText(tr("games.primary_executable_help"))
         self.data_file_help.setText(tr("games.data_file_name_help"))
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(tr("ui.ok"))
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+        cast(QPushButton, self.buttons.button(QDialogButtonBox.StandardButton.Ok)).setText(tr("ui.ok"))
+        cast(QPushButton, self.buttons.button(QDialogButtonBox.StandardButton.Cancel)).setText(
             tr("dialogs.cancel")
         )
 

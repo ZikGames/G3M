@@ -79,8 +79,8 @@ def test_plugin_hook_worker_logs_failed_emit_after_hook_error(caplog):
         def emit(self, *_args, **_kwargs):
             raise RuntimeError("receiver deleted")
 
-    thread.status_update = _FailingSignal()
-    thread.result_ready = _FailingSignal()
+    vars(thread)["status_update"] = _FailingSignal()
+    vars(thread)["result_ready"] = _FailingSignal()
 
     thread.run()
 

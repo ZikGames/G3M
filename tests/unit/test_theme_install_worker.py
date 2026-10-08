@@ -22,7 +22,7 @@ def test_theme_install_worker_suppresses_emit_failure_after_error(tmp_path, capl
         SimpleNamespace(local_config={}),
         Mock(),
     )
-    worker.result_ready = _FailingSignal()
+    vars(worker)["result_ready"] = _FailingSignal()
 
     worker.run()
 

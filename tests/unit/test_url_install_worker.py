@@ -31,7 +31,7 @@ def test_url_install_worker_suppresses_emit_failure_after_error(qapp, caplog):
         def emit(self, *_args, **_kwargs):
             raise RuntimeError("receiver deleted")
 
-    worker.result_ready = _FailingSignal()
+    vars(worker)["result_ready"] = _FailingSignal()
 
     worker.run()
 

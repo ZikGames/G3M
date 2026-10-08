@@ -2,9 +2,9 @@
 
 import logging
 import os
+from typing import cast
 
 from PyQt6.QtWidgets import (
-    QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
@@ -14,12 +14,13 @@ from PyQt6.QtWidgets import (
 )
 
 from services.localization_service import tr
+from ui.common.dialog_theme import DynamicDialog
 from utils.native_integration import get_open_file_name
 
 logger = logging.getLogger(__name__)
 
 
-class ImportDialog(QDialog):
+class ImportDialog(DynamicDialog):
     def __init__(
         self, parent, feedback_service, import_type: str, file_filter: str | None = None
     ) -> None:
@@ -95,7 +96,7 @@ class ImportDialog(QDialog):
         self.url_label.setText(tr(keys["from_url_key"]))
         self.url_input.setPlaceholderText(tr(keys["url_placeholder_key"]))
         self.url_import_button.setText(tr(keys["from_url_button_key"]))
-        self.button_box.button(QDialogButtonBox.StandardButton.Cancel).setText(
+        cast(QPushButton, self.button_box.button(QDialogButtonBox.StandardButton.Cancel)).setText(
             tr("dialogs.cancel")
         )
 

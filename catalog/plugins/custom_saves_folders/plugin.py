@@ -9,10 +9,14 @@ import re
 import shutil
 import tempfile
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QAbstractItemModel, QEvent, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -34,9 +38,13 @@ from PyQt6.QtWidgets import (
 
 from adapters.g3mtool_adapter import G3MToolManager
 from config.config import MOD_CONFIG_FILENAME
-from models.game_modes import get_all_games, get_game
+from models.game_modes import GameDefinition, get_all_games, get_game
 from services.backup_service import BackupManager
-from ui.common.dialog_theme import apply_dialog_theme, get_dialog_theme_values
+from ui.common.dialog_theme import (
+    DynamicDialog,
+    apply_dialog_theme,
+    get_dialog_theme_values,
+)
 from ui.common.styling import (
     apply_stylesheet_if_changed,
     clamp_border_radius,
@@ -134,6 +142,8 @@ class _ActiveSession:
 
 
 class _InteractiveRow(QFrame):
+    delete_requested = pyqtSignal()
+
     clicked = pyqtSignal()
 
     def __init__(self, app_state, *, compact: bool = False, parent=None) -> None:
@@ -163,12 +173,14 @@ class _InteractiveRow(QFrame):
         self._apply_state_style()
         super().enterEvent(event)
 
-    def leaveEvent(self, event) -> None:
+    def leaveEvent(self, a0) -> None:
+        event = cast(QEvent, a0)
         self._hovered = False
         self._apply_state_style()
         super().leaveEvent(event)
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+    def mouseReleaseEvent(self, a0) -> None:  # noqa: N802
+        event = cast(QMouseEvent, a0)
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mouseReleaseEvent(event)
@@ -341,7 +353,7 @@ class _StateStore:
         if self._game_registry and hasattr(self._game_registry, "list_visible_games"):
             return self._game_registry.list_visible_games()
         return [
-            type("Entry", (), {"id": game.game_id, "display_name": game.display_label})
+            SimpleNamespace(id=game.game_id, display_name=game.display_label)
             for game in get_all_games()
         ]
 
@@ -782,7 +794,33 @@ class _StateStore:
         return None
 
 
-class _FolderDialog(QDialog):
+class _LocalizedDialog(DynamicDialog):
+    _tr: Callable[..., str]
+    _title_key = ""
+    _accept_key = "ui.create_button"
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._localized_labels: list[tuple[QLabel, str]] = []
+
+    def _label(self, key: str) -> QLabel:
+        label = QLabel(self._tr(key), self)
+        self._localized_labels.append((label, key))
+        return label
+
+    def relocalize_ui(self) -> None:
+        self.setWindowTitle(self._tr(self._title_key))
+        for label, key in self._localized_labels:
+            label.setText(self._tr(key))
+        for buttons in self.findChildren(QDialogButtonBox):
+            if button := buttons.button(QDialogButtonBox.StandardButton.Ok):
+                button.setText(self._tr(self._accept_key))
+            if button := buttons.button(QDialogButtonBox.StandardButton.Cancel):
+                button.setText(self._tr("ui.cancel_button"))
+
+
+class _FolderDialog(_LocalizedDialog):
+    _title_key = "ui.add_folder"
     def __init__(self, app_state, state: _StateStore, tr_func, parent=None) -> None:
         super().__init__(parent)
         self._app_state = app_state
@@ -796,7 +834,7 @@ class _FolderDialog(QDialog):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
 
-        game_label = QLabel(self._tr("ui.game_label"), self)
+        game_label = self._label("ui.game_label")
         layout.addWidget(game_label)
         self.game_combo = QComboBox(self)
         for entry in self._state.list_games():
@@ -804,7 +842,7 @@ class _FolderDialog(QDialog):
         game_label.setBuddy(self.game_combo)
         layout.addWidget(self.game_combo)
 
-        profile_label = QLabel(self._tr("ui.profile_label"), self)
+        profile_label = self._label("ui.profile_label")
         layout.addWidget(profile_label)
         self.profile_combo = QComboBox(self)
         self.profile_combo.addItem(self._tr("ui.global_profile"), _GLOBAL_PROFILE)
@@ -813,14 +851,14 @@ class _FolderDialog(QDialog):
         profile_label.setBuddy(self.profile_combo)
         layout.addWidget(self.profile_combo)
 
-        name_label = QLabel(self._tr("ui.name_label"), self)
+        name_label = self._label("ui.name_label")
         layout.addWidget(name_label)
         self.name_edit = QLineEdit(self)
         self.name_edit.setPlaceholderText(self._tr("ui.name_placeholder"))
         name_label.setBuddy(self.name_edit)
         layout.addWidget(self.name_edit)
 
-        hint = QLabel(self._tr("ui.name_hint"), self)
+        hint = self._label("ui.name_hint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -828,16 +866,16 @@ class _FolderDialog(QDialog):
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,
             self,
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+        cast(QPushButton, buttons.button(QDialogButtonBox.StandardButton.Ok)).setText(
             self._tr("ui.create_button")
         )
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+        cast(QPushButton, buttons.button(QDialogButtonBox.StandardButton.Cancel)).setText(
             self._tr("ui.cancel_button")
         )
-        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_button = cast(QPushButton, buttons.button(QDialogButtonBox.StandardButton.Ok))
         ok_button.setEnabled(False)
         ok_button.setDefault(True)
-        buttons.button(QDialogButtonBox.StandardButton.Cancel).setAutoDefault(False)
+        cast(QPushButton, buttons.button(QDialogButtonBox.StandardButton.Cancel)).setAutoDefault(False)
         self.name_edit.textChanged.connect(
             lambda text: ok_button.setEnabled(bool(text.strip()))
         )
@@ -853,8 +891,14 @@ class _FolderDialog(QDialog):
             self.name_edit.text().strip(),
         )
 
+    def relocalize_ui(self) -> None:
+        super().relocalize_ui()
+        self.name_edit.setPlaceholderText(self._tr("ui.name_placeholder"))
+        self.profile_combo.setItemText(0, self._tr("ui.global_profile"))
 
-class _RuleDialog(QDialog):
+
+class _RuleDialog(_LocalizedDialog):
+    _title_key = "ui.add_rule"
     def __init__(self, app_state, state: _StateStore, tr_func, parent=None) -> None:
         super().__init__(parent)
         self._app_state = app_state
@@ -870,7 +914,7 @@ class _RuleDialog(QDialog):
 
         top_row = QHBoxLayout()
         profile_box = QVBoxLayout()
-        profile_label = QLabel(self._tr("ui.profile_label"), self)
+        profile_label = self._label("ui.profile_label")
         profile_box.addWidget(profile_label)
         self.profile_combo = QComboBox(self)
         for profile in self._state.list_profiles():
@@ -880,7 +924,7 @@ class _RuleDialog(QDialog):
         top_row.addLayout(profile_box, 1)
 
         game_box = QVBoxLayout()
-        game_label = QLabel(self._tr("ui.game_label"), self)
+        game_label = self._label("ui.game_label")
         game_box.addWidget(game_label)
         self.game_combo = QComboBox(self)
         for entry in self._state.list_games():
@@ -890,19 +934,19 @@ class _RuleDialog(QDialog):
         top_row.addLayout(game_box, 1)
         layout.addLayout(top_row)
 
-        mod_label = QLabel(self._tr("ui.mod_label"), self)
+        mod_label = self._label("ui.mod_label")
         layout.addWidget(mod_label)
         self.mod_combo = QComboBox(self)
         mod_label.setBuddy(self.mod_combo)
         layout.addWidget(self.mod_combo)
 
-        folder_label = QLabel(self._tr("ui.folder_label"), self)
+        folder_label = self._label("ui.folder_label")
         layout.addWidget(folder_label)
         self.folder_combo = QComboBox(self)
         folder_label.setBuddy(self.folder_combo)
         layout.addWidget(self.folder_combo)
 
-        hint = QLabel(self._tr("ui.rule_dialog_hint"), self)
+        hint = self._label("ui.rule_dialog_hint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -910,14 +954,14 @@ class _RuleDialog(QDialog):
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok,
             self,
         )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+        cast(QPushButton, self.buttons.button(QDialogButtonBox.StandardButton.Ok)).setText(
             self._tr("ui.create_button")
         )
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(
+        cast(QPushButton, self.buttons.button(QDialogButtonBox.StandardButton.Cancel)).setText(
             self._tr("ui.cancel_button")
         )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setDefault(True)
-        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setAutoDefault(
+        cast(QPushButton, self.buttons.button(QDialogButtonBox.StandardButton.Ok)).setDefault(True)
+        cast(QPushButton, self.buttons.button(QDialogButtonBox.StandardButton.Cancel)).setAutoDefault(
             False
         )
         self.buttons.accepted.connect(self.accept)
@@ -945,7 +989,7 @@ class _RuleDialog(QDialog):
             self.folder_combo.addItem(label, folder["id"])
 
         has_choices = self.mod_combo.count() > 0 and self.folder_combo.count() > 0
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(has_choices)
+        cast(QPushButton, self.buttons.button(QDialogButtonBox.StandardButton.Ok)).setEnabled(has_choices)
 
     def value(self) -> tuple[str, str, str, str, str]:
         mod = self.mod_combo.currentData() or {}
@@ -957,8 +1001,18 @@ class _RuleDialog(QDialog):
             str(self.folder_combo.currentData() or ""),
         )
 
+    def relocalize_ui(self) -> None:
+        super().relocalize_ui()
+        folders = {folder["id"]: folder for folder in self._state.get_folders(str(self.game_combo.currentData() or ""))}
+        for index in range(self.folder_combo.count()):
+            folder = folders.get(self.folder_combo.itemData(index))
+            if folder:
+                self.folder_combo.setItemText(index, f"{folder['name']} ({self._state.profile_label(folder['profile'])})")
 
-class _HelpDialog(QDialog):
+
+class _HelpDialog(_LocalizedDialog):
+    _title_key = "ui.help_title"
+    _accept_key = "ui.close_button"
     def __init__(self, app_state, tr_func, parent=None) -> None:
         super().__init__(parent)
         self._app_state = app_state
@@ -972,16 +1026,25 @@ class _HelpDialog(QDialog):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
         body = QTextBrowser(self)
+        self._body = body
         body.setOpenExternalLinks(False)
         body.setPlainText(self._tr("ui.help_body"))
         layout.addWidget(body, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, self)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+        cast(QPushButton, buttons.button(QDialogButtonBox.StandardButton.Ok)).setText(
             self._tr("ui.close_button")
         )
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
         apply_dialog_theme(self, self._app_state)
+
+    def relocalize_ui(self) -> None:
+        super().relocalize_ui()
+        scrollbar = self._body.verticalScrollBar()
+        position = scrollbar.value() if scrollbar else 0
+        self._body.setPlainText(self._tr("ui.help_body"))
+        if scrollbar:
+            scrollbar.setValue(position)
 
 
 class _CustomSavesFoldersWidget(QWidget):
@@ -1050,7 +1113,7 @@ class _CustomSavesFoldersWidget(QWidget):
         self.folders_list.setSpacing(10)
         self.folders_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.folders_list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.folders_list.model().rowsMoved.connect(
+        cast(QAbstractItemModel, self.folders_list.model()).rowsMoved.connect(
             lambda *_args: self._save_folder_order()
         )
         left_layout.addWidget(self.folders_list, 1)
@@ -1082,7 +1145,7 @@ class _CustomSavesFoldersWidget(QWidget):
         self.rules_list.setSpacing(10)
         self.rules_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.rules_list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.rules_list.model().rowsMoved.connect(
+        cast(QAbstractItemModel, self.rules_list.model()).rowsMoved.connect(
             lambda *_args: self._save_rule_order()
         )
         right_layout.addWidget(self.rules_list, 1)
@@ -1175,8 +1238,8 @@ class _CustomSavesFoldersWidget(QWidget):
             row.refresh_theme()
             row.updateGeometry()
             row.update()
-        self.folders_list.viewport().update()
-        self.rules_list.viewport().update()
+        cast(QWidget, self.folders_list.viewport()).update()
+        cast(QWidget, self.rules_list.viewport()).update()
         self.folders_list.update()
         self.rules_list.update()
         self._refresh_all()
@@ -1273,14 +1336,14 @@ class _CustomSavesFoldersWidget(QWidget):
 
     def _save_folder_order(self) -> None:
         ids = [
-            self.folders_list.item(index).data(Qt.ItemDataRole.UserRole)
+            cast(QListWidgetItem, self.folders_list.item(index)).data(Qt.ItemDataRole.UserRole)
             for index in range(self.folders_list.count())
         ]
         self._state.reorder_folders([str(folder_id) for folder_id in ids if folder_id])
 
     def _save_rule_order(self) -> None:
         ids = [
-            self.rules_list.item(index).data(Qt.ItemDataRole.UserRole)
+            cast(QListWidgetItem, self.rules_list.item(index)).data(Qt.ItemDataRole.UserRole)
             for index in range(self.rules_list.count())
         ]
         self._state.reorder_rules([str(rule_id) for rule_id in ids if rule_id])
@@ -1422,6 +1485,8 @@ class CustomSavesFoldersPlugin:
         )
 
     def _tr(self):
+        if self._context is None:
+            raise RuntimeError("plugin has not been loaded")
         return self._context.localization_service.get_plugin_tr("custom_saves_folders")
 
     def create_main_widget(self, ui_context, parent):
@@ -1477,7 +1542,9 @@ class CustomSavesFoldersPlugin:
     def _script_path(self) -> str:
         return str(Path(__file__).with_name("scripts") / "set_general_info_name.csx")
 
-    def _resolve_target_files(self, game_id: str) -> tuple[object, str, list[str]]:
+    def _resolve_target_files(self, game_id: str) -> tuple[GameDefinition | None, str, list[str]]:
+        if self._context is None:
+            raise RuntimeError("plugin has not been loaded")
         game = get_game(game_id)
         if game is None:
             return None, "", []
@@ -1686,6 +1753,8 @@ class CustomSavesFoldersPlugin:
         selections,
         backup_manager: BackupManager,
     ) -> tuple[bool, str]:
+        if self._context is None:
+            raise RuntimeError("plugin has not been loaded")
         configs = self._selected_mod_configs(game_id, selections)
         data_dir = game.get_data_path(self._context.app_state.local_config)
         if not configs or not any(
@@ -1761,6 +1830,8 @@ class CustomSavesFoldersPlugin:
     def _apply_name_to_targets(
         self, game_id: str, folder_name: str, task_runtime=None, selections=None
     ) -> tuple[bool, str]:
+        if self._context is None:
+            raise RuntimeError("plugin has not been loaded")
         script_path = self._script_path()
         if not os.path.isfile(script_path):
             return False, self._tr()("errors.script_missing")
@@ -1926,6 +1997,8 @@ class CustomSavesFoldersPlugin:
         return True
 
     def _restore_session(self) -> tuple[bool, str]:
+        if self._context is None:
+            raise RuntimeError("plugin has not been loaded")
         session = self._active_session
         if session is None:
             return True, ""

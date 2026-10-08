@@ -22,7 +22,7 @@ def test_repeated_process_exit_restores_files(
     monkeypatch.setattr(GameMonitorWorker, "_RUNNING_POLL_INTERVAL_SECONDS", 0.01)
     parent = QObject()
     mod_service = ModManager(app_state, feedback_service)
-    parent.mod_service = mod_service
+    vars(parent)["mod_service"] = mod_service
     launcher = GameLauncher(app_state, feedback_service, mod_service, parent)
     target = tmp_path / "data.win"
     target.write_bytes(b"ORIGINAL")
@@ -47,7 +47,9 @@ def test_repeated_process_exit_restores_files(
         try:
             launcher._game_process = process
             launcher._start_game_monitor(process, False, (), set())
-            qtbot.waitUntil(lambda: launcher.monitor_thread.isRunning())
+            monitor_thread = launcher.monitor_thread
+            assert monitor_thread is not None
+            qtbot.waitUntil(lambda thread=monitor_thread: thread.isRunning())
             qtbot.wait(100)
             process.terminate()
             process.wait(timeout=5)
@@ -97,7 +99,7 @@ def test_game_exit_accepts_tracked_plugin_restoration(
     qtbot, app_state, feedback_service, tmp_path
 ):
     parent = QObject()
-    parent.plugin_runtime_service = Mock()
+    vars(parent)["plugin_runtime_service"] = Mock()
     launcher = GameLauncher(app_state, feedback_service, Mock(), parent)
     target = tmp_path / "data.win"
     target.write_bytes(b"ORIGINAL")
@@ -120,7 +122,7 @@ def test_game_exit_accepts_tracked_plugin_restoration(
             target.write_bytes(b"MOD")
         return []
 
-    parent.plugin_runtime_service.execute_hook_with_runtime.side_effect = run_hook
+    vars(parent)["plugin_runtime_service"].execute_hook_with_runtime.side_effect = run_hook
     launcher._check_game_running(False)
 
     qtbot.waitUntil(lambda: bool(completed))

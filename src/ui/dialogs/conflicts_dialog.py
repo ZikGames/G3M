@@ -5,9 +5,7 @@ import os
 import re
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -17,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from services.localization_service import tr
+from ui.common.dialog_theme import DynamicDialog
 from utils.native_integration import open_path_native
 from utils.process_utils import format_filesystem_error
 
@@ -31,7 +30,7 @@ def _report_counts(content: str) -> tuple[int, int]:
     return count(r"conflicts?"), count(r"auto[- ]?resolved?")
 
 
-class ConflictsDialog(QDialog):
+class ConflictsDialog(DynamicDialog):
     """Informational dialog showing merge conflict report.
 
     Does not block game launch or modpack flow - purely informational.
@@ -49,6 +48,12 @@ class ConflictsDialog(QDialog):
         self._auto_resolved = 0
         self._parse_report()
         self._setup_ui()
+        self.apply_theme()
+
+    def apply_theme(self) -> None:
+        from ui.common.dialog_theme import build_dialog_theme_stylesheet
+
+        self.set_theme_stylesheet(build_dialog_theme_stylesheet(self.theme_state()) + "QLabel#conflictsTitle { font-size: 19px; font-weight: bold; }")
 
     def _parse_report(self):
         try:
@@ -63,10 +68,7 @@ class ConflictsDialog(QDialog):
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
         self.title_label = QLabel(tr("dialogs.conflicts.title"))
-        title_font = QFont()
-        title_font.setPointSize(14)
-        title_font.setBold(True)
-        self.title_label.setFont(title_font)
+        self.title_label.setObjectName("conflictsTitle")
         layout.addWidget(self.title_label)
         self.stats_label = QLabel()
         self.stats_label.setWordWrap(True)

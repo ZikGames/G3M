@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import cast
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
+    QBoxLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLayout,
     QPushButton,
     QSizePolicy,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -110,7 +113,7 @@ class CatalogController:
 
     def _showing_themes(self) -> bool:
         tabs = getattr(self.app, "catalog_type_tabs", None)
-        return isinstance(tabs, QWidget) and tabs.currentIndex() == 1
+        return isinstance(tabs, QTabWidget) and tabs.currentIndex() == 1
 
     def _plugin_tag_checkboxes(self) -> dict:
         return {
@@ -120,9 +123,13 @@ class CatalogController:
         }
 
     def restore_filter_state(self) -> None:
+        if self.plugin_state_service is None:
+            return
         if not hasattr(self.app, "catalog_installed_only_checkbox") and not hasattr(self.app, "plugins_installed_only_checkbox"):
             return
         installed_checkbox = getattr(self.app, "catalog_installed_only_checkbox", getattr(self.app, "plugins_installed_only_checkbox", None))
+        if installed_checkbox is None:
+            return
         themes = self._showing_themes()
         filters = self.plugin_state_service.get_filters(themes=True) if themes else self.plugin_state_service.get_filters()
         plugin_checkboxes = self._plugin_tag_checkboxes()
@@ -150,6 +157,8 @@ class CatalogController:
             logger.exception("CatalogController: failed to show feedback message")
 
     def on_tab_changed(self, index: int) -> None:
+        if self.app is None:
+            return
         if not hasattr(self.app, "settings_tab_widget"):
             return
         if (
@@ -159,6 +168,8 @@ class CatalogController:
             self.ensure_loaded()
 
     def ensure_loaded(self, force_refresh: bool = False) -> None:
+        if self.catalog_service is None or self.plugin_runtime_service is None:
+            return
         if (
             self._loaded
             and not force_refresh
@@ -173,9 +184,13 @@ class CatalogController:
             self._start_catalog_load()
 
     def on_filters_changed(self) -> None:
+        if self.app is None or self.plugin_state_service is None:
+            return
         if self._filtering:
             return
         installed_checkbox = getattr(self.app, "catalog_installed_only_checkbox", getattr(self.app, "plugins_installed_only_checkbox", None))
+        if installed_checkbox is None:
+            return
         themes = self._showing_themes()
         checkboxes = self.app.catalog_theme_tag_checkboxes if themes else self._plugin_tag_checkboxes()
         self.plugin_state_service.set_filters(
@@ -192,6 +207,8 @@ class CatalogController:
             self.render()
 
     def render(self) -> None:
+        if self.catalog_service is None or self.plugin_runtime_service is None or self.plugin_state_service is None:
+            return
         catalog_layout = getattr(self.app, "catalog_plugins_layout", None)
         plugin_layout = catalog_layout if isinstance(catalog_layout, QLayout) else getattr(self.app, "plugins_layout", None)
         theme_candidate = getattr(self.app, "catalog_themes_layout", None)
@@ -237,11 +254,13 @@ class CatalogController:
             )
             return
         for widget in items:
-            layout.insertWidget(
+            cast(QBoxLayout, layout).insertWidget(
                 layout.count() - 1, widget
             )
 
     def _render_themes(self, layout) -> None:
+        if self.catalog_service is None or self.plugin_state_service is None:
+            return
         filters = self.plugin_state_service.get_filters(themes=True)
         tag_filter = set(filters["tags"])
         installed_dir = get_user_themes_dir()
@@ -262,13 +281,13 @@ class CatalogController:
             show_empty_message_in_layout(layout, tr("catalog.themes_empty"), self.app_state.local_config, font_size=15)
             return
         for widget in items:
-            layout.insertWidget(layout.count() - 1, widget)
+            cast(QBoxLayout, layout).insertWidget(layout.count() - 1, widget)
 
     def _build_theme_card(self, entry: CatalogThemeEntry, installed_path: str | None):
         card, icon_label, body, actions = self._build_card_shell()
         card.setProperty("catalog_theme_id", entry.id)
         if entry.icon:
-            load_mod_icon_universal(icon_label, entry, size=icon_label.width())
+            load_mod_icon_universal(icon_label, entry, size=icon_label.width() - 4, fit=True)
         body.addWidget(self._card_header(entry.name, entry.version, entry.author))
         description = QLabel(entry.description)
         description.setObjectName("secondaryText")
@@ -286,6 +305,8 @@ class CatalogController:
         return card
 
     def _apply_catalog_theme(self, path: str) -> None:
+        if self.app is None:
+            return
         self.app.settings_service._install_theme_from_file(path)
 
     def _delete_catalog_theme(self, theme_id: str) -> None:
@@ -336,6 +357,8 @@ class CatalogController:
             self.render()
 
     def _on_download_record_updated(self, record) -> None:
+        if self.catalog_service is None or self.plugin_runtime_service is None:
+            return
         target_kind = getattr(record, "target_kind", None)
         if target_kind not in (TargetKind.PLUGIN, TargetKind.THEME):
             return
@@ -369,6 +392,8 @@ class CatalogController:
             self.render()
 
     def _on_download_record_removed(self, record) -> None:
+        if self.catalog_service is None or self.plugin_runtime_service is None:
+            return
         if getattr(record, "target_kind", None) == TargetKind.THEME:
             if self._loaded:
                 self.render()
@@ -404,8 +429,8 @@ class CatalogController:
         actions.setSpacing(8)
         actions.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(actions, 0)
-        card.main_layout = layout
-        card.icon_label = icon_label
+        vars(card)["main_layout"] = layout
+        vars(card)["icon_label"] = icon_label
         update_mod_widget_style(card, "pluginCard", self.app)
         button_width, button_height, button_font_size = get_card_button_metrics(
             self.app_state.local_config
@@ -481,9 +506,9 @@ QPushButton#cardButtonUninstall:disabled {{
         card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         icon_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
-        card.mouseDoubleClickEvent = lambda event, widget=card: (
+        card.mouseDoubleClickEvent = lambda a0, widget=card: (
             self.show_plugin_details(widget.property("plugin_id"))
-            if event.button() == Qt.MouseButton.LeftButton
+            if a0 is not None and a0.button() == Qt.MouseButton.LeftButton
             and widget.property("plugin_id")
             else None
         )
@@ -545,7 +570,7 @@ QPushButton#cardButtonUninstall:disabled {{
         if path and path.strip():
             pixmap = QPixmap(path)
             if not pixmap.isNull():
-                icon_size = icon_label.width()
+                icon_size = icon_label.width() - 4
                 icon_label.setPixmap(
                     pixmap.scaled(
                         icon_size,
@@ -559,7 +584,7 @@ QPushButton#cardButtonUninstall:disabled {{
         card, icon_label, body, actions = self._build_card_shell()
         card.setProperty("plugin_id", entry.id)
         if entry.icon:
-            load_mod_icon_universal(icon_label, entry, size=icon_label.width())
+            load_mod_icon_universal(icon_label, entry, size=icon_label.width() - 4, fit=True)
         body.addWidget(self._card_header(entry.name, entry.version, entry.author))
         description = QLabel(entry.description)
         description.setObjectName("secondaryText")
@@ -715,6 +740,8 @@ QPushButton#cardButtonUninstall:disabled {{
         self._refresh_download_button_state(entry.id)
 
     def import_paths(self, paths: list[str]) -> None:
+        if self.catalog_service is None or self.plugin_install_service is None or self.plugin_runtime_service is None:
+            return
         if not paths:
             return
         imported = False
@@ -740,6 +767,8 @@ QPushButton#cardButtonUninstall:disabled {{
             self.render()
 
     def toggle_plugin(self, plugin_id: str) -> None:
+        if self.plugin_runtime_service is None:
+            return
         plugin = self.plugin_runtime_service.get_plugin(plugin_id)
         if not plugin:
             return
@@ -757,6 +786,8 @@ QPushButton#cardButtonUninstall:disabled {{
         self.render()
 
     def show_plugin_details(self, plugin_id: str) -> None:
+        if self.catalog_service is None or self.plugin_runtime_service is None:
+            return
         plugin = self.plugin_runtime_service.get_plugin(plugin_id)
         entry = (
             None
@@ -800,6 +831,8 @@ QPushButton#cardButtonUninstall:disabled {{
         self.render()
 
     def update_plugin(self, plugin_id: str) -> None:
+        if self.plugin_runtime_service is None:
+            return
         plugin = self.plugin_runtime_service.get_plugin(plugin_id)
         entry = plugin.catalog_entry if plugin else None
         if not entry:
@@ -807,6 +840,8 @@ QPushButton#cardButtonUninstall:disabled {{
         self.download_plugin(entry)
 
     def delete_plugin(self, plugin_id: str) -> None:
+        if self.catalog_service is None or self.plugin_install_service is None or self.plugin_runtime_service is None:
+            return
         plugin = self.plugin_runtime_service.get_plugin(plugin_id)
         try:
             self.plugin_runtime_service.disable_plugin(plugin_id)
@@ -829,6 +864,8 @@ QPushButton#cardButtonUninstall:disabled {{
         self.render()
 
     def _apply_list_style(self) -> None:
+        if self.app is None:
+            return
         if not hasattr(self.app, "catalog_container"):
             return
         border = get_theme_color(self.app_state.local_config, "border")
@@ -881,6 +918,8 @@ QPushButton#cardButtonUninstall:disabled {{
         )
 
     def _refresh_download_button_state(self, plugin_id: str) -> None:
+        if self.catalog_service is None:
+            return
         button = self._download_buttons.get(plugin_id)
         if not button:
             return
@@ -898,6 +937,8 @@ QPushButton#cardButtonUninstall:disabled {{
         self._catalog_worker.start()
 
     def _on_catalog_loaded(self) -> None:
+        if self.plugin_runtime_service is None:
+            return
         self.plugin_runtime_service.scan_installed_plugins(resolve_catalog=True)
         if self._loaded:
             self.render()
@@ -924,6 +965,8 @@ QPushButton#cardButtonUninstall:disabled {{
         self._clear_catalog_worker()
 
     def refresh_main_tabs(self, *, force_rebuild: bool = False) -> None:
+        if self.app is None or self.plugin_runtime_service is None:
+            return
         if not hasattr(self.app, "main_tab_widget"):
             return
         tab_widget = self.app.main_tab_widget

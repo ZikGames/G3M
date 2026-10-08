@@ -286,14 +286,13 @@ class AppState(QObject):
         if not self._current_task:
             logger.warning("AppState: No current_task to cancel")
             return
-        if hasattr(self._current_task, "cancel") and callable(
-            self._current_task.cancel
-        ):
+        cancel = getattr(self._current_task, "cancel", None)
+        if callable(cancel):
             logger.info(
                 f"AppState: Calling cancel() on current_task: {type(self._current_task).__name__}"
             )
             try:
-                self._current_task.cancel()
+                cancel()
             except Exception as e:
                 logger.error(
                     f"AppState: Error calling cancel() on task: {e}", exc_info=True

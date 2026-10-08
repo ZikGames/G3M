@@ -10,7 +10,7 @@ from workers.changelog_worker import FetchChangelogWorker
 
 def test_background_loader_suppresses_emit_failure(caplog):
     worker = BgLoader("missing.png")
-    worker.loaded = FailingSignal()
+    vars(worker)["loaded"] = FailingSignal()
 
     worker.run()
 
@@ -19,7 +19,7 @@ def test_background_loader_suppresses_emit_failure(caplog):
 
 def test_changelog_worker_suppresses_emit_failure(caplog):
     worker = FetchChangelogWorker("plain changelog")
-    worker.finished = FailingSignal()
+    vars(worker)["finished"] = FailingSignal()
 
     worker.run()
 

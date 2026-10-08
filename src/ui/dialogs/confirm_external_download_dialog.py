@@ -1,24 +1,25 @@
 """Confirmation dialog before downloading from external URL."""
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from services.localization_service import tr
-from ui.common.dialog_theme import build_dialog_theme_stylesheet
+from ui.common.dialog_theme import DynamicDialog, build_dialog_theme_stylesheet
 
 
-class ConfirmExternalDownloadDialog(QDialog):
+class ConfirmExternalDownloadDialog(DynamicDialog):
     """Small dialog asking user to confirm download from external source."""
 
     def __init__(self, url: str, app_state=None, parent=None) -> None:
         super().__init__(parent)
+        self.app_state = app_state
         self._url = url
         self.setWindowTitle(tr("downloads.confirm_external_title"))
         self.setMinimumWidth(400)
         self.setModal(True)
         self._build_ui()
         if app_state:
-            self.setStyleSheet(build_dialog_theme_stylesheet(app_state))
+            self.set_theme_stylesheet(build_dialog_theme_stylesheet(app_state))
 
     def _build_ui(self):
         layout = QVBoxLayout(self)

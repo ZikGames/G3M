@@ -429,6 +429,7 @@ packageID = "example.current.author"
             gamebanana_metadata={"mod_id": 12345, "version": "2.0.0"},
         ).convert()
 
+        assert result is not None
         assert result == previous
         assert os.path.isfile(os.path.join(result, "mod_versions", "1.0.0.zip"))
         with open(os.path.join(result, "mod_config.json"), encoding="utf-8") as handle:

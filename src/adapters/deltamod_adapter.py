@@ -9,9 +9,14 @@ import shutil
 import tomllib
 import uuid
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from defusedxml import ElementTree
+
+if TYPE_CHECKING:
+    from xml.etree.ElementTree import (
+        Element,
+    )
 
 from config.config import MOD_DOCUMENTATION_EXTENSIONS
 from services.localization_service import tr
@@ -59,7 +64,7 @@ class DeltamodConverter:
         self.mods_dir = mods_dir
         self.gamebanana_metadata = gamebanana_metadata or {}
         self.deltamod_info: dict[str, Any] = {}
-        self.modding_xml: ElementTree.Element | None = None
+        self.modding_xml: Element | None = None
         self._target_game = "deltarune"
 
     def convert(self) -> str | None:
@@ -107,6 +112,8 @@ class DeltamodConverter:
                     if os.path.basename(icon_path) == "_icon.png"
                     else "${mod_path}/icon.png"
                 )
+            elif self.gamebanana_metadata.get("icon"):
+                config_data["icon"] = self.gamebanana_metadata["icon"]
             config_path = os.path.join(target_mod_dir, "mod_config.json")
             write_mod_config(config_path, config_data)
             logger.info(

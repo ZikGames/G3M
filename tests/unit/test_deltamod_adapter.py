@@ -16,7 +16,7 @@ def _make_converter(
         "source", "mods", gamebanana_metadata=gamebanana_metadata
     )
     converter.deltamod_info = metadata
-    converter.modding_xml = object()
+    converter.modding_xml = ElementTree.fromstring("<modding />")
     return converter
 
 
@@ -34,6 +34,7 @@ def test_generate_config_uses_deltamod_game_mapping_for_supported_single_tab_gam
 
     config = converter._generate_config_json()
 
+    assert config is not None
     assert config["game"] == "undertale"
 
 
@@ -51,6 +52,7 @@ def test_generate_config_uses_deltamod_game_mapping_for_pizzatower():
 
     config = converter._generate_config_json()
 
+    assert config is not None
     assert config["game"] == "pizzatower"
     assert "game_version" not in config
 
@@ -70,7 +72,9 @@ def test_generate_config_keeps_deltarune_target_version_only_for_deltarune():
 
     config = converter._generate_config_json()
 
+    assert config is not None
     assert config["game"] == "deltarune"
+    assert config is not None
     assert config["game_version"] == "1.04"
 
 
@@ -131,6 +135,7 @@ def test_generate_config_ignores_gamebanana_metadata_game():
 
     config = converter._generate_config_json()
 
+    assert config is not None
     assert config["game"] == "undertale"
 
 
@@ -148,6 +153,7 @@ def test_generate_config_uses_canonical_gamebanana_identity():
 
     config = converter._generate_config_json()
 
+    assert config is not None
     assert config["id"] == "gb_mod_123"
 
 
@@ -165,6 +171,7 @@ def test_generate_config_preserves_gamebanana_wip_identity():
 
     config = converter._generate_config_json()
 
+    assert config is not None
     assert config["id"] == "gb_wip_456"
 
 
@@ -177,6 +184,7 @@ def test_generate_config_uses_gamebanana_file_name_when_metadata_name_missing():
 
     config = converter._generate_config_json()
 
+    assert config is not None
     assert config["name"] == "Downloaded Archive Name"
 
 
@@ -186,7 +194,9 @@ def test_generate_config_uses_gamebanana_authors():
         {"authors": ["GameBanana author", "Second author"]},
     )
 
-    assert converter._generate_config_json()["authors"] == [
+    config = converter._generate_config_json()
+    assert config is not None
+    assert config["authors"] == [
         "GameBanana author",
         "Second author",
     ]
@@ -521,5 +531,7 @@ def test_revision_four_lts_demo_game_id_maps_to_demo():
 
     config = converter._generate_config_json()
 
+    assert config is not None
     assert config["game"] == "deltarunedemo"
+    assert config is not None
     assert config["authors"] == ["Author"]

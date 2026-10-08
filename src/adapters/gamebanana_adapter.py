@@ -15,6 +15,7 @@ from config.config import (
     GAMEBANANA_TOOL_ID_DELTAMOD,
     GAMEBANANA_TOOL_ID_G3M,
     NETWORK_TIMEOUT_MEDIUM,
+    NETWORK_TIMEOUT_SHORT,
 )
 from models.game_modes import get_gamebanana_reverse_map
 from models.mod_models import BrowserModInfo
@@ -260,6 +261,32 @@ class GameBananaAPI:
             else None
         )
 
+    def get_install_metadata(self, metadata: dict) -> dict:
+        """Refresh available display metadata, retaining the selected file's version."""
+        result = {}
+        try:
+            is_wip = str(metadata.get("item_type", "mod")).strip().casefold() == "wip"
+            profile = self.get_mod_profile_page(
+                metadata["mod_id"], itemtype="Wip" if is_wip else "Mod",
+                max_retries=0, timeout=NETWORK_TIMEOUT_SHORT,
+            )
+            if isinstance(profile, dict):
+                mod = self._map_mod_data(profile, metadata.get("game", "deltarune"), is_wip=is_wip)
+                if mod:
+                    for field, key in (("name", "_sName"), ("description", "_sDescription"), ("version", "_sVersion")):
+                        if profile.get(key) and not (field == "version" and metadata.get("version")):
+                            result[field] = profile[key] if field == "description" else getattr(mod, field)
+                    for field in ("homepage", "icon", "tags"):
+                        if value := getattr(mod, field):
+                            result[field] = value
+                    if isinstance(submitter := profile.get("_aSubmitter"), dict) and submitter.get("_sName"):
+                        result["authors"] = mod.authors
+                    if mod.gamebanana_category:
+                        result["category"] = mod.gamebanana_category
+        except Exception:
+            logger.warning("Could not refresh GameBanana install metadata", exc_info=True)
+        return result
+
     def _get_mod_file_compatibility(self, mod_id, itemtype="Mod"):
         cached = self._compatibility_cache.get(mod_id)
         if cached:
@@ -286,38 +313,15 @@ class GameBananaAPI:
                     file_id := self._safe_int(file_entry.get("_idRow"))
                 ):
                     continue
-                file_tool_ids = [
-                    tool_id
-                    for integration in file_entry.get("_aModManagerIntegrations", [])
-                    if isinstance(integration, dict)
-                    and (tool_id := self._safe_int(integration.get("_idToolRow")))
-                    is not None
-                ]
-                file_tool_names = [
-                    integration.get("_sName", str(tool_id))
-                    for integration in file_entry.get("_aModManagerIntegrations", [])
-                    if isinstance(integration, dict)
-                    and (tool_id := self._safe_int(integration.get("_idToolRow")))
-                    is not None
-                ]
-                compatibility_label = None
-                if GAMEBANANA_TOOL_ID_G3M in file_tool_ids:
-                    compatibility_label = "g3m"
+                file_payload = self._build_file_metadata(file_id, file_entry)
+                compatibility_label = file_payload["compatibility"]
+                if compatibility_label == "g3m":
                     compatibility["has_g3m_file"] = True
-                elif GAMEBANANA_TOOL_ID_DELTAMOD in file_tool_ids:
-                    compatibility_label = "deltamod"
+                elif compatibility_label == "deltamod":
                     compatibility["has_deltamod_file"] = True
                 if compatibility_label:
-                    file_payload = self._build_file_metadata(
-                        file_id=file_id,
-                        profile_entry=file_entry,
-                        details_entry=None,
-                        tool_ids=file_tool_ids,
-                        tool_names=file_tool_names,
-                        compatibility_label=compatibility_label,
-                    )
                     compatibility["supported_files"].append(file_payload)
-                    compatibility["tool_ids"].update(file_tool_ids)
+                    compatibility["tool_ids"].update(file_payload["tool_ids"])
             if compatibility["supported_files"]:
                 compatibility["has_supported_files"] = True
                 compatibility["preferred_format"] = (
@@ -569,12 +573,15 @@ class GameBananaAPI:
         self,
         file_id: int,
         profile_entry: dict[str, Any],
-        details_entry: dict[str, Any] | None,
-        tool_ids: list[int],
-        tool_names: list[str],
-        compatibility_label: str,
     ) -> dict[str, Any]:
-        sources = [profile_entry, details_entry or {}]
+        integrations = [
+            (tool_id, integration.get("_sName", str(tool_id)))
+            for integration in profile_entry.get("_aModManagerIntegrations") or []
+            if isinstance(integration, dict)
+            and (tool_id := self._safe_int(integration.get("_idToolRow"))) is not None
+        ]
+        tool_ids = [tool_id for tool_id, _ in integrations]
+        sources = [profile_entry]
         size_val = self._safe_int(self._first_value(sources, "_nFilesize"))
         timestamp_val = self._safe_int(self._first_value(sources, "_tsDateAdded"))
         download_count = self._safe_int(self._first_value(sources, "_nDownloadCount"))
@@ -598,8 +605,8 @@ class GameBananaAPI:
             "is_archived": bool(self._first_value(sources, "_bIsArchived", False)),
             "has_contents": bool(self._first_value(sources, "_bHasContents", False)),
             "tool_ids": tool_ids,
-            "tool_names": tool_names,
-            "compatibility": compatibility_label,
+            "tool_names": [name for _, name in integrations],
+            "compatibility": "g3m" if GAMEBANANA_TOOL_ID_G3M in tool_ids else "deltamod" if GAMEBANANA_TOOL_ID_DELTAMOD in tool_ids else "",
         }
 
     def search_mods(

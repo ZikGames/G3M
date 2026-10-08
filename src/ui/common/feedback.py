@@ -3,16 +3,17 @@
 import html
 import json
 import logging
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtGui import QScreen
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QDialog,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
+    QScrollArea,
     QStyle,
     QVBoxLayout,
 )
@@ -24,6 +25,8 @@ from services.warning_service import (
     get_warning_definition,
     normalize_warning_preferences,
 )
+from ui.common.dialog_theme import DynamicDialog as QDialog
+from ui.common.dialog_theme import DynamicMessageBox as QMessageBox
 
 if TYPE_CHECKING:
     from models.app_state import AppState
@@ -67,26 +70,20 @@ class FeedbackManager(QObject):
             return
         t = self._tr
         type_map = {
-            "error": (QMessageBox.Icon.Critical, t("errors.error")),
-            "warning": (QMessageBox.Icon.Warning, t("dialogs.warning")),
-            "info": (QMessageBox.Icon.Information, t("dialogs.info")),
-            "success": (QMessageBox.Icon.Information, t("dialogs.success")),
+            "error": (QMessageBox.Icon.Critical, "errors.error"),
+            "warning": (QMessageBox.Icon.Warning, "dialogs.warning"),
+            "info": (QMessageBox.Icon.Information, "dialogs.info"),
+            "success": (QMessageBox.Icon.Information, "dialogs.success"),
         }
         icon, title = type_map.get(
-            message_type, (QMessageBox.Icon.Information, t("dialogs.success"))
+            message_type, (QMessageBox.Icon.Information, "dialogs.success")
         )
-        message = t(message_key, **kwargs)
         msg_box = QMessageBox(self.parent_widget)
+        msg_box.translator = t
         msg_box.setIcon(icon)
-        msg_box.setWindowTitle(title)
-        message_html = self._format_html(message)
-        if details:
-            details_html = self._format_html(details)
-            full_message = f"{message_html}<br><br>{details_html}"
-        else:
-            full_message = message_html
+        msg_box.set_localized_title(title)
         msg_box.setTextFormat(Qt.TextFormat.RichText)
-        msg_box.setText(full_message)
+        msg_box.localize(lambda text: msg_box.setText(self._format_html(text) + (f"<br><br>{self._format_html(details)}" if details else "")), message_key, **kwargs)
         msg_box.exec()
 
     def ask_question(
@@ -101,19 +98,13 @@ class FeedbackManager(QObject):
         if not self._should_show_dialog():
             return False
         t = self._tr
-        title = t(title_key, **kwargs)
-        message = t(message_key, **kwargs)
         msg_box = QMessageBox(self.parent_widget)
+        msg_box.translator = t
         msg_box.setIcon(QMessageBox.Icon.Question)
-        msg_box.setWindowTitle(title)
-        if details:
-            details_html = details if details_is_html else self._format_html(details)
-            message_html = self._format_html(message)
-            full_message = f"{message_html}<br><br>{details_html}"
-        else:
-            full_message = self._format_html(message)
+        msg_box.set_localized_title(title_key, **kwargs)
+        details_html = details if details_is_html else self._format_html(details)
         msg_box.setTextFormat(Qt.TextFormat.RichText)
-        msg_box.setText(full_message)
+        msg_box.localize(lambda text: msg_box.setText(self._format_html(text) + (f"<br><br>{details_html}" if details else "")), message_key, **kwargs)
         msg_box.setStandardButtons(
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
@@ -130,6 +121,7 @@ class FeedbackManager(QObject):
         if not self._should_show_dialog():
             return False
         msg_box = QMessageBox(self.parent_widget)
+        msg_box.translator = self._tr
         msg_box.setIcon(QMessageBox.Icon.Question)
         msg_box.setWindowTitle(title)
         msg_box.setTextFormat(Qt.TextFormat.RichText)
@@ -149,25 +141,17 @@ class FeedbackManager(QObject):
         if not self._should_show_dialog():
             return "cancel"
         msg_box = QMessageBox(self.parent_widget)
+        msg_box.translator = self._tr
         msg_box.setIcon(QMessageBox.Icon.Warning)
-        msg_box.setWindowTitle(self._tr("dialogs.patching_warning.title"))
+        msg_box.set_localized_title("dialogs.patching_warning.title")
         text = self._format_html(message)
         if details:
             text = f"{text}<br><br>{self._format_html(details)}"
         msg_box.setTextFormat(Qt.TextFormat.RichText)
         msg_box.setText(text)
-        apply_button = msg_box.addButton(
-            self._tr("dialogs.patching_warning.apply_arrangement"),
-            QMessageBox.ButtonRole.AcceptRole,
-        )
-        continue_button = msg_box.addButton(
-            self._tr("dialogs.patching_warning.launch_without_changes"),
-            QMessageBox.ButtonRole.ActionRole,
-        )
-        msg_box.addButton(
-            self._tr("dialogs.patching_warning.cancel_button"),
-            QMessageBox.ButtonRole.RejectRole,
-        )
+        apply_button = msg_box.add_localized_button("dialogs.patching_warning.apply_arrangement", QMessageBox.ButtonRole.AcceptRole)
+        continue_button = msg_box.add_localized_button("dialogs.patching_warning.launch_without_changes", QMessageBox.ButtonRole.ActionRole)
+        msg_box.add_localized_button("dialogs.patching_warning.cancel_button", QMessageBox.ButtonRole.RejectRole)
         msg_box.setDefaultButton(continue_button)
         msg_box.exec()
         if msg_box.clickedButton() is apply_button:
@@ -181,25 +165,17 @@ class FeedbackManager(QObject):
         if not self._should_show_dialog():
             return "cancel"
         msg_box = QMessageBox(self.parent_widget)
+        msg_box.translator = self._tr
         msg_box.setIcon(QMessageBox.Icon.Question)
-        msg_box.setWindowTitle(self._tr("dialogs.patching_warning.title"))
+        msg_box.set_localized_title("dialogs.patching_warning.title")
         text = self._format_html(message)
         if details:
             text = f"{text}<br><br>{self._format_html(details)}"
         msg_box.setTextFormat(Qt.TextFormat.RichText)
         msg_box.setText(text)
-        activate_button = msg_box.addButton(
-            self._tr("dialogs.patching_warning.activate_dependencies"),
-            QMessageBox.ButtonRole.AcceptRole,
-        )
-        continue_button = msg_box.addButton(
-            self._tr("dialogs.patching_warning.launch_without_dependencies"),
-            QMessageBox.ButtonRole.ActionRole,
-        )
-        msg_box.addButton(
-            self._tr("dialogs.patching_warning.cancel_button"),
-            QMessageBox.ButtonRole.RejectRole,
-        )
+        activate_button = msg_box.add_localized_button("dialogs.patching_warning.activate_dependencies", QMessageBox.ButtonRole.AcceptRole)
+        continue_button = msg_box.add_localized_button("dialogs.patching_warning.launch_without_dependencies", QMessageBox.ButtonRole.ActionRole)
+        msg_box.add_localized_button("dialogs.patching_warning.cancel_button", QMessageBox.ButtonRole.RejectRole)
         msg_box.setDefaultButton(activate_button)
         msg_box.exec()
         if msg_box.clickedButton() is activate_button:
@@ -213,25 +189,17 @@ class FeedbackManager(QObject):
         if not self._should_show_dialog():
             return "cancel"
         msg_box = QMessageBox(self.parent_widget)
+        msg_box.translator = self._tr
         msg_box.setIcon(QMessageBox.Icon.Warning)
-        msg_box.setWindowTitle(self._tr("dialogs.patching_warning.title"))
+        msg_box.set_localized_title("dialogs.patching_warning.title")
         text = self._format_html(message)
         if details:
             text = f"{text}<br><br>{self._format_html(details)}"
         msg_box.setTextFormat(Qt.TextFormat.RichText)
         msg_box.setText(text)
-        force_button = msg_box.addButton(
-            self._tr("dialogs.patching_warning.force_restore"),
-            QMessageBox.ButtonRole.DestructiveRole,
-        )
-        keep_button = msg_box.addButton(
-            self._tr("dialogs.patching_warning.keep_external_changes"),
-            QMessageBox.ButtonRole.ActionRole,
-        )
-        msg_box.addButton(
-            self._tr("dialogs.patching_warning.cancel_button"),
-            QMessageBox.ButtonRole.RejectRole,
-        )
+        force_button = msg_box.add_localized_button("dialogs.patching_warning.force_restore", QMessageBox.ButtonRole.DestructiveRole)
+        keep_button = msg_box.add_localized_button("dialogs.patching_warning.keep_external_changes", QMessageBox.ButtonRole.ActionRole)
+        msg_box.add_localized_button("dialogs.patching_warning.cancel_button", QMessageBox.ButtonRole.RejectRole)
         msg_box.setDefaultButton(keep_button)
         msg_box.exec()
         if msg_box.clickedButton() is force_button:
@@ -251,8 +219,9 @@ class FeedbackManager(QObject):
         if not self._should_show_dialog():
             return "cancel"
         msg_box = QMessageBox(self.parent_widget)
+        msg_box.translator = self._tr
         msg_box.setIcon(QMessageBox.Icon.Question)
-        msg_box.setWindowTitle(self._tr("dialogs.patching_warning.title"))
+        msg_box.set_localized_title("dialogs.patching_warning.title")
         text = self._format_html(message)
         if details:
             text = f"{text}<br><br>{self._format_html(details)}"
@@ -260,22 +229,11 @@ class FeedbackManager(QObject):
         msg_box.setText(text)
         resolve_button = None
         if can_download or can_activate:
-            resolve_button = msg_box.addButton(
-                self._tr(
-                    "dialogs.patching_warning.install_and_activate_dependencies"
+            resolve_button = msg_box.add_localized_button("dialogs.patching_warning.install_and_activate_dependencies"
                     if can_download
-                    else "dialogs.patching_warning.activate_dependencies"
-                ),
-                QMessageBox.ButtonRole.AcceptRole,
-            )
-        continue_button = msg_box.addButton(
-            self._tr("dialogs.patching_warning.launch_selected_mods"),
-            QMessageBox.ButtonRole.ActionRole,
-        )
-        msg_box.addButton(
-            self._tr("dialogs.patching_warning.cancel_button"),
-            QMessageBox.ButtonRole.RejectRole,
-        )
+                    else "dialogs.patching_warning.activate_dependencies", QMessageBox.ButtonRole.AcceptRole)
+        continue_button = msg_box.add_localized_button("dialogs.patching_warning.launch_selected_mods", QMessageBox.ButtonRole.ActionRole)
+        msg_box.add_localized_button("dialogs.patching_warning.cancel_button", QMessageBox.ButtonRole.RejectRole)
         msg_box.setDefaultButton(resolve_button or continue_button)
         msg_box.exec()
         clicked_button = msg_box.clickedButton()
@@ -322,6 +280,7 @@ class FeedbackManager(QObject):
                 icon,
                 bool(warning_id),
                 bool(report_path),
+                warning_event=replace(message, details=details) if isinstance(message, WarningEvent) else None,
             )
             if dont_show_again:
                 self._disable_warning(warning_id)
@@ -341,11 +300,17 @@ class FeedbackManager(QObject):
         icon: QMessageBox.Icon,
         allow_disable: bool,
         has_report: bool,
+        *,
+        warning_event: WarningEvent | None = None,
     ) -> tuple[str, bool]:
         dialog = QDialog(self.parent_widget)
+        dialog.translator = self._tr
         dialog.setWindowTitle(title)
         dialog.setModal(True)
-        dialog.setMinimumWidth(420)
+        available = cast(QScreen, dialog.screen()).availableGeometry()
+        dialog.setMinimumWidth(min(420, available.width() - 40))
+        dialog.setMaximumSize(available.width() - 40, available.height() - 80)
+        dialog.resize(min(760, dialog.maximumWidth()), min(460, dialog.maximumHeight()))
         dialog.setObjectName("patching_warning_dialog")
         result = {"action": "cancel"}
 
@@ -362,7 +327,7 @@ class FeedbackManager(QObject):
             QMessageBox.Icon.Warning: QStyle.StandardPixmap.SP_MessageBoxWarning,
             QMessageBox.Icon.Information: QStyle.StandardPixmap.SP_MessageBoxInformation,
         }
-        pixmap = dialog.style().standardIcon(
+        pixmap = cast(QStyle, dialog.style()).standardIcon(
             icon_map.get(icon, QStyle.StandardPixmap.SP_MessageBoxWarning)
         ).pixmap(32, 32)
         icon_label.setPixmap(pixmap)
@@ -372,33 +337,43 @@ class FeedbackManager(QObject):
         message_label.setTextFormat(Qt.TextFormat.RichText)
         message_label.setWordWrap(True)
         message_label.setText(message_html)
+        if warning_event is not None:
+            definition = get_warning_definition(warning_event.warning_id)
+            dialog.set_localized_title(definition.title_key, **warning_event.context)
+            if not warning_event.fallback_message:
+                details = self._format_html(warning_event.details)
+                dialog.localize(
+                    lambda text: message_label.setText(self._format_html(text) + (f"<br><br>{details}" if details else "")),
+                    definition.body_key,
+                    owner=message_label,
+                    **warning_event.context,
+                )
         message_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        body.addWidget(message_label, 1)
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(message_label)
+        body.addWidget(scroll, 1)
         root.addLayout(body)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
         dont_show_checkbox = None
         if allow_disable:
-            dont_show_checkbox = QCheckBox(
-                self._tr("dialogs.patching_warning.dont_show_again"), dialog
-            )
-            buttons.addWidget(dont_show_checkbox, 0, Qt.AlignmentFlag.AlignLeft)
+            dont_show_checkbox = dialog.localize_text(QCheckBox(dialog), "dialogs.patching_warning.dont_show_again")
+            root.addWidget(dont_show_checkbox, 0, Qt.AlignmentFlag.AlignLeft)
         buttons.addStretch(1)
 
         if has_report:
-            report_btn = QPushButton(self._tr("dialogs.conflicts.open_report"), dialog)
+            report_btn = dialog.localize_text(QPushButton(dialog), "dialogs.conflicts.open_report")
             report_btn.clicked.connect(lambda: (result.update(action="report"), dialog.accept()))
             buttons.addWidget(report_btn)
 
-        continue_btn = QPushButton(
-            self._tr("dialogs.patching_warning.continue_button"), dialog
-        )
-        cancel_btn = QPushButton(
-            self._tr("dialogs.patching_warning.cancel_button"), dialog
-        )
+        continue_btn = dialog.localize_text(QPushButton(dialog), "dialogs.patching_warning.continue_button")
+        cancel_btn = dialog.localize_text(QPushButton(dialog), "dialogs.patching_warning.cancel_button")
         continue_btn.clicked.connect(
             lambda: (result.update(action="continue"), dialog.accept())
         )

@@ -1,8 +1,9 @@
 """Dialog for managing built-in and custom games."""
 
 import logging
+from typing import cast
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QAbstractItemModel, QSize, Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -19,8 +20,17 @@ from PyQt6.QtWidgets import (
 
 from services.game_registry_service import GameRegistryValidationError
 from services.localization_service import tr
-from ui.common.dialog_theme import apply_dialog_theme, get_dialog_theme_values
-from ui.common.styling import clamp_border_radius, get_border_radius
+from ui.common.dialog_theme import (
+    DynamicDialog,
+    DynamicMessageBox,
+    apply_dialog_theme,
+    get_dialog_theme_values,
+)
+from ui.common.styling import (
+    clamp_border_radius,
+    get_border_radius,
+    get_ui_scale_factor,
+)
 from ui.dialogs.custom_game_dialog import CustomGameDialog
 from utils.path_utils import colored_icon
 
@@ -29,8 +39,12 @@ logger = logging.getLogger(__name__)
 _ITEM_HEIGHT = 88
 
 
-class GameManagerDialog(QDialog):
+class GameManagerDialog(DynamicDialog):
     """Manage visibility, order, and custom games."""
+
+    add_btn: QPushButton
+    edit_btn: QPushButton
+    del_btn: QPushButton
 
     def __init__(
         self,
@@ -86,7 +100,7 @@ class GameManagerDialog(QDialog):
         self.list_widget.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
         )
-        self.list_widget.model().rowsMoved.connect(self._on_rows_moved)
+        cast(QAbstractItemModel, self.list_widget.model()).rowsMoved.connect(self._on_rows_moved)
         self.list_widget.currentRowChanged.connect(self._on_selection_changed)
         layout.addWidget(self.list_widget, 1)
         self.close_btn = QPushButton(tr("ui.close_button"))
@@ -110,7 +124,7 @@ class GameManagerDialog(QDialog):
         for entry in self.registry_service.list_manager_games():
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, entry.id)
-            item.setSizeHint(QSize(0, _ITEM_HEIGHT))
+            item.setSizeHint(QSize(0, round(_ITEM_HEIGHT * get_ui_scale_factor(self.app_state.local_config))))
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, self._build_item_widget(entry))
         if self.list_widget.count():
@@ -118,7 +132,7 @@ class GameManagerDialog(QDialog):
                 (
                     row
                     for row in range(self.list_widget.count())
-                    if self.list_widget.item(row).data(Qt.ItemDataRole.UserRole)
+                    if cast(QListWidgetItem, self.list_widget.item(row)).data(Qt.ItemDataRole.UserRole)
                     == current_id
                 ),
                 0,
@@ -248,15 +262,11 @@ class GameManagerDialog(QDialog):
         entry = self._selected_entry()
         if not entry or entry.is_builtin:
             return
-        msg = QMessageBox(self)
-        msg.setWindowTitle(tr("games.delete_title"))
-        msg.setText(tr("games.delete_confirm_text", name=entry.display_name))
-        soft_btn = msg.addButton(
-            tr("games.delete_registry_only"), QMessageBox.ButtonRole.AcceptRole
-        )
-        cleanup_btn = msg.addButton(
-            tr("games.delete_with_cleanup"), QMessageBox.ButtonRole.DestructiveRole
-        )
+        msg = DynamicMessageBox(self)
+        msg.set_localized_title("games.delete_title")
+        msg.localize(msg.setText, "games.delete_confirm_text", name=entry.display_name)
+        soft_btn = msg.add_localized_button("games.delete_registry_only", QMessageBox.ButtonRole.AcceptRole)
+        cleanup_btn = msg.add_localized_button("games.delete_with_cleanup", QMessageBox.ButtonRole.DestructiveRole)
         msg.addButton(QMessageBox.StandardButton.Cancel)
         for button in msg.buttons():
             button.setMinimumWidth(button.sizeHint().width() + 18)
@@ -282,6 +292,10 @@ class GameManagerDialog(QDialog):
 
     def _apply_theme(self) -> None:
         apply_dialog_theme(self, self.app_state)
+        scale = get_ui_scale_factor(self.app_state.local_config)
+        for row in range(self.list_widget.count()):
+            if item := self.list_widget.item(row):
+                item.setSizeHint(QSize(0, round(_ITEM_HEIGHT * scale)))
         theme = get_dialog_theme_values(self.app_state)
         br = clamp_border_radius(
             get_border_radius(self.app_state.local_config),
@@ -308,6 +322,8 @@ class GameManagerDialog(QDialog):
             }}
             QLabel#gameManagerDetailLabel {{ color: {theme["secondary_text"]}; font-size: 11px; }}
         """
-        self.setStyleSheet(self.styleSheet() + btn_qss)
+        self.set_theme_stylesheet(self._theme_stylesheet + btn_qss)
         for btn, icon_name in self._action_btns:
             btn.setIcon(colored_icon(icon_name, theme["main_text"]))
+            btn.setFixedSize(round(38 * scale), round(38 * scale))
+            btn.setIconSize(QSize(round(20 * scale), round(20 * scale)))

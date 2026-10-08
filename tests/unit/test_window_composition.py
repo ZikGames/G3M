@@ -43,7 +43,6 @@ def test_window_composition_feedback_callbacks_ignore_broken_feedback(monkeypatc
     window.settings_service.theme_changed = _Signal()
     window.mod_service.progress_updated = _Signal()
     window.mod_service.status_changed = _Signal()
-    window.mod_service.url_prompt_required = _Signal()
     window.game_launcher.status_changed = _Signal()
     window.game_launcher.progress_updated = _Signal()
     window.game_launcher.game_launch_started = _Signal()

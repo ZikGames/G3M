@@ -10,7 +10,6 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -26,9 +25,9 @@ from PyQt6.QtWidgets import (
 from models.plugin_models import CatalogPluginEntry, InstalledPluginRecord
 from services.localization_service import localization_service, tr
 from services.plugins.support import resolve_plugin_path
+from ui.common.dialog_theme import DynamicDialog
 from ui.common.styling import (
-    get_border_radius,
-    get_theme_color,
+    get_ui_scale_factor,
     load_mod_icon_universal,
 )
 from utils.native_integration import open_url_native
@@ -43,7 +42,7 @@ def _resolve_text(value: str) -> str:
     return value if translated == f"[{value}]" else translated
 
 
-class PluginDetailsDialog(QDialog):
+class PluginDetailsDialog(DynamicDialog):
     """Shows installed plugin metadata, settings, and destructive actions."""
 
     def __init__(
@@ -71,6 +70,7 @@ class PluginDetailsDialog(QDialog):
         self.delete_requested = False
         self.download_requested = False
         self._meta_labels: list[tuple[QLabel, str]] = []
+        self._meta_values: list[QLabel] = []
         self._schema_texts: list[tuple[QLabel, str, str]] = []
         self._schema_controls: list[tuple[QWidget, dict[str, Any]]] = []
         self._external_button: QPushButton | None = None
@@ -84,6 +84,37 @@ class PluginDetailsDialog(QDialog):
         self.setWindowTitle(self._display_name())
         self.setMinimumWidth(620)
         self._init_ui()
+        self.apply_theme()
+
+    def apply_theme(self) -> None:
+        from ui.common.dialog_theme import (
+            apply_dialog_theme,
+            get_dialog_theme_values,
+            scale_stylesheet,
+        )
+
+        apply_dialog_theme(self, self.app_state)
+        theme = get_dialog_theme_values(self.app_state)
+        scale = get_ui_scale_factor(self.app_state.local_config)
+        if self._icon_label is not None:
+            self._icon_label.setFixedSize(round(112 * scale), round(112 * scale))
+            if hasattr(self, "_icon_source"):
+                self._icon_label.setPixmap(self._icon_source.scaled(round(96 * scale), round(96 * scale), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            elif self.catalog_entry and self.catalog_entry.icon:
+                load_mod_icon_universal(self._icon_label, self.catalog_entry, size=round(96 * scale), fit=True)
+        def style(widget, text: str) -> None:
+            if widget is not None:
+                widget.setStyleSheet(scale_stylesheet(text, self.app_state))
+        style(self._icon_label, f"border: 2px solid {theme['border']}; border-radius: {theme['border_radius']}px;")
+        style(self._title_label, f"font-size: 18px; font-weight: bold; color: {theme['main_text']};")
+        style(self._description_label, f"font-size: 12px; color: {theme['secondary_text']};")
+        for label, _key in self._meta_labels:
+            style(label, f"font-size: 15px; color: {theme['main_text']};")
+        for value in self._meta_values:
+            style(value, f"font-size: 15px; color: {theme['secondary_text']};")
+        style(self._settings_title, f"font-weight: bold; color: {theme['main_text']};")
+        style(self._delete_button, f"background-color: darkred; color: {theme['main_text']}; border-radius: {theme['button_radius']}px;")
+        style(self._download_button, f"color: {theme['main_text']}; border-radius: {theme['button_radius']}px;")
 
     def _plugin_id(self) -> str:
         if self.plugin:
@@ -152,16 +183,14 @@ class PluginDetailsDialog(QDialog):
             icon_column_layout.addWidget(external_button)
 
         icon_label = QLabel(icon_column)
+        self._icon_label = icon_label
         icon_label.setFixedSize(112, 112)
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_label.setStyleSheet(
-            f"border: 2px solid {get_theme_color(self.app_state.local_config, 'border')}; "
-            f"border-radius: {get_border_radius(self.app_state.local_config)}px;"
-        )
         manifest = self._manifest()
         if self.plugin and manifest and manifest.icon:
             pixmap = QPixmap(resolve_plugin_path(self.plugin.path, manifest.icon))
             if not pixmap.isNull():
+                self._icon_source = pixmap
                 icon_label.setPixmap(
                     pixmap.scaled(
                         96,
@@ -170,24 +199,16 @@ class PluginDetailsDialog(QDialog):
                         Qt.TransformationMode.SmoothTransformation,
                     )
                 )
-        elif self.catalog_entry and self.catalog_entry.icon:
-            load_mod_icon_universal(icon_label, self.catalog_entry, size=96)
         icon_column_layout.addWidget(icon_label, alignment=Qt.AlignmentFlag.AlignCenter)
         icon_column_layout.addStretch(1)
         summary_layout.addWidget(icon_column, 0, Qt.AlignmentFlag.AlignTop)
         meta_layout = QVBoxLayout()
         title = QLabel(self._display_name())
         self._title_label = title
-        title.setStyleSheet(
-            f"font-size: 18px; font-weight: bold; color: {get_theme_color(self.app_state.local_config, 'main_text')};"
-        )
         meta_layout.addWidget(title)
         description = QLabel(self._description())
         self._description_label = description
         description.setWordWrap(True)
-        description.setStyleSheet(
-            f"font-size: 12px; color: {get_theme_color(self.app_state.local_config, 'secondary_text')};"
-        )
         meta_layout.addWidget(description)
         for label_key, value in (
             ("plugins.meta_author", self._author()),
@@ -197,14 +218,9 @@ class PluginDetailsDialog(QDialog):
             row = QHBoxLayout()
             meta_label = QLabel(f"{tr(label_key)}:")
             self._meta_labels.append((meta_label, label_key))
-            meta_label.setStyleSheet(
-                f"font-size: 15px; color: {get_theme_color(self.app_state.local_config, 'main_text')};"
-            )
             row.addWidget(meta_label)
             meta_value = QLabel(value)
-            meta_value.setStyleSheet(
-                f"font-size: 15px; color: {get_theme_color(self.app_state.local_config, 'secondary_text')};"
-            )
+            self._meta_values.append(meta_value)
             row.addWidget(meta_value, 1)
             meta_layout.addLayout(row)
         summary_layout.addLayout(meta_layout, 1)
@@ -214,15 +230,10 @@ class PluginDetailsDialog(QDialog):
             settings_title = QLabel(tr("plugins.details_settings"))
             self._settings_title = settings_title
             settings_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            settings_title.setStyleSheet(
-                f"font-weight: bold; color: {get_theme_color(self.app_state.local_config, 'main_text')};"
-            )
             layout.addWidget(settings_title)
             settings_container = self._build_settings_container()
             layout.addWidget(settings_container, 1)
 
-        dr = get_border_radius(self.app_state.local_config)
-        tc = get_theme_color(self.app_state.local_config, "main_text", "#e8e9eb")
         if self.plugin is None:
             layout.addStretch(1)
         actions_layout = QHBoxLayout()
@@ -230,9 +241,6 @@ class PluginDetailsDialog(QDialog):
             delete_button = QPushButton(tr("plugins.details_delete"))
             delete_button.setAutoDefault(False)
             self._delete_button = delete_button
-            delete_button.setStyleSheet(
-                f"background-color: darkred; color: {tc}; border-radius: {dr}px;"
-            )
             delete_button.setToolTip(tr("tooltips.plugin_delete"))
             delete_button.clicked.connect(self._confirm_delete_plugin)
             actions_layout.addWidget(delete_button)
@@ -246,7 +254,6 @@ class PluginDetailsDialog(QDialog):
             download_button = QPushButton(tr("catalog.action_download"))
             self._download_button = download_button
             download_button.setEnabled(self._can_download)
-            download_button.setStyleSheet(f"color: {tc}; border-radius: {dr}px;")
             download_button.clicked.connect(self._request_download)
             actions_layout.addWidget(download_button)
         actions_layout.addStretch(1)
@@ -262,7 +269,8 @@ class PluginDetailsDialog(QDialog):
         )
         if custom_widget is not None:
             return custom_widget
-        schema = self.plugin.manifest.settings_schema if self.plugin.manifest else {}
+        manifest = self.plugin.manifest if self.plugin is not None else None
+        schema = manifest.settings_schema if manifest is not None else {}
         if not schema:
             label = QLabel(tr("plugins.no_settings"))
             self._no_settings_label = label

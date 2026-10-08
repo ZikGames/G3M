@@ -11,17 +11,71 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock, patch
 
+import pytest
 from PyQt6 import sip
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QImage
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QAbstractItemView, QTabWidget, QWidget
+from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QLayout,
+    QTabWidget,
+    QTreeWidgetItem,
+    QWidget,
+)
 
+from services.localization_service import localization_service, tr
 from ui.dialogs.mod_editor import dialog as dialog_module
 from ui.dialogs.mod_editor.dialog import _OPERATION_TYPE_ORDER, ModEditorDialog
 from ui.utils.thread_lifetime import retire_qthread
 from utils.mod.config import validate_mod_config
 from utils.mod.hashing import sha256_path
 from utils.mod.operation_plan import ModPathContext
+
+
+def test_editor_loads_remote_icon_preview_and_scales_it(qtbot, tmp_path, monkeypatch):
+    parent = _parent(tmp_path)
+    qtbot.addWidget(parent)
+    requests = []
+    pool = Mock(start=Mock(side_effect=requests.append))
+    monkeypatch.setattr("ui.utils.image_loader.get_image_loader_pool", lambda: pool)
+    dialog = ModEditorDialog(parent)
+    qtbot.addWidget(dialog)
+    url = "https://images.gamebanana.com/img/ss/mods/example.jpg"
+    dialog.icon_edit.setText(url)
+    qtbot.waitUntil(lambda: len(requests) == 1, timeout=1000)
+    assert requests[0].url == url
+    image = QImage(100, 100, QImage.Format.Format_ARGB32)
+    image.fill(QColor("red"))
+    requests[0].signals.result.emit(image)
+    qtbot.waitUntil(lambda: dialog.icon_preview.pixmap().toImage().pixelColor(32, 32) == QColor("red"))
+    vars(parent)["app_state"].local_config["ui_scale"] = 1.5
+    dialog.apply_theme()
+    assert len(requests) == 2
+    requests[1].signals.result.emit(image)
+    assert dialog.icon_preview.width() == 96
+    assert dialog.icon_preview.pixmap().width() == 96
+    assert dialog.icon_edit.text() == url
+
+
+@pytest.mark.parametrize("path_kind", ["absolute", "relative", "mod_path", "alias"])
+def test_editor_loads_local_icon_preview(qtbot, tmp_path, path_kind):
+    folder = tmp_path / "mods" / "editor"
+    folder.mkdir(parents=True)
+    icon = folder / "icon.png"
+    image = QImage(100, 100, QImage.Format.Format_ARGB32)
+    image.fill(QColor("red"))
+    assert image.save(str(icon))
+    config = _config(folder)
+    config["placeholders"] = {"assets_path": "${mod_path}"}
+    config["icon"] = {"absolute": str(icon), "relative": "icon.png", "mod_path": "${mod_path}/icon.png", "alias": "${assets_path}/icon.png"}[path_kind]
+    parent = _parent(tmp_path)
+    qtbot.addWidget(parent)
+    dialog = ModEditorDialog(parent, is_creating=False, mod_data=config)
+    qtbot.addWidget(dialog)
+    assert dialog.icon_preview.pixmap().toImage().pixelColor(32, 32) == QColor("red")
+    dialog.icon_edit.setText("")
+    qtbot.waitUntil(lambda: dialog.icon_preview.pixmap().toImage().pixelColor(32, 32) != QColor("red"))
 
 
 def test_editor_validation_dialog_has_a_widget_parent(qtbot, tmp_path, monkeypatch):
@@ -148,8 +202,8 @@ def test_editor_export_cannot_overwrite_mod_sources(qtbot, tmp_path, monkeypatch
 
 def _parent(tmp_path):
     parent = QWidget()
-    parent.app_state = SimpleNamespace(local_config={}, mods_dir=str(tmp_path / "mods"))
-    parent.mod_service = Mock(get_mod_folder_path=Mock())
+    vars(parent)["app_state"] = SimpleNamespace(local_config={}, mods_dir=str(tmp_path / "mods"))
+    vars(parent)["mod_service"] = Mock(get_mod_folder_path=Mock())
     return parent
 
 
@@ -177,11 +231,42 @@ def _config(folder):
     }
 
 
+def test_editor_customization_preserves_unsaved_fields_and_selection(qtbot, tmp_path):
+    folder = tmp_path / "mods" / "editor"
+    folder.mkdir(parents=True)
+    parent = _parent(tmp_path)
+    qtbot.addWidget(parent)
+    dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
+    qtbot.addWidget(dialog)
+    group = dialog._tree.topLevelItem(1)
+    assert group is not None
+    operation = group.child(0)
+    assert operation is not None
+    dialog._tree.setCurrentItem(operation)
+    dialog.name_edit.setText("Unsaved name")
+    dialog._source.setText("${mod_path}/not-yet-confirmed.txt")
+    dialog._target.setText("${game_path}/unsaved.txt")
+    original_language = localization_service.get_current_language()
+    try:
+        assert localization_service.load_language("ru")
+        vars(parent)["app_state"].local_config["ui_scale"] = 1.5
+        dialog.relocalize_ui()
+        dialog.apply_theme()
+        dialog.rescale_ui()
+        assert dialog.name_edit.text() == "Unsaved name"
+        assert dialog._source.text() == "${mod_path}/not-yet-confirmed.txt"
+        assert dialog._target.text() == "${game_path}/unsaved.txt"
+        assert dialog._tree.currentItem() is operation
+        assert dialog._tabs.tabText(0) == tr("ui.mod_editor_tab_metadata")
+    finally:
+        localization_service.load_language(original_language)
+
+
 def test_current_editor_uses_tabs_and_one_ordered_tree(qapp, tmp_path):
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
 
     assert dialog.width() == 1240
@@ -189,7 +274,9 @@ def test_current_editor_uses_tabs_and_one_ordered_tree(qapp, tmp_path):
     assert not hasattr(dialog, "_info_files_list")
     assert dialog._tree.topLevelItemCount() == 2
     group = dialog._tree.topLevelItem(1)
+    assert group is not None
     assert group.text(0) == "Core"
+    assert group is not None
     assert group.childCount() == 1
     assert [dialog._tabs.tabText(index) for index in range(dialog._tabs.count())] == [
         "Metadata",
@@ -202,16 +289,21 @@ def test_current_editor_uses_tabs_and_one_ordered_tree(qapp, tmp_path):
     assert isinstance(dialog._tabs, QTabWidget)
     assert dialog._operation_splitter.count() == 2
     assert dialog._tree.columnCount() == 3
-    assert dialog._tree.parentWidget().layout().contentsMargins().left() == 2
+    parent_widget = dialog._tree.parentWidget()
+    assert parent_widget is not None
+    assert cast(QLayout, parent_widget.layout()).contentsMargins().left() == 2
+    parent_widget = dialog._custom_placeholders_tree.parentWidget()
+    assert parent_widget is not None
     assert (
-        dialog._custom_placeholders_tree.parentWidget().layout().contentsMargins().left()
+        cast(QLayout, parent_widget.layout()).contentsMargins().left()
         == 20
     )
     assert dialog._tree.currentItem() == dialog._tree.topLevelItem(0)
-    assert dialog._tree.topLevelItem(0).text(0) == "1"
-    assert dialog._tree.topLevelItem(0).text(2) == "${mod_path}/README.md"
-    assert not dialog._tree.topLevelItem(0).icon(1).isNull()
+    assert cast(QTreeWidgetItem, dialog._tree.topLevelItem(0)).text(0) == "1"
+    assert cast(QTreeWidgetItem, dialog._tree.topLevelItem(0)).text(2) == "${mod_path}/README.md"
+    assert not cast(QTreeWidgetItem, dialog._tree.topLevelItem(0)).icon(1).isNull()
     assert dialog._type.currentData() == "info"
+    assert group is not None
     dialog._tree.setCurrentItem(group.child(0))
     qapp.processEvents()
     assert dialog._type.currentData() == "overwrite"
@@ -231,7 +323,7 @@ def test_current_editor_moves_entries_into_groups_and_normalizes_gamebanana_link
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
 
     assert dialog._move_entry(
@@ -264,7 +356,7 @@ def test_current_editor_groups_operations_dropped_onto_each_other(qapp, tmp_path
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
     source = dialog._operation_files[0]
     target = dialog._operation_files[1]["Core"][0]
@@ -283,7 +375,7 @@ def test_current_editor_groups_sibling_operations_without_losing_either(qapp, tm
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
     source = dialog._operation_files[0]
     target = dialog._operation_files[1]["Core"][0]
@@ -303,7 +395,7 @@ def test_current_editor_cancels_operation_grouping_without_mutation(qapp, tmp_pa
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
     before = deepcopy(dialog._operation_files)
 
@@ -319,7 +411,7 @@ def test_current_editor_nests_groups_dropped_onto_groups(qapp, tmp_path):
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
     dialog._operation_files = [
         {"Destination": []},
@@ -344,7 +436,7 @@ def test_current_editor_drag_moves_preserve_entries_across_nested_targets(qapp, 
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
     dialog._operation_files = [
         {
@@ -391,7 +483,7 @@ def test_current_editor_uses_custom_drag_without_tree_internal_move(qapp, tmp_pa
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
     tree = dialog._tree
     tree.setCurrentItem(tree.topLevelItem(0))
@@ -411,9 +503,9 @@ def test_current_editor_uses_human_localized_validation_messages(qapp, tmp_path)
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
-    dialog._tree.setCurrentItem(dialog._tree.topLevelItem(1).child(0))
+    dialog._tree.setCurrentItem(cast(QTreeWidgetItem, dialog._tree.topLevelItem(1)).child(0))
     dialog._type.setCurrentIndex(dialog._type.findData("extract"))
 
     assert dialog._validation.text().startswith("Target:")
@@ -505,7 +597,7 @@ def test_current_editor_hashes_are_read_only_and_recalculate(qapp, tmp_path):
     first.write_text("first", encoding="utf-8")
     second.write_text("second", encoding="utf-8")
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
     dialog._tree.setCurrentItem(dialog._tree.topLevelItem(0))
     dialog._source_hash_box.setChecked(True)
@@ -534,8 +626,8 @@ def test_current_editor_operation_icon_colors_follow_the_main_text_theme(qapp, t
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.app_state.local_config["custom_main_text_color"] = "#e63737"
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["app_state"].local_config["custom_main_text_color"] = "#e63737"
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
 
     assert dialog._operation_icon_color("patch") == "#e63737"
@@ -545,12 +637,46 @@ def test_current_editor_operation_icon_colors_follow_the_main_text_theme(qapp, t
         "hard-extract"
     )
     previous_icon_key = dialog._operation_icons["patch"].cacheKey()
-    parent.app_state.local_config["custom_main_text_color"] = "#357ee6"
+    vars(parent)["app_state"].local_config["custom_main_text_color"] = "#357ee6"
     dialog.apply_theme()
 
     assert dialog._operation_icon_color("patch") == "#357ee6"
     assert dialog._operation_icon_color("soft-overwrite") != "#357ee6"
     assert dialog._operation_icons["patch"].cacheKey() != previous_icon_key
+
+
+def test_editor_theme_refresh_preserves_group_validation_color(qtbot, tmp_path):
+    folder = tmp_path / "mods" / "editor"
+    folder.mkdir(parents=True)
+    config = _config(folder)
+    config["files"] = [{"": []}]
+    parent = _parent(tmp_path)
+    qtbot.addWidget(parent)
+    dialog = ModEditorDialog(parent, is_creating=False, mod_data=config)
+    qtbot.addWidget(dialog)
+    item = dialog._tree.topLevelItem(0)
+    assert item is not None
+    assert item.foreground(0).color() == QColor("#d9534f")
+    dialog.apply_theme()
+    dialog.rescale_ui()
+    assert item.foreground(0).color() == QColor("#d9534f")
+
+
+def test_editor_theme_refresh_tolerates_empty_and_stale_tree_paths(qtbot, tmp_path):
+    folder = tmp_path / "mods" / "editor"
+    folder.mkdir(parents=True)
+    parent = _parent(tmp_path)
+    qtbot.addWidget(parent)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
+    dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
+    qtbot.addWidget(dialog)
+    for raw in (None, "", "invalid", "999"):
+        item = QTreeWidgetItem(["placeholder"])
+        item.setData(0, Qt.ItemDataRole.UserRole, raw)
+        dialog._tree.addTopLevelItem(item)
+    dialog.apply_theme()
+    dialog.rescale_ui()
+    assert dialog._tree.topLevelItemCount() == len(dialog._operation_files) + 4
 
 
 def test_current_editor_preserves_custom_placeholders_and_marks_the_invalid_path(
@@ -559,7 +685,7 @@ def test_current_editor_preserves_custom_placeholders_and_marks_the_invalid_path
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     config = _config(folder)
     config["placeholders"] = {"saves_path": "${user_path}/AppData/Local/Example"}
     config["icon"] = "https://images.example.com/icon.png"
@@ -567,7 +693,7 @@ def test_current_editor_preserves_custom_placeholders_and_marks_the_invalid_path
 
     assert dialog._config()["placeholders"] == config["placeholders"]
     assert dialog._config()["icon"] == config["icon"]
-    dialog._tree.setCurrentItem(dialog._tree.topLevelItem(1).child(0))
+    dialog._tree.setCurrentItem(cast(QTreeWidgetItem, dialog._tree.topLevelItem(1)).child(0))
     dialog._source.setText("./replacement.txt")
     dialog._source.editingFinished.emit()
     qapp.processEvents()
@@ -580,7 +706,7 @@ def test_current_editor_adds_edits_and_removes_custom_placeholders(qapp, tmp_pat
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     config = _config(folder)
     config["placeholders"] = {"saves_path": "${user_path}/AppData/Local/Example"}
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=config)
@@ -610,7 +736,7 @@ def test_current_editor_rejects_reserved_and_duplicate_custom_placeholder_names(
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     config = _config(folder)
     config["placeholders"] = {"assets": "${mod_path}/assets"}
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=config)
@@ -621,14 +747,18 @@ def test_current_editor_rejects_reserved_and_duplicate_custom_placeholder_names(
     dialog._custom_placeholder_name.setText("MOD_PATH")
     dialog._save_custom_placeholder()
 
-    assert set(dialog._config()["placeholders"]) == {"assets", "placeholder"}
+    placeholders = dialog._config()["placeholders"]
+    assert isinstance(placeholders, dict)
+    assert set(placeholders) == {"assets", "placeholder"}
     assert dialog._custom_placeholder_name.text() == "placeholder"
     warning.assert_called_once()
 
     dialog._custom_placeholder_name.setText("ASSETS")
     dialog._save_custom_placeholder()
 
-    assert set(dialog._config()["placeholders"]) == {"assets", "placeholder"}
+    placeholders = dialog._config()["placeholders"]
+    assert isinstance(placeholders, dict)
+    assert set(placeholders) == {"assets", "placeholder"}
     assert warning.call_count == 2
 
 
@@ -638,7 +768,7 @@ def test_current_editor_keeps_operation_form_aligned_and_has_sectioned_help(
     folder = tmp_path / "mods" / "editor"
     folder.mkdir(parents=True)
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
 
     assert len({label.width() for label in dialog._form_labels.values()}) == 1
@@ -676,9 +806,9 @@ def test_current_editor_browse_uses_portable_roots(qapp, tmp_path, monkeypatch):
     target.mkdir(parents=True)
     source.write_text("content", encoding="utf-8")
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
-    dialog._tree.setCurrentItem(dialog._tree.topLevelItem(1).child(0))
+    dialog._tree.setCurrentItem(cast(QTreeWidgetItem, dialog._tree.topLevelItem(1)).child(0))
     monkeypatch.setattr(dialog_module, "get_open_file_name", lambda *_: (str(source), ""))
     monkeypatch.setattr(dialog_module, "get_existing_directory", lambda *_: str(target))
     monkeypatch.setattr(
@@ -706,9 +836,9 @@ def test_current_editor_warns_for_a_custom_target(qapp, tmp_path, monkeypatch):
     custom = tmp_path / "outside"
     custom.mkdir()
     parent = _parent(tmp_path)
-    parent.mod_service.get_mod_folder_path.return_value = str(folder)
+    vars(parent)["mod_service"].get_mod_folder_path.return_value = str(folder)
     dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
-    dialog._tree.setCurrentItem(dialog._tree.topLevelItem(1).child(0))
+    dialog._tree.setCurrentItem(cast(QTreeWidgetItem, dialog._tree.topLevelItem(1)).child(0))
     warning = Mock()
     monkeypatch.setattr(dialog_module, "get_existing_directory", lambda *_: str(custom))
     monkeypatch.setattr(dialog, "_safe_warning", warning)

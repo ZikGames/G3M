@@ -15,20 +15,22 @@ class TestUiUtils:
     @pytest.mark.parametrize("preserve_effect", [False, True])
     def test_fade_finishes_and_releases_animation(self, qtbot, direction, preserve_effect):
         from PyQt6 import sip
-        from PyQt6.QtWidgets import QWidget
+        from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
 
         from ui.utils.ui_utils import UIAnimator
 
         parent = QWidget()
         qtbot.addWidget(parent)
         widget = QWidget(parent)
-        widget._preserve_fade_effect = preserve_effect
+        vars(widget)["_preserve_fade_effect"] = preserve_effect
         animation = getattr(UIAnimator, direction)(widget, duration=20)
-        qtbot.waitUntil(lambda: widget._fade_anim is None)
+        qtbot.waitUntil(lambda: vars(widget)["_fade_anim"] is None)
 
         assert widget.isHidden() == (direction == "fade_out")
         if preserve_effect:
-            assert widget.graphicsEffect().opacity() == (0.0 if direction == "fade_out" else 1.0)
+            effect = widget.graphicsEffect()
+            assert isinstance(effect, QGraphicsOpacityEffect)
+            assert effect.opacity() == (0.0 if direction == "fade_out" else 1.0)
         else:
             assert widget.graphicsEffect() is None
         qtbot.waitUntil(lambda: sip.isdeleted(animation))
@@ -57,7 +59,8 @@ class TestUiUtils:
         widget = QWidget()
         qtbot.addWidget(widget)
         animation = UIAnimator.fade_out(widget, duration=0)
-        assert widget._fade_anim is None
+        assert animation is not None
+        assert vars(widget)["_fade_anim"] is None
         assert widget.graphicsEffect() is None
         qtbot.waitUntil(lambda: sip.isdeleted(animation))
 
@@ -68,11 +71,11 @@ class TestUiUtils:
         from ui.utils.ui_utils import UIAnimator
         widget = QWidget()
         anim = Mock()
-        widget._fade_anim = anim
+        vars(widget)["_fade_anim"] = anim
         UIAnimator._stop_existing_fade(widget)
         anim.stop.assert_called_once_with()
         anim.deleteLater.assert_called_once_with()
-        assert widget._fade_anim is None
+        assert vars(widget)["_fade_anim"] is None
         widget.deleteLater()
 
 

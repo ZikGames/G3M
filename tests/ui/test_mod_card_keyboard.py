@@ -10,7 +10,7 @@ from ui.widgets.mod.search_mod_card_widget import SearchModCardWidget
 
 def test_search_card_keyboard_selection_details_and_actions(qtbot):
     host = QWidget()
-    host.app_state = SimpleNamespace(local_config={})
+    vars(host)["app_state"] = SimpleNamespace(local_config={})
     qtbot.addWidget(host)
     layout = QVBoxLayout(host)
     mod = ModInfo(

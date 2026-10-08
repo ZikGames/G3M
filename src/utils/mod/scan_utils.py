@@ -157,7 +157,7 @@ def scan_mods_directory(
                             },
                         )
                         continue
-                    mod_id = (config_data.get("id") or "").strip()
+                    mod_id = str(config_data.get("id") or "").strip()
                     if not mod_id:
                         logger.warning(
                             f"scan_mods_directory: Config missing usable id in {config_path}, skipping mod",
@@ -177,7 +177,7 @@ def scan_mods_directory(
                         config_digest=config_digest,
                     )
                     cache[cache_key] = mod_info
-                    mod_name = config_data.get("name", "")
+                    mod_name = str(config_data.get("name") or "")
                     if mod_name:
                         mods_by_name[mod_name.lower()] = cache_key
                 except (OSError, PermissionError) as e:

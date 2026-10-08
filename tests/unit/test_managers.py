@@ -3,6 +3,7 @@
 import json
 import os
 import threading
+from typing import cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -851,7 +852,7 @@ class TestLaunchManager:
         from services.launch_service import GameLauncher
 
         parent = QObject()
-        parent.plugin_runtime_service = Mock(
+        vars(parent)["plugin_runtime_service"] = Mock(
             execute_hook_with_runtime=Mock(return_value=[False])
         )
         launcher = GameLauncher(app_state, feedback_service, Mock(), parent)
@@ -859,7 +860,7 @@ class TestLaunchManager:
 
         launcher._restore_after_verified_game_exit(False)
 
-        parent.plugin_runtime_service.execute_hook_with_runtime.assert_called_once_with(
+        vars(parent)["plugin_runtime_service"].execute_hook_with_runtime.assert_called_once_with(
             "before_restore_after_exit", None, False, raise_errors=True
         )
         launcher._finish_game_exit_without_restore.assert_called_once_with(False)
@@ -988,7 +989,7 @@ class TestLaunchManager:
 
         launcher._launch_game_with_selections({})
 
-        qtbot.waitUntil(lambda: launcher._continue_after_patching.called)
+        qtbot.waitUntil(lambda: cast(Mock, launcher._continue_after_patching).called)
         journal.restore.assert_called_once_with()
         assert launcher._operation_journal is None
         launcher._continue_after_patching.assert_called_once_with({}, True, False)
@@ -1017,7 +1018,7 @@ class TestLaunchManager:
 
         launcher._launch_game_with_selections({})
 
-        qtbot.waitUntil(lambda: launcher._continue_after_patching.called)
+        qtbot.waitUntil(lambda: cast(Mock, launcher._continue_after_patching).called)
         feedback.ask_operation_recovery_conflict.assert_called_once_with(
             "external changes"
         )
@@ -1092,7 +1093,7 @@ class TestLaunchManager:
 
         launcher._launch_game_with_selections({})
 
-        qtbot.waitUntil(lambda: launcher._handle_launch_failure.called)
+        qtbot.waitUntil(lambda: cast(Mock, launcher._handle_launch_failure).called)
         assert launcher._operation_journal is journal
         launcher._continue_after_patching.assert_not_called()
         launcher._handle_launch_failure.assert_called_once_with("restore")
@@ -1609,7 +1610,31 @@ class TestCustomizationManager:
 class TestBackupManager:
     """Tests for managers."""
 
-    def test_backup_restoration_order(self, temp_dir):
+    def test_restore_removes_files_created_after_backup(self, tmp_path):
+        from services.backup_service import BackupManager
+
+        manager = BackupManager(str(tmp_path / "backups"))
+        created = tmp_path / "created.txt"
+        assert manager.backup_file("1", str(created))
+        created.write_text("mod file", encoding="utf-8")
+        assert manager.restore_backups("1")
+        assert not created.exists()
+
+    def test_failed_restore_preserves_target_and_backup(self, tmp_path, monkeypatch):
+        from services.backup_service import BackupManager
+
+        manager = BackupManager(str(tmp_path / "backups"))
+        target = tmp_path / "save.txt"
+        target.write_text("original", encoding="utf-8")
+        assert manager.backup_file("1", str(target))
+        target.write_text("modified", encoding="utf-8")
+        monkeypatch.setattr("services.backup_service.os.replace", Mock(side_effect=PermissionError("locked")))
+        assert not manager.restore_backups("1")
+        assert target.read_text(encoding="utf-8") == "modified"
+        assert next((tmp_path / "backups").iterdir()).read_text(encoding="utf-8") == "original"
+        assert not list(tmp_path.glob("*.g3m-restore"))
+
+    def test_backup_restoration_order(self, temp_dir, monkeypatch):
         """Checks that backup restoration order."""
         import logging
 
@@ -1634,7 +1659,10 @@ class TestBackupManager:
         for f in [file1, file2, file3]:
             with open(f, "w") as fh:
                 fh.write("modified")
-        backup_service.restore_backups(chapter_id)
+        replace = Mock(wraps=os.replace)
+        monkeypatch.setattr("services.backup_service.os.replace", replace)
+        assert backup_service.restore_backups(chapter_id)
+        assert [call.args[1] for call in replace.call_args_list] == [file3, file2, file1]
         for f in [file1, file2, file3]:
             with open(f) as fh:
                 content = fh.read()

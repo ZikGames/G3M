@@ -6,7 +6,7 @@ import os
 import shutil
 from typing import Any
 
-from PyQt6.QtCore import QEventLoop, QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QEventLoop, QObject, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
 
 from app.game_ui import show_chapter_mode_instruction
@@ -36,17 +36,18 @@ def _bound_checkbox_is_checked(owner, attr_name: str) -> bool:
     return bool(checkbox and callable(is_checked) and is_checked())
 
 
-class LibraryDisplayController:
+class LibraryDisplayController(QObject):
     """Manages the display and interaction of installed mods in the library."""
 
     def __init__(
         self, app_state, feedback_service, mod_service, used_mods_service, app_window
     ) -> None:
+        super().__init__(app_window if isinstance(app_window, QObject) else None)
         self.app_state = app_state
         self.feedback_service = feedback_service
         self.mod_service = mod_service
         self.used_mods_service = used_mods_service
-        self.app = app_window
+        self.app: Any = app_window
         self._updating_display = False
         self._last_render_signature = None
         self._pending_view_signature = None
@@ -400,6 +401,7 @@ class LibraryDisplayController:
         except Exception:
             self.update_display_from_list(self.mod_service.get_installed_mods_list())
 
+    @pyqtSlot(list)
     def update_display_from_list(self, installed_mods):
         if self._updating_display:
             return

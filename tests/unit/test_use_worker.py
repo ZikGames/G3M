@@ -99,7 +99,8 @@ def test_failed_version_write_preserves_previous_archive(tmp_path, monkeypatch):
     assert list(versions.iterdir()) == [previous]
 
 
-def test_raw_gamebanana_archive_requires_setup_instead_of_fake_install(tmp_path):
+def test_raw_gamebanana_archive_requires_setup_instead_of_fake_install(tmp_path, monkeypatch):
+    monkeypatch.setattr("adapters.gamebanana_adapter.GameBananaAPI.get_mod_profile_page", lambda *args, **kwargs: None)
     archive_path = tmp_path / "multiplayer.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
         archive.writestr("1.0 Prerelease.xdelta", b"patch")
@@ -190,7 +191,7 @@ def test_plugin_use_suppresses_emit_failure_after_install_error(temp_dir, caplog
         plugin_install_service=install_service,
     )
 
-    worker.use_finished = FailingSignal()
+    vars(worker)["use_finished"] = FailingSignal()
 
     worker.run()
 

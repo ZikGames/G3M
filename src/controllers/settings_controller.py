@@ -188,8 +188,9 @@ class SettingsUiController:
         if "background_music" in reset_actions:
             self.customization_service.stop_background_music()
         for widget, value in reset_values:
-            if hasattr(widget, "setChecked"):
-                widget.setChecked(bool(value))
+            set_checked = getattr(widget, "setChecked", None)
+            if callable(set_checked):
+                set_checked(bool(value))
         self._refresh_after_section_reset()
 
     def on_language_changed(self, lang):

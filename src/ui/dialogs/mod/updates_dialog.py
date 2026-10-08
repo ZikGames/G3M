@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -20,10 +19,11 @@ from PyQt6.QtWidgets import (
 
 from models.game_modes import get_game
 from services.localization_service import tr
-from ui.common.dialog_theme import build_dialog_theme_stylesheet
+from ui.common.dialog_theme import DynamicDialog, build_dialog_theme_stylesheet
+from ui.common.localized_label import LocalizedLabel
 
 
-class ModUpdatesDialog(QDialog):
+class ModUpdatesDialog(DynamicDialog):
     """A compact batch-update chooser; network work stays in its controller."""
 
     profile_changed = pyqtSignal(str)
@@ -40,7 +40,7 @@ class ModUpdatesDialog(QDialog):
         self._app_state = app_state
         self._candidates: list[dict[str, Any]] = []
         self._build(profiles, selected_profile)
-        self.setStyleSheet(build_dialog_theme_stylesheet(app_state))
+        self.set_theme_stylesheet(build_dialog_theme_stylesheet(app_state))
 
     def _build(self, profiles: list[str], selected_profile: str) -> None:
         self.setWindowTitle(tr("mod_updates.title"))
@@ -61,11 +61,12 @@ class ModUpdatesDialog(QDialog):
         profile_row.addWidget(self._profile_combo, 1)
         layout.addLayout(profile_row)
 
-        self._status = QLabel(tr("mod_updates.checking"), self)
+        self._status = LocalizedLabel(self)
+        self._status.set_localized_text("mod_updates.checking")
         self._status.setWordWrap(True)
         layout.addWidget(self._status)
 
-        self._outcome = QLabel(self)
+        self._outcome = LocalizedLabel(self)
         self._outcome.setWordWrap(True)
         self._outcome.setVisible(False)
         layout.addWidget(self._outcome)
@@ -113,6 +114,7 @@ class ModUpdatesDialog(QDialog):
         for game_id in sorted(by_game):
             game = get_game(game_id)
             game_item = QTreeWidgetItem([game.display_label if game else game_id])
+            game_item.setData(0, Qt.ItemDataRole.UserRole, game_id)
             game_item.setFlags(
                 game_item.flags()
                 | Qt.ItemFlag.ItemIsAutoTristate
@@ -133,8 +135,8 @@ class ModUpdatesDialog(QDialog):
             game_item.setCheckState(0, Qt.CheckState.Checked)
             game_item.setExpanded(True)
         count = sum(len(items) for items in by_game.values())
-        self._status.setText(
-            tr("mod_updates.none") if not count else tr("mod_updates.found", count=count)
+        self._status.set_localized_text(
+            "mod_updates.found" if count else "mod_updates.none", count=count,
         )
         self._update_button.setEnabled(bool(count))
 
@@ -146,26 +148,17 @@ class ModUpdatesDialog(QDialog):
         self._replace_current.setToolTip(tr("mod_updates.replace_current_tooltip"))
         self._update_button.setText(tr("mod_updates.update"))
         self._close_button.setText(tr("common.close"))
-        states = {}
+        self._status.relocalize_ui()
+        self._outcome.relocalize_ui()
         for index in range(self._tree.topLevelItemCount()):
-            game_item = self._tree.topLevelItem(index)
-            for child_index in range(game_item.childCount()):
-                child = game_item.child(child_index)
-                candidate = child.data(0, Qt.ItemDataRole.UserRole)
-                states[(candidate.get("game"), candidate.get("id"))] = child.checkState(0)
-        self.set_candidates(self._candidates)
-        for index in range(self._tree.topLevelItemCount()):
-            game_item = self._tree.topLevelItem(index)
-            for child_index in range(game_item.childCount()):
-                child = game_item.child(child_index)
-                candidate = child.data(0, Qt.ItemDataRole.UserRole)
-                state = states.get((candidate.get("game"), candidate.get("id")))
-                if state is not None:
-                    child.setCheckState(0, state)
+            game_item = cast(QTreeWidgetItem, self._tree.topLevelItem(index))
+            game_id = game_item.data(0, Qt.ItemDataRole.UserRole)
+            game = get_game(game_id)
+            game_item.setText(0, game.display_label if game else game_id)
 
     def set_checking(self, *, preserve_outcome: bool = False) -> None:
         self._tree.clear()
-        self._status.setText(tr("mod_updates.checking"))
+        self._status.set_localized_text("mod_updates.checking")
         self._update_button.setEnabled(False)
         if not preserve_outcome:
             self._outcome.clear()
@@ -174,7 +167,7 @@ class ModUpdatesDialog(QDialog):
     def set_progress(self, completed: int, total: int, name: str = "") -> None:
         self._progress.setVisible(total > 0)
         self._progress.setValue(int(completed * 100 / max(total, 1)))
-        self._status.setText(tr("mod_updates.progress", current=completed, total=total, name=name))
+        self._status.set_localized_text("mod_updates.progress", current=completed, total=total, name=name)
 
     def set_busy(self, busy: bool) -> None:
         self._profile_combo.setEnabled(not busy)
@@ -182,19 +175,20 @@ class ModUpdatesDialog(QDialog):
         self._replace_current.setEnabled(not busy)
         self._update_button.setEnabled(not busy and self._tree.topLevelItemCount() > 0)
 
-    def set_error(self, message: str) -> None:
-        self._status.setText(message)
-
     def set_outcome(self, message: str) -> None:
         self._outcome.setText(message)
         self._outcome.setVisible(bool(message))
 
+    def set_outcome_messages(self, messages: list[tuple[str, dict[str, Any]]]) -> None:
+        self._outcome.set_localized_messages(messages)
+        self._outcome.setVisible(bool(messages))
+
     def _request_updates(self) -> None:
         selected: list[dict[str, Any]] = []
         for index in range(self._tree.topLevelItemCount()):
-            game_item = self._tree.topLevelItem(index)
+            game_item = cast(QTreeWidgetItem, self._tree.topLevelItem(index))
             for child_index in range(game_item.childCount()):
-                child = game_item.child(child_index)
+                child = cast(QTreeWidgetItem, game_item.child(child_index))
                 candidate = child.data(0, Qt.ItemDataRole.UserRole)
                 if child.checkState(0) == Qt.CheckState.Checked and isinstance(candidate, dict):
                     selected.append(candidate)

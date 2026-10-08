@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QRect, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QFont,
+    QKeyEvent,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPen,
+)
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -266,7 +275,11 @@ class OnboardingTour(QWidget):
         )
         self._reposition()
 
-    def paintEvent(self, event) -> None:
+    def rescale_ui(self) -> None:
+        self.apply_theme()
+
+    def paintEvent(self, a0) -> None:
+        event = cast(QPaintEvent, a0)
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -283,13 +296,16 @@ class OnboardingTour(QWidget):
             )), 3))
             painter.drawRoundedRect(self._target_rect, 8, 8)
 
-    def eventFilter(self, watched, event) -> bool:
+    def eventFilter(self, a0, a1) -> bool:
+        watched = a0
+        event = cast(QEvent, a1)
         if watched is self.host and event.type() == QEvent.Type.Resize:
             self.setGeometry(self.host.rect())
             self._reposition()
         return False
 
-    def keyPressEvent(self, event) -> None:
+    def keyPressEvent(self, a0) -> None:
+        event = cast(QKeyEvent, a0)
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Right):
             self._next()
         elif event.key() == Qt.Key.Key_Left:
@@ -299,6 +315,7 @@ class OnboardingTour(QWidget):
         else:
             super().keyPressEvent(event)
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, a0) -> None:
+        event = cast(QCloseEvent, a0)
         self.host.removeEventFilter(self)
         super().closeEvent(event)

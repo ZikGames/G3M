@@ -245,10 +245,12 @@ class PluginRuntimeService:
         entry_path = resolve_plugin_path(record.path, record.manifest.entry)
         instance = load_plugin_factory(plugin_id, entry_path)()
         context = self._build_context(plugin_id)
-        if hasattr(instance, "on_load"):
-            instance.on_load(context)
-        if enable and hasattr(instance, "on_enable"):
-            instance.on_enable(context)
+        on_load = getattr(instance, "on_load", None)
+        if callable(on_load):
+            on_load(context)
+        on_enable = getattr(instance, "on_enable", None)
+        if enable and callable(on_enable):
+            on_enable(context)
         if enable:
             self._enabled_instances.add(plugin_id)
         self._instances[plugin_id] = instance

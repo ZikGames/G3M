@@ -9,12 +9,13 @@ import threading
 import zipfile
 from contextlib import suppress
 from functools import partial
+from typing import cast
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QCloseEvent, QScreen
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -34,10 +35,12 @@ from PyQt6.QtWidgets import (
 from services.localization_service import localization_service, tr
 from services.warning_service import create_warning_event
 from ui.common.dialog_theme import (
+    DynamicDialog,
     build_dialog_theme_stylesheet,
     get_dialog_theme_values,
 )
 from ui.common.feedback import FeedbackManager
+from ui.common.localized_label import LocalizedLabel, LocalizedMessage
 from ui.utils.thread_lifetime import ManagedQThread, retire_qthread
 from utils.file_utils import (
     cleanup_temporary_directory,
@@ -120,6 +123,23 @@ def _safe_set_status(label, message: str) -> None:
         logger.warning("Modding tools status update failed", exc_info=True)
 
 
+def _safe_localized_status(label: LocalizedLabel, key: str, **parameters) -> None:
+    try:
+        label.set_localized_text(key, **parameters)
+    except RuntimeError:
+        logger.warning("Modding tools status update failed", exc_info=True)
+
+
+def _emit_localized_progress(worker, key: str, **parameters) -> None:
+    worker.localized_progress = LocalizedMessage(key, parameters)
+    worker.progress.emit(worker.localized_progress.render())
+
+
+def _emit_localized_result(worker, success: bool, key: str, **parameters) -> None:
+    worker.localized_result = LocalizedMessage(key, parameters)
+    worker.result_ready.emit(success, worker.localized_result.render())
+
+
 def _start_worker(dialog, worker) -> None:
     dialog._worker = worker
     worker.progress.connect(dialog._on_progress)
@@ -132,7 +152,7 @@ def _finish_worker(dialog, rc, out, err, operation: str) -> None:
     retire_qthread(dialog._worker)
     dialog._worker = None
     if rc == 0:
-        _safe_set_status(dialog._status_label, tr("modding_tools.success"))
+        _safe_localized_status(dialog._status_label, "modding_tools.success")
         return
     _show_g3mtool_warning_failure(
         dialog, dialog._app_state, dialog._status_label, operation, rc, out, err
@@ -150,7 +170,7 @@ def _set_g3mtool_failure_status(
             rc,
             details,
         )
-    _safe_set_status(label, tr("modding_tools.failed_details_logged"))
+    _safe_localized_status(label, "modding_tools.failed_details_logged")
 
 
 def _show_g3mtool_failure(
@@ -469,6 +489,8 @@ class _PathRow(QWidget):
         self._label.setText(tr(self._label_key))
         self._edit.setPlaceholderText(tr("ui.file_path_placeholder"))
         self._btn.setText(tr("ui.browse_button"))
+        self._edit.setToolTip(tr("tooltips.file_path_field"))
+        self._btn.setToolTip(tr("tooltips.browse_file"))
 
 
 class _ConvertWorkerThread(ManagedQThread):
@@ -673,7 +695,7 @@ class _PatchTab(QWidget):
         self._batch_list.setMinimumHeight(120)
         lay.addWidget(self._batch_list, 1)
         batch_btns = QHBoxLayout()
-        batch_btns.setSpacing(6)
+        batch_btns.setSpacing(8)
         self._batch_add_btn = QPushButton(tr("modding_tools.merge_add"))
         self._batch_add_btn.clicked.connect(self._on_batch_add)
         self._batch_remove_btn = QPushButton(tr("modding_tools.merge_remove"))
@@ -717,7 +739,7 @@ class _PatchTab(QWidget):
         btn_row.addStretch()
         lay.addLayout(btn_row)
 
-        self._status_label = QLabel("")
+        self._status_label = LocalizedLabel("")
         self._status_label.setObjectName("modding_tools_status")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_label.setWordWrap(True)
@@ -910,7 +932,7 @@ class _PatchTab(QWidget):
             )
             return
         self._run_btn.setEnabled(False)
-        _safe_set_status(self._status_label, tr("modding_tools.running"))
+        _safe_localized_status(self._status_label, "modding_tools.running")
         if action == 2:
             target_is_xdelta = mode == "xdelta"
             self._worker = _ConvertWorkerThread(
@@ -958,7 +980,7 @@ class _PatchTab(QWidget):
             )
             return
         self._run_btn.setEnabled(False)
-        _safe_set_status(self._status_label, tr("modding_tools.running"))
+        _safe_localized_status(self._status_label, "modding_tools.running")
         if self._action_combo.currentIndex() == 0:
             self._worker = _WorkerThread(
                 self._g3m.batch_create_patches,
@@ -984,6 +1006,7 @@ class _PatchTab(QWidget):
         _start_worker(self, self._worker)
 
     def _on_progress(self, percent: int, label: str) -> None:
+        self._progress_status = (percent, label)
         _safe_set_status(self._status_label, _format_progress_status(percent, label))
 
     def _on_finished(self, rc, out, err):
@@ -1001,6 +1024,9 @@ class _PatchTab(QWidget):
 
     def relocalize(self):
         self._mode_label.setText(tr("modding_tools.patch_mode"))
+        self._mode_combo.setToolTip(tr("tooltips.modding_tools_mode"))
+        self._action_combo.setToolTip(tr("tooltips.modding_tools_action"))
+        self._run_btn.setToolTip(tr("tooltips.run_tool"))
         self._action_label.setText(tr("modding_tools.patch_action"))
         self._action_combo.setItemText(0, tr("modding_tools.action_create"))
         self._action_combo.setItemText(1, tr("modding_tools.action_apply"))
@@ -1145,7 +1171,7 @@ class _DataConvertWorkerThread(ManagedQThread):
                 )
 
             if not items:
-                self.result_ready.emit(False, tr("modding_tools.convert_no_data_files"))
+                _emit_localized_result(self, False, "modding_tools.convert_no_data_files")
                 return
 
             total = len(items)
@@ -1154,14 +1180,14 @@ class _DataConvertWorkerThread(ManagedQThread):
                 source_key = os.path.normcase(os.path.normpath(patch_rel_path))
                 source_counts[source_key] = source_counts.get(source_key, 0) + 1
 
-            version = config_data.get("version", "1.0.0")
+            version = str(config_data.get("version") or "1.0.0")
             version = (version.split("|", 1)[0].strip() if version else "") or "1.0.0"
             version_name = get_unique_version_name(
                 self._mod_folder,
                 f"{version} - {_target_version_label(self._target_mode)}",
             )
-            self.progress.emit(
-                tr("modding_tools.convert_saving_version", version=version_name)
+            _emit_localized_progress(
+                self, "modding_tools.convert_saving_version", version=version_name
             )
 
             with managed_temporary_directory(prefix="g3m_modconv_") as tmp:
@@ -1239,13 +1265,12 @@ class _DataConvertWorkerThread(ManagedQThread):
                         continue
                     staged_target = staged_operation.target
                     patch_path = os.path.join(converted_mod_folder, patch_rel_path)
-                    self.progress.emit(
-                        tr(
-                            "modding_tools.convert_progress",
-                            current=i + 1,
-                            total=total,
-                            file=os.path.basename(patch_path),
-                        )
+                    _emit_localized_progress(
+                        self,
+                        "modding_tools.convert_progress",
+                        current=i + 1,
+                        total=total,
+                        file=os.path.basename(patch_path),
                     )
                     with managed_temporary_directory(
                         prefix="g3m_modconv_file_"
@@ -1338,13 +1363,12 @@ class _DataConvertWorkerThread(ManagedQThread):
                     version_name,
                     ignore_versions_dir=True,
                 )
-            self.result_ready.emit(
+            _emit_localized_result(
+                self,
                 True,
-                tr(
-                    "modding_tools.convert_data_success",
-                    count=converted,
-                    version=version_name,
-                ),
+                "modding_tools.convert_data_success",
+                count=converted,
+                version=version_name,
             )
         except Exception as e:
             self.result_ready.emit(
@@ -1407,24 +1431,22 @@ class _BatchDataConvertWorkerThread(ManagedQThread):
         converted = 0
         for index, job in enumerate(self._jobs, start=1):
             if self.isInterruptionRequested():
-                self.result_ready.emit(
+                _emit_localized_result(
+                    self,
                     False,
-                    tr(
-                        "modding_tools.convert_batch_failed",
-                        current=converted,
-                        total=total,
-                        error=tr("ui.cancel_button"),
-                    ),
+                    "modding_tools.convert_batch_failed",
+                    current=converted,
+                    total=total,
+                    error=LocalizedMessage("ui.cancel_button", {}),
                 )
                 return
             mod_name = job.get("name") or os.path.basename(job["mod_folder"])
-            self.progress.emit(
-                tr(
-                    "modding_tools.convert_batch_progress",
-                    current=index,
-                    total=total,
-                    mod=mod_name,
-                )
+            _emit_localized_progress(
+                self,
+                "modding_tools.convert_batch_progress",
+                current=index,
+                total=total,
+                mod=mod_name,
             )
             worker = _DataConvertWorkerThread(
                 self._g3m,
@@ -1437,12 +1459,11 @@ class _BatchDataConvertWorkerThread(ManagedQThread):
             )
             result = []
             worker.progress.connect(
-                lambda message, mod=mod_name: self.progress.emit(
-                    tr(
-                        "modding_tools.convert_batch_item_progress",
-                        mod=mod,
-                        message=message,
-                    )
+                lambda message, mod=mod_name, current=worker: _emit_localized_progress(
+                    self,
+                    "modding_tools.convert_batch_item_progress",
+                    mod=mod,
+                    message=getattr(current, "localized_progress", None) or message,
                 )
             )
             worker.result_ready.connect(
@@ -1459,24 +1480,20 @@ class _BatchDataConvertWorkerThread(ManagedQThread):
                     warning_id=self._warning_id_for_error(message),
                 )
                 if not should_continue:
-                    self.result_ready.emit(
+                    _emit_localized_result(
+                        self,
                         False,
-                        tr(
-                            "modding_tools.convert_batch_failed",
-                            current=converted,
-                            total=total,
-                            error=message,
-                        ),
+                        "modding_tools.convert_batch_failed",
+                        current=converted,
+                        total=total,
+                        error=message,
                     )
                     return
-                self.progress.emit(
-                    tr("modding_tools.convert_batch_skipped", mod=mod_name)
-                )
+                _emit_localized_progress(self, "modding_tools.convert_batch_skipped", mod=mod_name)
                 continue
             converted += 1
-        self.result_ready.emit(
-            True,
-            tr("modding_tools.convert_batch_success", count=converted, total=total),
+        _emit_localized_result(
+            self, True, "modding_tools.convert_batch_success", count=converted, total=total
         )
 
 
@@ -1537,7 +1554,7 @@ class _DataConvertTab(QWidget):
         btn_row.addStretch()
         lay.addLayout(btn_row)
 
-        self._status_label = QLabel("")
+        self._status_label = LocalizedLabel("")
         self._status_label.setObjectName("modding_tools_status")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_label.setWordWrap(True)
@@ -1586,7 +1603,7 @@ class _DataConvertTab(QWidget):
             return
         mods_root = get_profile_mods_root(profile_name)
         if not os.path.isdir(mods_root):
-            _safe_set_status(self._status_label, tr("modding_tools.convert_no_mods"))
+            _safe_localized_status(self._status_label, "modding_tools.convert_no_mods")
             return
         target_mode = _convert_target_mode(self._fmt_combo.currentIndex())
         found = 0
@@ -1629,7 +1646,7 @@ class _DataConvertTab(QWidget):
             found += 1
 
         if found == 0:
-            _safe_set_status(self._status_label, tr("modding_tools.convert_no_mods"))
+            _safe_localized_status(self._status_label, "modding_tools.convert_no_mods")
         else:
             self._update_run_state()
 
@@ -1660,7 +1677,7 @@ class _DataConvertTab(QWidget):
         if not checked_items:
             return
         if not self._g3m or not self._g3m.is_available():
-            _safe_set_status(self._status_label, tr("errors.g3mtool_not_available"))
+            _safe_localized_status(self._status_label, "errors.g3mtool_not_available")
             return
         from models.game_modes import get_game
         from utils.mod.config import load_mod_config
@@ -1675,39 +1692,27 @@ class _DataConvertTab(QWidget):
             try:
                 config_data = load_mod_config(config_path)
             except Exception as e:
-                _safe_set_status(
-                    self._status_label,
-                    tr("modding_tools.convert_data_failed", error=str(e)),
-                )
+                _safe_localized_status(self._status_label, "modding_tools.convert_data_failed", error=str(e))
                 return
 
             game = config_data.get("game", "deltarune")
             if not isinstance(game, str) or not game:
-                _safe_set_status(
-                    self._status_label,
-                    tr("modding_tools.convert_data_failed", error="Invalid game ID"),
-                )
+                _safe_localized_status(self._status_label, "modding_tools.convert_data_failed", error="Invalid game ID")
                 return
             if game in game_path_cache:
                 game_def, game_path, game_data_path, runtime = game_path_cache[game]
             else:
                 game_def = get_game(game)
                 if not game_def:
-                    _safe_set_status(
-                        self._status_label,
-                        tr("modding_tools.convert_game_path_missing", game=game),
-                    )
+                    _safe_localized_status(self._status_label, "modding_tools.convert_game_path_missing", game=game)
                     return
 
                 game_path = game_def.get_game_path(self._app_state.local_config)
                 if not game_path or not os.path.isdir(game_path):
-                    _safe_set_status(
-                        self._status_label,
-                        tr(
+                    _safe_localized_status(self._status_label,
                             "modding_tools.convert_game_path_missing",
                             game=game_def.display_name,
-                        ),
-                    )
+                        )
                     return
                 custom_key = game_def.get_custom_exec_config_key()
                 custom_executable = (
@@ -1735,11 +1740,9 @@ class _DataConvertTab(QWidget):
 
         target_mode = _convert_target_mode(self._fmt_combo.currentIndex())
         self._set_busy(True)
-        _safe_set_status(self._status_label, tr("modding_tools.running"))
+        _safe_localized_status(self._status_label, "modding_tools.running")
         self._worker = _BatchDataConvertWorkerThread(self._g3m, jobs, target_mode)
-        self._worker.progress.connect(
-            lambda message: _safe_set_status(self._status_label, message)
-        )
+        self._worker.progress.connect(self._show_progress)
         self._worker.warning_confirmation_needed.connect(
             self._on_warning_confirmation_needed
         )
@@ -1753,17 +1756,26 @@ class _DataConvertTab(QWidget):
         if self._worker:
             self._worker.confirm_warning(should_continue)
 
+    def _show_progress(self, message: str) -> None:
+        localized = getattr(self._worker, "localized_progress", None)
+        if isinstance(localized, LocalizedMessage):
+            _safe_localized_status(self._status_label, localized.key, **localized.parameters)
+        else:
+            _safe_set_status(self._status_label, message)
+
     def _on_finished(self, success, message):
+        localized = getattr(self._worker, "localized_result", None)
         retire_qthread(self._worker)
         self._worker = None
         self._set_busy(False)
         if success:
-            _safe_set_status(self._status_label, message)
+            if isinstance(localized, LocalizedMessage):
+                _safe_localized_status(self._status_label, localized.key, **localized.parameters)
+            else:
+                _safe_set_status(self._status_label, message)
         else:
             logger.info("Modding tools DATA conversion failed: %s", message)
-            _safe_set_status(
-                self._status_label, tr("modding_tools.failed_details_logged")
-            )
+            _safe_localized_status(self._status_label, "modding_tools.failed_details_logged")
             _safe_warning(
                 self,
                 tr("modding_tools.title"),
@@ -1775,6 +1787,10 @@ class _DataConvertTab(QWidget):
 
     def relocalize(self):
         self._profile_label.setText(tr("modding_tools.convert_select_profile"))
+        self._profile_combo.setToolTip(tr("tooltips.profile_combo"))
+        self._fmt_combo.setToolTip(tr("tooltips.modding_tools_target_format"))
+        self._mod_list.setToolTip(tr("tooltips.modding_tools_mod_list"))
+        self._run_btn.setToolTip(tr("tooltips.run_tool"))
         self._fmt_label.setText(tr("modding_tools.convert_target_format"))
         self._mod_label.setText(tr("modding_tools.convert_select_mod"))
         self._run_btn.setText(tr("modding_tools.run"))
@@ -1821,7 +1837,7 @@ class _MergeTab(QWidget):
         lay.addWidget(self._file_list, 1)
 
         list_btns = QHBoxLayout()
-        list_btns.setSpacing(6)
+        list_btns.setSpacing(8)
         self._add_btn = QPushButton(tr("modding_tools.merge_add"))
         self._add_btn.setObjectName("modding_tools_merge_add")
         self._add_btn.clicked.connect(self._on_add)
@@ -1882,7 +1898,7 @@ class _MergeTab(QWidget):
         run_row.addStretch()
         lay.addLayout(run_row)
 
-        self._status_label = QLabel("")
+        self._status_label = LocalizedLabel("")
         self._status_label.setObjectName("modding_tools_status")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_label.setWordWrap(True)
@@ -2005,7 +2021,7 @@ class _MergeTab(QWidget):
             base, _ext = os.path.splitext(patch_out or out)
             report_path = f"{base}_merge_report.md"
         self._run_btn.setEnabled(False)
-        _safe_set_status(self._status_label, tr("modding_tools.running"))
+        _safe_localized_status(self._status_label, "modding_tools.running")
         self._worker = _WorkerThread(
             self._g3m.merge_patches,
             (
@@ -2037,7 +2053,7 @@ class _MergeTab(QWidget):
             )
             return
         self._run_btn.setEnabled(False)
-        _safe_set_status(self._status_label, tr("modding_tools.running"))
+        _safe_localized_status(self._status_label, "modding_tools.running")
         self._worker = _WorkerThread(
             self._g3m.batch_merge_patches,
             (
@@ -2054,6 +2070,7 @@ class _MergeTab(QWidget):
         _start_worker(self, self._worker)
 
     def _on_progress(self, percent: int, label: str) -> None:
+        self._progress_status = (percent, label)
         _safe_set_status(self._status_label, _format_progress_status(percent, label))
 
     def _on_finished(self, rc, out, err):
@@ -2148,6 +2165,7 @@ class _InfoTab(QWidget):
         _start_worker(self, self._worker)
 
     def _on_progress(self, percent: int, label: str) -> None:
+        self._progress_status = (percent, label)
         self._set_output_text(_format_progress_status(percent, label))
 
     def _on_finished(self, rc, out, err):
@@ -2223,7 +2241,7 @@ class _DiffTab(QWidget):
         btn_row.addStretch()
         lay.addLayout(btn_row)
 
-        self._status_label = QLabel("")
+        self._status_label = LocalizedLabel("")
         self._status_label.setObjectName("modding_tools_status")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_label.setWordWrap(True)
@@ -2243,7 +2261,7 @@ class _DiffTab(QWidget):
             )
             return
         self._run_btn.setEnabled(False)
-        _safe_set_status(self._status_label, tr("modding_tools.running"))
+        _safe_localized_status(self._status_label, "modding_tools.running")
         out_dir = tempfile.mkdtemp(prefix="modding_tools_diff_")
         self._out_dir = out_dir
         self._worker = _WorkerThread(
@@ -2255,6 +2273,7 @@ class _DiffTab(QWidget):
         _start_worker(self, self._worker)
 
     def _on_progress(self, percent: int, label: str) -> None:
+        self._progress_status = (percent, label)
         _safe_set_status(self._status_label, _format_progress_status(percent, label))
 
     def _on_finished(self, rc, out, err):
@@ -2265,7 +2284,7 @@ class _DiffTab(QWidget):
             _show_g3mtool_failure(self, self._status_label, "diff", rc, out, err)
             self._cleanup_out_dir()
             return
-        _safe_set_status(self._status_label, tr("modding_tools.success"))
+        _safe_localized_status(self._status_label, "modding_tools.success")
         if self._out_dir is None:
             return
         md_file = self._find_md(self._out_dir)
@@ -2278,7 +2297,7 @@ class _DiffTab(QWidget):
             dlg.destroyed.connect(self._cleanup_out_dir)
             dlg.show()
         else:
-            _safe_set_status(self._status_label, tr("modding_tools.diff_no_report"))
+            _safe_localized_status(self._status_label, "modding_tools.diff_no_report")
             self._cleanup_out_dir()
 
     def _cleanup_out_dir(self):
@@ -2303,7 +2322,7 @@ class _DiffTab(QWidget):
         self._run_btn.setText(tr("modding_tools.diff_run"))
 
 
-class ModdingToolsDialog(QDialog):
+class ModdingToolsDialog(DynamicDialog):
     """Non-modal Modding Tools dialog."""
 
     def __init__(self, g3m_manager, app_state, parent=None) -> None:
@@ -2311,8 +2330,9 @@ class ModdingToolsDialog(QDialog):
         self._g3m = g3m_manager
         self._app_state = app_state
         self.setWindowTitle(tr("modding_tools.title"))
-        self.setMinimumSize(900, 600)
-        self.resize(1300, 820)
+        available = cast(QScreen, self.screen()).availableGeometry()
+        self.setMinimumSize(min(900, available.width() - 40), min(600, available.height() - 80))
+        self.resize(min(1300, available.width() - 40), min(820, available.height() - 80))
         self.setModal(False)
         self._build_ui()
         self._apply_theme()
@@ -2474,7 +2494,7 @@ class ModdingToolsDialog(QDialog):
                 {checkmark_image}
             }}
         """
-        self.setStyleSheet(base + extra)
+        self.set_theme_stylesheet(base + extra)
 
     def relocalize_ui(self):
         self.setWindowTitle(tr("modding_tools.title"))
@@ -2490,6 +2510,14 @@ class ModdingToolsDialog(QDialog):
         self._merge_tab.relocalize()
         self._info_tab.relocalize()
         self._diff_tab.relocalize()
+        for tab in (self._data_convert_tab, self._patch_tab, self._merge_tab, self._diff_tab):
+            tab._status_label.relocalize_ui()
+            if tab._worker and (progress := getattr(tab, "_progress_status", None)):
+                callback = getattr(tab, "_on_progress", None)
+                if callable(callback):
+                    callback(*progress)
+        if self._info_tab._worker and (progress := getattr(self._info_tab, "_progress_status", None)) and not self._info_tab._output_user_modified:
+            self._info_tab._on_progress(*progress)
 
     def _stop_all_workers(self) -> bool:
         if self._g3m and hasattr(self._g3m, "cancel_active_processes"):
@@ -2534,7 +2562,7 @@ class ModdingToolsDialog(QDialog):
         )
 
     def closeEvent(self, a0):
-        event = a0
+        event = cast(QCloseEvent, a0)
         if event is None:
             return
         if (

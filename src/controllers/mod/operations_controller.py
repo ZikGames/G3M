@@ -74,6 +74,13 @@ class ModOperationsController:
             return None
         return dialog.get_selected_file() or available_files[0]
 
+    def on_gamebanana_url_loaded(self, task, mod) -> None:
+        if task is not self.app_state.current_task:
+            return
+        self.app_state.reset_install_state()
+        if mod is not None and not task._cancelled and not task.isInterruptionRequested():
+            self.install_mod(mod)
+
     def _handle_install_start_error(self, error: Exception) -> None:
         self.app_state.is_installing = False
         self.set_install_buttons_enabled(True)
@@ -164,7 +171,8 @@ class ModOperationsController:
             "compatibility": compatibility,
             "name": getattr(mod, "name", None),
             "authors": getattr(mod, "authors", []) or [],
-            "version": getattr(mod, "version", None),
+            "version": (selected_file or {}).get("version") or (selected_file or {}).get("_sVersion") or getattr(mod, "version", None),
+            "game_version": getattr(mod, "game_version", None),
             "description": getattr(mod, "description", None),
             "homepage": getattr(mod, "homepage", None),
             "icon": getattr(mod, "icon", None),
@@ -368,7 +376,7 @@ class ModOperationsController:
                 )
                 return
             self._safe_show_message("warning", "errors.mod_no_files", mod_name=mod.name)
-        except (OSError, KeyError, Exception) as e:
+        except Exception as e:
             logger.error("ModOperationsController: install start failed: %s", e, exc_info=True)
             self._handle_install_start_error(e)
 
