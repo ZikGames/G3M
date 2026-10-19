@@ -28,8 +28,10 @@ class _PostFetchWorker(ManagedQThread):
 
     def run(self):
         try:
-            self._mod_service.invalidate_mods_cache()
-            self._mod_service.load_local_mods()
+            if not is_game_running():
+                # Rescanning rewrites mod folders that a running session may still restore from.
+                self._mod_service.invalidate_mods_cache()
+                self._mod_service.load_local_mods()
             self.done.emit(True)
         except Exception as e:
             logger.error(f"_PostFetchWorker: Error: {e}", exc_info=True)
@@ -154,11 +156,6 @@ class RefreshController:
                     language_combo.blockSignals(False)
             if not is_initial and localization_callback:
                 localization_callback()
-            if is_game_running():
-                self._safe_update_status(
-                    tr("status.cant_update_while_running"), UI_COLORS["status_warning"]
-                )
-                return
             previous_fetch = self.fetch_thread
             self._stop_fetch_thread()
             try:
@@ -175,7 +172,9 @@ class RefreshController:
             except Exception as e:
                 logger.debug(f"RefreshController: Error checking fetch thread: {e}")
                 self.fetch_thread = None
-            self.update_checker.check_for_updates()
+            if not is_game_running():
+                # An app update must not restart G3M while it still has to restore the game's files.
+                self.update_checker.check_for_updates()
 
             class FetchContext:
                 def __init__(self, app_state, mod_service, settings_service) -> None:
@@ -275,7 +274,8 @@ class RefreshController:
                         )
                 if update_installed_mods_callback:
                     update_installed_mods_callback()
-                self.game_launch_controller.refresh_mods_in_use()
+                if not is_game_running():
+                    self.game_launch_controller.refresh_mods_in_use()
                 if update_action_button_callback:
                     update_action_button_callback()
                 if success:
@@ -300,7 +300,8 @@ class RefreshController:
                         self._safe_update_status(
                             tr("status.no_game_path"), UI_COLORS["status_error"]
                         )
-                self.used_mods_service.load_used_mods_state()
+                if not is_game_running():
+                    self.used_mods_service.load_used_mods_state()
             except Exception as e:
                 error_msg = f"Error processing mod list: {e}"
                 logger.error(

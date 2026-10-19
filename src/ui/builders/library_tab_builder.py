@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 
 from config.config import (
     BASE_TAG_NAMES,
-    CYOP_AFOM_TAG,
+    GAME_SPECIFIC_TAGS,
 )
 from models.game_modes import get_visible_game_entries
 from presentation.drag_drop import normalize_local_path
@@ -37,7 +37,7 @@ from ui.builders.shared_filters_builder import (
     create_search_button,
     create_sort_controls,
     create_tag_checkboxes,
-    set_pizzatower_only_tag_visibility,
+    set_game_tag_visibility,
 )
 from ui.common.styling import (
     apply_scroll_area_chrome,
@@ -489,16 +489,17 @@ class LibraryTabBuilder(QObject):
             self.app_state,
             (
                 *BASE_TAG_NAMES,
-                ("cyop_afom", CYOP_AFOM_TAG, "tags.cyop_afom"),
+                *((key, tag, f"tags.{key}") for key, tag, _game in GAME_SPECIFIC_TAGS),
                 "gamebanana",
             ),
         )
         for t in tags.values():
             layout.addWidget(t, 0, align_vcenter)
-        set_pizzatower_only_tag_visibility(
-            tags.get("cyop_afom"),
-            (self.app_state.game_mode.game_id or "deltarune") == "pizzatower",
-        )
+        for key, _tag, game_id in GAME_SPECIFIC_TAGS:
+            set_game_tag_visibility(
+                tags.get(key),
+                (self.app_state.game_mode.game_id or "deltarune") == game_id,
+            )
         layout.addStretch()
         self._attach_actions_widget(layout, show_search=True)
         self.widgets.update(

@@ -8,6 +8,7 @@ from PyQt6.QtCore import QEvent, QMetaObject, QObject, Qt, QThread, QTimer, pyqt
 from PyQt6.QtWidgets import QApplication, QGridLayout, QInputDialog
 
 from config.config import (
+    BROWSER_GAME_TAGS,
     GAMEBANANA_PER_PAGE,
     SEARCH_EXHAUSTED_PAGE_SENTINEL,
 )
@@ -841,12 +842,12 @@ class SearchDisplayController(QObject):
             "tag_customization": "customization",
             "tag_gameplay": "gameplay",
             "tag_other": "other",
-            "tag_cyop_afom": "CYOP/AFOM",
         }
         selected_game = self._get_selected_game()
+        tag_checkboxes.update(
+            {f"tag_{key}": tag for key, tag, game_id in BROWSER_GAME_TAGS if game_id == selected_game}
+        )
         for attr_name, tag_value in tag_checkboxes.items():
-            if attr_name == "tag_cyop_afom" and selected_game != "pizzatower":
-                continue
             if _bound_checkbox_is_checked(self.app, attr_name):
                 selected_tags.append(tag_value)
         show_nsfw = bool(
@@ -860,6 +861,7 @@ class SearchDisplayController(QObject):
             "hide_banned": True,
             "hide_local": True,
             "show_nsfw": show_nsfw,
+            "only_g3m": _bound_checkbox_is_checked(self.app, "tag_g3m"),
             "status_filter": ["approved", "pending"],
             "exclude_installed": False,
         }

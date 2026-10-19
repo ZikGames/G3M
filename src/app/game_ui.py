@@ -8,6 +8,7 @@ import platform
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QLabel
 
+from config.config import BROWSER_GAME_TAGS, GAME_SPECIFIC_TAGS
 from models.game_modes import (
     DeltaruneGame,
     get_first_visible_game_id,
@@ -16,7 +17,7 @@ from models.game_modes import (
     get_visible_game_entries,
 )
 from services.localization_service import tr
-from ui.builders.shared_filters_builder import set_pizzatower_only_tag_visibility
+from ui.builders.shared_filters_builder import set_game_tag_visibility
 from ui.common.styling import (
     clamp_border_radius,
     get_border_radius,
@@ -52,14 +53,12 @@ def update_special_tag_visibility(w):
         if hasattr(w, "game_type_combo") and w.game_type_combo
         else getattr(w.app_state.game_mode, "game_id", "deltarune")
     ) or "deltarune"
-    set_pizzatower_only_tag_visibility(
-        getattr(w, "tag_cyop_afom", None),
-        search_game == "pizzatower",
-    )
-    set_pizzatower_only_tag_visibility(
-        getattr(w, "library_tag_cyop_afom", None),
-        library_game == "pizzatower",
-    )
+    for key, _tag, game_id in BROWSER_GAME_TAGS:
+        set_game_tag_visibility(getattr(w, f"tag_{key}", None), search_game == game_id)
+    for key, _tag, game_id in GAME_SPECIFIC_TAGS:
+        set_game_tag_visibility(
+            getattr(w, f"library_tag_{key}", None), library_game == game_id
+        )
 
 
 def on_game_mode_updated_by_state(w, mode_obj):

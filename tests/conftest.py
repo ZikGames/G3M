@@ -283,3 +283,26 @@ def all_test_mods_dirs(mods_dir):
     if not mods_path.exists():
         return {}
     return {'full_structure': str(mods_path / 'test_mod_full_structure'), 'chapter1_only': str(mods_path / 'test_mod_chapter1_only'), 'multiple_chapters': str(mods_path / 'test_mod_multiple_chapters'), 'demo': str(mods_path / 'test_mod_demo'), 'undertale': str(mods_path / 'test_mod_undertale')}
+
+
+@pytest.fixture(autouse=True)
+def hide_running_games(monkeypatch):
+    """Keep tests independent of any real game that happens to be running."""
+    import psutil
+
+    from services.game_detection_service import get_all_process_names
+
+    real_process_iter = psutil.process_iter
+    game_names = {name.casefold() for name in get_all_process_names()}
+
+    def is_game(process) -> bool:
+        try:
+            name = (getattr(process, "info", None) or {}).get("name") or process.name()
+        except psutil.Error:
+            return False
+        return name.casefold() in game_names
+
+    def process_iter(*args, **kwargs):
+        return (p for p in real_process_iter(*args, **kwargs) if not is_game(p))
+
+    monkeypatch.setattr(psutil, "process_iter", process_iter)

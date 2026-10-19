@@ -243,7 +243,10 @@ class TestRefreshMetadataLoading:
         update_installed_mods_callback = Mock()
         update_action_button_callback = Mock()
 
-        with patch("controllers.refresh_controller._PostFetchWorker", _FakePostFetchWorker):
+        with (
+            patch("controllers.refresh_controller._PostFetchWorker", _FakePostFetchWorker),
+            patch("controllers.refresh_controller.is_game_running", return_value=False),
+        ):
             refresh_controller._on_fetch_finished(
                 success=True,
                 update_installed_mods_callback=update_installed_mods_callback,
@@ -256,3 +259,21 @@ class TestRefreshMetadataLoading:
         game_launch_controller.refresh_mods_in_use.assert_called_once()
         used_mods_service.load_used_mods_state.assert_called_once()
         assert refresh_controller._fetch_finished_in_progress is False
+
+    def test_refresh_while_game_runs_fetches_without_touching_local_state(self, app_state):
+        from controllers.refresh_controller import RefreshController, _PostFetchWorker
+
+        update_checker, mod_service = Mock(), Mock()
+        controller = RefreshController(
+            app_state, Mock(), mod_service, Mock(), Mock(), update_checker, app_window=Mock()
+        )
+
+        with patch("controllers.refresh_controller.FetchModsThread") as factory, patch(
+            "controllers.refresh_controller.is_game_running", return_value=True
+        ):
+            controller.refresh_mods_list()
+            _PostFetchWorker(mod_service, app_state).run()
+
+        factory.return_value.start.assert_called_once()
+        update_checker.check_for_updates.assert_not_called()
+        mod_service.load_local_mods.assert_not_called()

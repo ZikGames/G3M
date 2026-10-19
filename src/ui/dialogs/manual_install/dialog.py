@@ -44,7 +44,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from adapters.gamebanana_adapter import GameBananaAPI
 from config.config import (
     CURRENT_PLATFORM,
     MOD_DOCUMENTATION_EXTENSIONS,
@@ -74,7 +73,6 @@ from utils.file_utils import remove_archive_extension
 from utils.mod.archive import archive_format
 from utils.mod.config import (
     MOD_CONFIG_MAX_DISPLAY_CHARS,
-    MOD_CONFIG_TAGS,
     MOD_CONFIG_VERSION,
     is_direct_absolute_path,
     validate_mod_config,
@@ -85,6 +83,7 @@ from utils.mod.operation_plan import (
     portable_operation_path,
     resolve_operation_path,
 )
+from utils.mod.tags import normalize_tags
 from utils.native_integration import (
     get_existing_directory,
     get_open_file_name,
@@ -1199,22 +1198,12 @@ class ManualModInstallDialog(DynamicDialog):
                 config[field] = str(value)
         if not config.get("homepage") and self.gamebanana_metadata.get("profile_url"):
             config["homepage"] = str(self.gamebanana_metadata["profile_url"])
-        tags = self.gamebanana_metadata.get("tags") or []
-        valid = (
-            list(
-                dict.fromkeys(
-                    tag
-                    for tag in tags
-                    if isinstance(tag, str) and tag in MOD_CONFIG_TAGS
-                )
-            )
-            if isinstance(tags, list)
-            else []
+        valid = normalize_tags(
+            [
+                *(self.gamebanana_metadata.get("tags") or []),
+                self.gamebanana_metadata.get("category"),
+            ]
         )
-        if category := self.gamebanana_metadata.get("category"):
-            category_tag = GameBananaAPI.category_to_tag(category)
-            if category_tag not in valid:
-                valid.append(category_tag)
         if valid:
             config["tags"] = valid
         return config

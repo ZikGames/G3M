@@ -79,10 +79,10 @@ def test_afom_service_converts_multi_root_archive_to_towers_mod(tmp_path):
     assert (result_path / "towers" / "TowerTwo" / "TowerTwo.tower.ini").exists()
 
 
-def test_afom_config_retains_only_supported_metadata_tags():
+def test_afom_config_maps_unsupported_metadata_tags():
     config = PizzaTowerAFOMService._build_config_data(
         "AFOM",
         {"tags": ["textedit", "unsupported", "CYOP/AFOM", "textedit"]},
     )
 
-    assert config["tags"] == ["CYOP/AFOM", "textedit"]
+    assert config["tags"] == ["CYOP/AFOM", "textedit", "other"]

@@ -10,13 +10,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from config.config import CYOP_AFOM_TAG
-from utils.file_utils import get_unique_mod_dir, remove_archive_extension
+from utils.file_utils import remove_archive_extension, staged_mod_dir
 from utils.mod.config import (
-    MOD_CONFIG_TAGS,
     MOD_CONFIG_VERSION,
     parse_mod_config,
     write_mod_config,
 )
+from utils.mod.tags import normalize_tags
 
 
 @dataclass(slots=True)
@@ -82,21 +82,18 @@ class PizzaTowerAFOMService:
         )
         config_data = self._build_config_data(mod_name, metadata)
         parse_mod_config(config_data)
-        target_mod_dir = os.path.join(mods_dir, get_unique_mod_dir(mods_dir, mod_name))
-        os.makedirs(target_mod_dir, exist_ok=True)
+        with staged_mod_dir(mods_dir, mod_name, str(config_data["id"])) as staged:
+            towers_root = os.path.join(staged.path, "towers")
+            os.makedirs(towers_root, exist_ok=True)
+            for root_dir in inspection.root_dirs:
+                shutil.copytree(
+                    root_dir,
+                    os.path.join(towers_root, os.path.basename(root_dir)),
+                    dirs_exist_ok=True,
+                )
 
-        towers_root = os.path.join(target_mod_dir, "towers")
-        os.makedirs(towers_root, exist_ok=True)
-        for root_dir in inspection.root_dirs:
-            shutil.copytree(
-                root_dir,
-                os.path.join(towers_root, os.path.basename(root_dir)),
-                dirs_exist_ok=True,
-            )
-
-        config_path = os.path.join(target_mod_dir, "mod_config.json")
-        write_mod_config(config_path, config_data)
-        return target_mod_dir
+            write_mod_config(os.path.join(staged.path, "mod_config.json"), config_data)
+        return staged.final
 
     @staticmethod
     def _is_valid_afom_root(root_dir: str) -> bool:
@@ -185,7 +182,7 @@ class PizzaTowerAFOMService:
                 dict.fromkeys(
                     [
                         CYOP_AFOM_TAG,
-                        *(tag for tag in tags if isinstance(tag, str) and tag in MOD_CONFIG_TAGS),
+                        *normalize_tags(tags),
                     ]
                 )
             )

@@ -4,7 +4,7 @@
     "language_name": "简体中文",
     "font": "NotoSansSC-Bold.ttf",
     "qt_translation": "qtbase_zh_cn",
-    "version": "3.4.1"
+    "version": "3.4.3"
   },
   "onboarding": {
     "title": "欢迎使用 G3M",
@@ -170,6 +170,12 @@
     "likes_tooltip": "点赞数",
     "edit_mod": "编辑模组",
     "only_gamebanana": "仅GameBanana",
+    "only_g3m": "G3M 已验证",
+    "g3m_confirmed_tooltip": "已由 G3M 作者 (Y114) 确认。此模组或其部分文件无需手动安装即可安装。",
+    "g3m_compat_label": "G3M 兼容性:",
+    "g3m_compat_details": "已由 G3M 作者 (Y114) 确认。此模组或其部分文件已是 G3M 格式，无需手动安装，一键即可安装。",
+    "wip_badge_tooltip": "制作中：此模组尚未完成。",
+    "g3m_note_label": "备注:",
     "elements_color": "元素颜色：",
     "enable_direct_launch": "要为第 {chapter} 章启用直接启动吗？\\n\\n直接启动会让游戏直接进入所选章节，而不是先打开主菜单。\\n\\n启用后，“通过 Steam 启动”将不可用。\\n\\n此功能在某些环境下仍可能不稳定。要继续吗？",
     "enter_author_name": "输入作者名称",
@@ -452,6 +458,7 @@
   },
   "tags": {
     "cyop_afom": "CYOP/AFOM",
+    "fb_addon": "FB-Addon",
     "gameplay": "内容修改",
     "other": "其他",
     "textedit": "文本/玩法",
@@ -880,7 +887,6 @@
     "recovering_previous_session": "恢复上一会话...",
     "autodetecting_path": "未找到游戏路径或路径已过期。自动检测中...",
     "creating_xdelta_patch_for_section": "正在为内容区段 {section} 创建 xdelta 补丁...",
-    "cant_update_while_running": "游戏运行时无法更新。",
     "changelog_load_failed": "<i>无法加载更新日志...</i>",
     "deltarune_already_running": "Deltarune 已在运行。",
     "demo_installation_complete": "Demo版完整安装完成。",

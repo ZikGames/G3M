@@ -15,6 +15,11 @@ from utils.process_utils import format_filesystem_error, format_network_error
 
 logger = logging.getLogger(__name__)
 
+CHECKSUM_WARNING = (
+    "The file does not match the checksum published on GameBanana. "
+    "It may have been replaced since the listing was loaded, or damaged during download."
+)
+
 
 def _cleanup_file(path: str):
     try:
@@ -36,9 +41,11 @@ class DownloadWorker(ManagedQThread):
         *,
         expected_md5: str | None = None,
         allowed_hosts: frozenset[str] | None = None,
+        md5_refresh=None,
         parent=None,
     ) -> None:
         super().__init__(parent)
+        self._md5_refresh = md5_refresh
         self._record_id = record_id
         self._url = url
         self._target_path = target_path
@@ -57,6 +64,18 @@ class DownloadWorker(ManagedQThread):
                 f"DownloadWorker.cancel: failed to close active response: {e}",
                 exc_info=True,
             )
+
+    def _checksum_warning(self) -> str:
+        """Describe a verified checksum mismatch, or return an empty string."""
+        expected = str(self._expected_md5 or "").strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{32}", expected):
+            return ""
+        actual = _file_md5(self._target_path, cancel_check=lambda: self._cancelled)
+        if actual == expected:
+            return ""
+        if self._md5_refresh and actual == self._md5_refresh():
+            return ""
+        return CHECKSUM_WARNING
 
     def run(self):
         try:
@@ -85,6 +104,7 @@ class DownloadWorker(ManagedQThread):
                         total_size = int(r.headers.get("content-length", 0))
 
             os.makedirs(os.path.dirname(self._target_path), exist_ok=True)
+            _cleanup_file(self._target_path)
             download_file(
                 session,
                 self._url,
@@ -107,7 +127,7 @@ class DownloadWorker(ManagedQThread):
                     "",
                 )
                 return
-            _verify_md5(self._target_path, self._expected_md5, cancel_check=lambda: self._cancelled)
+            warning = self._checksum_warning()
             if self._cancelled:
                 raise RuntimeError("download_cancelled")
             _safe_emit(
@@ -115,7 +135,7 @@ class DownloadWorker(ManagedQThread):
                 self.download_finished,
                 self._record_id,
                 True,
-                "",
+                warning,
                 self._target_path,
             )
         except RuntimeError as e:
@@ -152,20 +172,14 @@ class DownloadWorker(ManagedQThread):
             )
 
 
-def _verify_md5(path: str, expected_md5: str | None, *, cancel_check=None) -> None:
-    if not expected_md5:
-        return
-    expected = str(expected_md5).strip().casefold()
-    if not re.fullmatch(r"[0-9a-f]{32}", expected):
-        raise RuntimeError("download has invalid MD5 integrity metadata")
+def _file_md5(path: str, *, cancel_check=None) -> str:
     digest = hashlib.md5(usedforsecurity=False)
     with open(path, "rb") as source:
         while chunk := source.read(1024 * 1024):
             if cancel_check and cancel_check():
                 raise RuntimeError("download_cancelled")
             digest.update(chunk)
-    if digest.hexdigest() != expected:
-        raise RuntimeError("download checksum does not match the expected MD5")
+    return digest.hexdigest()
 
 
 class LocalFileCopyWorker(ManagedQThread):

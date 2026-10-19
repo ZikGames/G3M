@@ -302,7 +302,7 @@ class FetchModsThread(ManagedQThread):
         try:
             for folder_name in os.listdir(app_state.mods_dir):
                 folder_path = os.path.join(app_state.mods_dir, folder_name)
-                if not os.path.isdir(folder_path):
+                if folder_name.startswith(".") or not os.path.isdir(folder_path):
                     continue
                 config_path = os.path.join(folder_path, "mod_config.json")
                 if not os.path.exists(config_path):

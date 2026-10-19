@@ -24,15 +24,15 @@ from utils.file_utils import (
     check_filename_is_deltamod_info,
     find_deltamod_info_file,
     get_chapter_folder_name,
-    get_unique_mod_dir,
+    staged_mod_dir,
 )
 from utils.mod.config import (
-    MOD_CONFIG_TAGS,
     MOD_CONFIG_VERSION,
     parse_mod_config,
     write_mod_config,
 )
 from utils.mod.operation_plan import section_target_root
+from utils.mod.tags import normalize_tags
 
 logger = logging.getLogger(__name__)
 
@@ -78,48 +78,26 @@ class DeltamodConverter:
             mod_name = self._normalize_folder_name(
                 str(config_data.get("name") or self._fallback_mod_name())
             )
-            folder_name = get_unique_mod_dir(self.mods_dir, mod_name)
-            target_mod_dir = os.path.join(self.mods_dir, folder_name)
-            if os.path.exists(target_mod_dir):
-                for item in os.listdir(target_mod_dir):
-                    if item == "mod_versions":
-                        continue
-                    item_path = os.path.join(target_mod_dir, item)
-                    if os.path.isdir(item_path):
-                        try:
-                            shutil.rmtree(item_path)
-                        except OSError as e:
-                            logger.error(
-                                f"Failed to remove directory {item_path} in {target_mod_dir}: {e}"
-                            )
-                            raise
-                    else:
-                        try:
-                            os.remove(item_path)
-                        except OSError as e:
-                            logger.error(
-                                f"Failed to remove file {item_path} in {target_mod_dir}: {e}"
-                            )
-                            raise
-            os.makedirs(target_mod_dir, exist_ok=True)
-            self._process_files(target_mod_dir)
-            icon_path = os.path.join(target_mod_dir, "_icon.png")
-            if not os.path.exists(icon_path):
-                icon_path = os.path.join(target_mod_dir, "icon.png")
-            if os.path.exists(icon_path):
-                config_data["icon"] = (
-                    "${mod_path}/_icon.png"
-                    if os.path.basename(icon_path) == "_icon.png"
-                    else "${mod_path}/icon.png"
-                )
-            elif self.gamebanana_metadata.get("icon"):
-                config_data["icon"] = self.gamebanana_metadata["icon"]
-            config_path = os.path.join(target_mod_dir, "mod_config.json")
-            write_mod_config(config_path, config_data)
+            with staged_mod_dir(
+                self.mods_dir, mod_name, str(config_data.get("id"))
+            ) as staged:
+                self._process_files(staged.path)
+                icon_path = os.path.join(staged.path, "_icon.png")
+                if not os.path.exists(icon_path):
+                    icon_path = os.path.join(staged.path, "icon.png")
+                if os.path.exists(icon_path):
+                    config_data["icon"] = (
+                        "${mod_path}/_icon.png"
+                        if os.path.basename(icon_path) == "_icon.png"
+                        else "${mod_path}/icon.png"
+                    )
+                elif self.gamebanana_metadata.get("icon"):
+                    config_data["icon"] = self.gamebanana_metadata["icon"]
+                write_mod_config(os.path.join(staged.path, "mod_config.json"), config_data)
             logger.info(
-                f"Deltamod converted: {config_data.get('name')} → {target_mod_dir}"
+                f"Deltamod converted: {config_data.get('name')} → {staged.final}"
             )
-            return target_mod_dir
+            return staged.final
         except Exception as e:
             logger.error(f"Deltamod conversion failed: {e}")
             return None
@@ -418,39 +396,14 @@ class DeltamodConverter:
         game_version = self._resolve_game_version(game_value)
         if game_version:
             config["game_version"] = str(game_version).strip()
-        tags = meta.get("tags", [])
-        config["tags"] = [
-            tag for tag in tags if isinstance(tag, str) and tag in MOD_CONFIG_TAGS
-        ] if isinstance(tags, list) else []
-
-        if self.gamebanana_metadata:
-            from adapters.gamebanana_adapter import GameBananaAPI
-
-            if self.gamebanana_metadata.get("tags"):
-                gb_tags = self.gamebanana_metadata["tags"]
-                if isinstance(gb_tags, list):
-                    existing_tags = config.get("tags", [])
-                    for tag in gb_tags:
-                        if tag and tag not in existing_tags:
-                            existing_tags.append(tag)
-                    config["tags"] = existing_tags
-            category_tag = GameBananaAPI.category_to_tag(
-                self.gamebanana_metadata.get("category")
-            )
-            if category_tag:
-                existing_tags = config.get("tags", [])
-                if not isinstance(existing_tags, list):
-                    existing_tags = [existing_tags] if existing_tags else []
-                if category_tag not in existing_tags:
-                    existing_tags.append(category_tag)
-                config["tags"] = existing_tags
-
-        config["tags"] = list(
-            dict.fromkeys(
-                tag
-                for tag in config["tags"]
-                if isinstance(tag, str) and tag in MOD_CONFIG_TAGS
-            )
+        gb_meta = self.gamebanana_metadata or {}
+        meta_tags = meta.get("tags")
+        config["tags"] = normalize_tags(
+            [
+                *(meta_tags if isinstance(meta_tags, list) else []),
+                *(gb_meta.get("tags") or []),
+                gb_meta.get("category"),
+            ]
         )
         if not config["tags"]:
             config.pop("tags")

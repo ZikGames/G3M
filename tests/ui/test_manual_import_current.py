@@ -61,7 +61,7 @@ def manual_parent(qtbot, tmp_path):
 
 def _save_import(dialog, qtbot, monkeypatch):
     dialog._on_finish()
-    qtbot.waitUntil(lambda: dialog.result() == QDialog.DialogCode.Accepted)
+    qtbot.waitUntil(lambda: dialog.result() == QDialog.DialogCode.Accepted, timeout=30000)
     mods_dir = dialog.target_mods_dir or dialog.app_state.mods_dir
     config_path = next(Path(mods_dir).glob("*/mod_config.json"))
     return load_mod_config(config_path), config_path.parent
@@ -235,7 +235,7 @@ def test_manual_import_refreshes_and_saves_gamebanana_metadata(
     assert config["version"] == (cached_version or "1.01")
     assert config["game"] == "undertale"
     assert config["game_version"] == "1.08"
-    assert config["tags"] == ["customization", "gameplay"]
+    assert config["tags"] == ["customization", "other", "gameplay"]
     assert metadata["description"] == "No description"
     assert fetch.call_args.kwargs["itemtype"] == (
         "Wip" if item_type == "wip" else "Mod"

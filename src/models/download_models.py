@@ -96,7 +96,10 @@ class DownloadRecord:
 
     @property
     def needs_attention(self) -> bool:
-        return self.use_status in (UseStatus.OVERWRITE_PENDING, UseStatus.NEEDS_MANUAL)
+        return self.use_status in (
+            UseStatus.OVERWRITE_PENDING,
+            UseStatus.NEEDS_MANUAL,
+        ) or (self.use_status == UseStatus.READY and bool(self.error_message))
 
     @property
     def effective_status_key(self) -> str:

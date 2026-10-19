@@ -4,7 +4,7 @@
     "language_name": "한국어",
     "font": "NotoSansKR-Bold.ttf",
     "qt_translation": "qtbase_ko",
-    "version": "3.4.1"
+    "version": "3.4.3"
   },
   "onboarding": {
     "title": "G3M에 오신 것을 환영합니다",
@@ -170,6 +170,12 @@
     "likes_tooltip": "좋아요 수",
     "edit_mod": "모드 수정",
     "only_gamebanana": "GameBanana 모드만",
+    "only_g3m": "G3M 인증",
+    "g3m_confirmed_tooltip": "G3M 제작자(Y114)가 확인함. 이 모드 또는 일부 파일은 수동 설치 없이 설치됩니다.",
+    "g3m_compat_label": "G3M 호환성:",
+    "g3m_compat_details": "G3M 제작자(Y114)가 확인함. 이 모드 또는 일부 파일은 이미 G3M 형식이며 수동 설치 없이 한 번에 설치됩니다.",
+    "wip_badge_tooltip": "제작 중: 이 모드는 아직 완성되지 않았습니다.",
+    "g3m_note_label": "참고:",
     "elements_color": "요소 색상:",
     "enable_direct_launch": "챕터 {chapter}에 직접 실행을 활성화하시겠습니까?\\n\\n직접 실행을 사용하면 메인 메뉴를 거치지 않고 선택한 챕터로 바로 시작합니다.\\n\\n직접 실행이 켜져 있는 동안에는 ‘Steam을 통해 실행’을 사용할 수 없습니다.\\n\\n이 기능은 일부 환경에서 여전히 불안정할 수 있습니다. 계속하시겠습니까?",
     "enter_author_name": "제작자 이름 입력",
@@ -452,6 +458,7 @@
   },
   "tags": {
     "cyop_afom": "CYOP/AFOM",
+    "fb_addon": "FB-Addon",
     "gameplay": "게임플레이",
     "other": "기타",
     "textedit": "텍스트 수정",
@@ -880,7 +887,6 @@
     "recovering_previous_session": "이전 세션 복구 중...",
     "autodetecting_path": "게임 경로를 찾을 수 없거나 오래되었습니다. 자동 감지 중...",
     "creating_xdelta_patch_for_section": "콘텐츠 섹션 {section}의 xdelta 패치 생성 중...",
-    "cant_update_while_running": "게임 실행 중에는 업데이트할 수 없습니다.",
     "changelog_load_failed": "<i>변경 사항 목록을 불러올 수 없습니다...</i>",
     "deltarune_already_running": "Deltarune이 이미 실행 중입니다.",
     "demo_installation_complete": "DEMO 전체 설치 완료.",

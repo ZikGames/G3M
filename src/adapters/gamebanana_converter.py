@@ -14,10 +14,10 @@ from utils.file_utils import (
     normalize_mod_package,
 )
 from utils.mod.config import (
-    MOD_CONFIG_TAGS,
     parse_mod_config,
     write_mod_config,
 )
+from utils.mod.tags import normalize_tags
 
 logger = logging.getLogger(__name__)
 
@@ -265,26 +265,16 @@ class GameBananaConverter:
                 )
                 if homepage:
                     config_data["homepage"] = homepage
-            from adapters.gamebanana_adapter import GameBananaAPI
-
-            tags = []
-            if self.gamebanana_metadata.get("tags"):
-                tags = self.gamebanana_metadata["tags"]
-                if not isinstance(tags, list):
-                    tags = [tags] if tags else []
-            category_tag = GameBananaAPI.category_to_tag(
-                self.gamebanana_metadata.get("category")
+            existing_tags = config_data.get("tags")
+            tags = normalize_tags(
+                [
+                    *(existing_tags if isinstance(existing_tags, list) else [existing_tags]),
+                    *(self.gamebanana_metadata.get("tags") or []),
+                    self.gamebanana_metadata.get("category"),
+                ]
             )
-            if category_tag and category_tag not in tags:
-                tags.append(category_tag)
             if tags:
-                existing_tags = config_data.get("tags", [])
-                if not isinstance(existing_tags, list):
-                    existing_tags = [existing_tags] if existing_tags else []
-                for tag in tags:
-                    if tag in MOD_CONFIG_TAGS and tag not in existing_tags:
-                        existing_tags.append(tag)
-                config_data["tags"] = existing_tags
+                config_data["tags"] = tags
             write_mod_config(config_path, config_data)
             logger.info(
                 f"GameBananaConverter: Updated config for GameBanana mod: id={config_data.get('id')}, mod_dir={mod_dir}"

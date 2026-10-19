@@ -4,7 +4,7 @@
     "language_name": "日本語",
     "font": "NotoSansJP-Bold.ttf",
     "qt_translation": "qtbase_ja",
-    "version": "3.4.1"
+    "version": "3.4.3"
   },
   "onboarding": {
     "title": "G3Mへようこそ",
@@ -170,6 +170,12 @@
     "likes_tooltip": "いいね数",
     "edit_mod": "MODの編集",
     "only_gamebanana": "GameBananaのみ",
+    "only_g3m": "G3M認証済み",
+    "g3m_confirmed_tooltip": "G3M制作者(Y114)が確認済み。この MOD、または一部のファイルは手動インストールなしでインストールできます。",
+    "g3m_compat_label": "G3M対応状況:",
+    "g3m_compat_details": "G3M制作者(Y114)が確認済み。この MOD、または一部のファイルは既に G3M 形式で、手動インストールなしでワンクリックでインストールできます。",
+    "wip_badge_tooltip": "制作中: この MOD はまだ完成していません。",
+    "g3m_note_label": "メモ:",
     "elements_color": "要素の色:",
     "enable_direct_launch": "チャプター {chapter} の直接起動を有効にしますか?\\n\\n直接起動では、メインメニューを開かずに選択したチャプターからゲームを開始します。\\n\\n直接起動が有効な間は、「Steam 経由で起動」は使用できません。\\n\\n環境によってはこの機能が正しく動作しない場合があります。続行しますか?",
     "enter_author_name": "著者名を入力してください",
@@ -452,6 +458,7 @@
   },
   "tags": {
     "cyop_afom": "CYOP/AFOM",
+    "fb_addon": "FB-Addon",
     "gameplay": "ゲームプレイ",
     "other": "その他",
     "textedit": "テキスト編集",
@@ -880,7 +887,6 @@
     "recovering_previous_session": "以前のセッションを復元しています...",
     "autodetecting_path": "ゲームのパスが見つからないか、古いです。自動検出中...",
     "creating_xdelta_patch_for_section": "コンテンツセクション {section} の xdelta パッチを作成しています...",
-    "cant_update_while_running": "ゲーム実行中はアップデートできません。",
     "changelog_load_failed": "<i>変更ログをロードできませんでした...</i>",
     "deltarune_already_running": "デルタルーンはすでに起動しています。",
     "demo_installation_complete": "完全なデモのインストールが完了しました。",
