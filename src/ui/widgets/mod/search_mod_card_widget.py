@@ -202,6 +202,13 @@ class SearchModCardWidget(ModCardWidget):
         self.updated_label.setToolTip(tr("ui.updated_label"))
         separator = QLabel("|", metadata_widget)
         separator.setObjectName("secondaryText")
+        badges = self._create_badges()
+        for badge in badges:
+            metadata_layout.addWidget(badge)
+        if badges:
+            badge_separator = QLabel("|", metadata_widget)
+            badge_separator.setObjectName("secondaryText")
+            metadata_layout.addWidget(badge_separator)
         metadata_layout.addWidget(self.likes_icon_label)
         metadata_layout.addWidget(self.likes_label)
         metadata_layout.addWidget(separator)
@@ -437,14 +444,13 @@ class SearchModCardWidget(ModCardWidget):
     def _update_updated_label(self):
         if hasattr(self, "updated_label"):
             updated_text = str(getattr(self.mod_data, "last_updated", None) or "N/A")
-            if getattr(self.mod_data, "is_wip", False):
-                updated_text = f"{updated_text} | WIP"
             self.updated_label.setText(updated_text)
 
     def _update_metadata_icons(self, color: str, size: int):
         icon_size = max(12, size)
         container_size = icon_size + self.METADATA_ICON_PADDING
         render_size = max(10, icon_size - 2)
+        self._set_badge_size(container_size + 2, color)
         if hasattr(self, "likes_icon_label"):
             likes_pixmap = colored_icon("like", color).pixmap(render_size, render_size)
             if not likes_pixmap.isNull():
@@ -534,6 +540,7 @@ class SearchModCardWidget(ModCardWidget):
             self.likes_label.setToolTip(tr("ui.likes_tooltip"))
         if hasattr(self, "updated_label"):
             self.updated_label.setToolTip(tr("ui.updated_label"))
+        self._update_badge_tooltips()
         self.update_mod_data()
 
     def mousePressEvent(self, a0):

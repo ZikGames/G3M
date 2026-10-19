@@ -4,7 +4,7 @@
     "language_name": "Español",
     "font": "NotoSans-Bold.ttf",
     "qt_translation": "qtbase_es",
-    "version": "3.4.2"
+    "version": "3.4.3"
   },
   "onboarding": {
     "title": "Bienvenido a G3M",
@@ -170,6 +170,12 @@
     "likes_tooltip": "Número de Me gusta",
     "edit_mod": "Editar Mod",
     "only_gamebanana": "Solo GameBanana",
+    "only_g3m": "Verificado por G3M",
+    "g3m_confirmed_tooltip": "Confirmado por el creador de G3M (Y114). El mod, o algunos de sus archivos, se instala sin instalación manual.",
+    "g3m_compat_label": "Compatibilidad con G3M:",
+    "g3m_compat_details": "Confirmado por el creador de G3M (Y114). El mod, o algunos de sus archivos, ya está en formato G3M y se instala con un clic, sin instalación manual.",
+    "wip_badge_tooltip": "En desarrollo: este mod aún no está terminado.",
+    "g3m_note_label": "Nota:",
     "elements_color": "Color de elementos:",
     "enable_direct_launch": "¿Activar inicio directo para el Capítulo {chapter}?\\n\\nEl inicio directo abre el juego directamente en el capítulo seleccionado, sin pasar por el menú principal.\\n\\nMientras esté activado, 'Iniciar vía Steam' no estará disponible.\\n\\nEsta función todavía puede fallar en algunas configuraciones. ¿Continuar?",
     "enter_author_name": "Ingresa el nombre del autor",
@@ -452,6 +458,7 @@
   },
   "tags": {
     "cyop_afom": "CYOP/AFOM",
+    "fb_addon": "FB-Addon",
     "gameplay": "Jugabilidad",
     "other": "Otro",
     "textedit": "Edición de Texto",
@@ -880,7 +887,6 @@
     "recovering_previous_session": "Recuperando sesión anterior...",
     "autodetecting_path": "Ruta del juego no encontrada o desactualizada. Auto-detectando...",
     "creating_xdelta_patch_for_section": "Creando un parche xdelta para la sección de contenido {section}...",
-    "cant_update_while_running": "No se puede actualizar mientras el juego está en ejecución.",
     "changelog_load_failed": "<i>No se pudo cargar el registro de cambios...</i>",
     "deltarune_already_running": "Deltarune ya se está ejecutando.",
     "demo_installation_complete": "Instalación completa de DEMO finalizada.",

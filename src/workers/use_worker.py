@@ -309,6 +309,8 @@ class UseWorker(ManagedQThread):
             mod_id = config_data.get("id")
             if isinstance(mod_id, str) and mod_id.startswith(("gb_mod_", "gb_wip_")):
                 for entry in os.listdir(self._mods_dir):
+                    if entry.startswith("."):
+                        continue
                     candidate = os.path.join(self._mods_dir, entry)
                     candidate_config = os.path.join(candidate, MOD_CONFIG_FILENAME)
                     if not os.path.isfile(candidate_config):
@@ -461,7 +463,7 @@ class UseWorker(ManagedQThread):
 
     @staticmethod
     def _apply_gb_metadata(config_data: dict, gb_metadata: dict) -> None:
-        from adapters.gamebanana_adapter import GameBananaAPI
+        from utils.mod.tags import normalize_tags
 
         mod_id = gb_metadata.get("mod_id")
         if mod_id:
@@ -473,23 +475,14 @@ class UseWorker(ManagedQThread):
             config_data["icon"] = gb_metadata["icon"]
         if gb_metadata.get("version"):
             config_data["version"] = str(gb_metadata["version"])
-        tags = gb_metadata.get("tags") or []
+        existing = config_data.get("tags")
+        if not isinstance(existing, list):
+            existing = [existing] if existing else []
+        tags = normalize_tags(
+            [*existing, *(gb_metadata.get("tags") or []), gb_metadata.get("category")]
+        )
         if tags:
-            existing = config_data.get("tags", [])
-            if not isinstance(existing, list):
-                existing = [existing] if existing else []
-            for t in tags:
-                if t and t not in existing:
-                    existing.append(t)
-            config_data["tags"] = existing
-        category_tag = GameBananaAPI.category_to_tag(gb_metadata.get("category"))
-        if category_tag:
-            existing = config_data.get("tags", [])
-            if not isinstance(existing, list):
-                existing = [existing] if existing else []
-            if category_tag not in existing:
-                existing.append(category_tag)
-            config_data["tags"] = existing
+            config_data["tags"] = tags
 
     @staticmethod
     def _update_config_id(mod_dir: str, gb_metadata: dict) -> None:

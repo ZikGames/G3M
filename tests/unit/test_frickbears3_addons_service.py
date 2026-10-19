@@ -103,3 +103,11 @@ def test_frickbears3_service_converts_addon_archive_to_g3m_mod(tmp_path):
     ]
     assert (result_path / "addons" / "Goomba" / "extras_info.txt").exists()
     assert (result_path / "addons" / "Goomba" / "icon.png").exists()
+
+
+def test_frickbears3_addon_config_gets_the_fb_addon_tag():
+    config = Frickbears3AddonsService._build_config_data(
+        "Goomba", {"tags": ["Translation", "tag_1", "FB Addon"]}
+    )
+
+    assert config["tags"] == ["FB-Addon", "textedit", "other"]

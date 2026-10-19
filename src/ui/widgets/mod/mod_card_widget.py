@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from adapters.gamebanana_adapter import GameBananaAPI
 from services.localization_service import tr
 from ui.common.styling import (
     get_border_radius,
@@ -21,6 +22,7 @@ from ui.common.styling import (
 )
 from ui.utils.ui_utils import UIAnimator
 from utils.mod.utils import get_mod_id
+from utils.path_utils import colored_icon
 
 from .base_mod_widget import BaseModWidget
 
@@ -186,6 +188,35 @@ class ModCardWidget(BaseModWidget):
             return str(likes_value if likes_value is not None else 0)
         except Exception:
             return "N/A"
+
+    def _create_badges(self) -> list[QLabel]:
+        """Create the G3M, work-in-progress and note badges that apply to this mod."""
+        mod_id = get_mod_id(self.mod_data) or ""
+        confirmed = GameBananaAPI.g3m_confirmed
+        shown = {
+            "g3m": mod_id in confirmed,
+            "wip": bool(getattr(self.mod_data, "is_wip", False)),
+            "note": bool(confirmed.get(mod_id)),
+        }
+        self.badges = {kind: QLabel(self) for kind, on in shown.items() if on}
+        self._update_badge_tooltips()
+        self._set_badge_size(18, "#e8e9eb")
+        return list(self.badges.values())
+
+    def _update_badge_tooltips(self) -> None:
+        texts = {
+            "g3m": tr("ui.g3m_confirmed_tooltip"),
+            "wip": tr("ui.wip_badge_tooltip"),
+            "note": GameBananaAPI.g3m_confirmed.get(get_mod_id(self.mod_data) or "", ""),
+        }
+        for kind, badge in getattr(self, "badges", {}).items():
+            badge.setToolTip(texts[kind])
+
+    def _set_badge_size(self, size: int, color: str) -> None:
+        """Render every badge in one square so they match at any UI scale."""
+        for kind, badge in getattr(self, "badges", {}).items():
+            badge.setPixmap(colored_icon(kind, color).pixmap(size, size))
+            badge.setFixedSize(size, size)
 
     def _init_ui(self):
         super()._init_ui()
@@ -498,6 +529,7 @@ class ModCardWidget(BaseModWidget):
             self.updated_label_title.setText(tr("ui.updated_label"))
         if hasattr(self, "likes_label"):
             self.likes_label.setToolTip(tr("ui.likes_tooltip"))
+        self._update_badge_tooltips()
         if hasattr(self, "details_button"):
             self.details_button.setText(tr("ui.details_button"))
         if hasattr(self, "action_button"):

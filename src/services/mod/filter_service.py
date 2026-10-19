@@ -3,6 +3,7 @@
 from adapters.gamebanana_adapter import GameBananaAPI
 from config.config import (
     CYOP_AFOM_TAG,
+    FB_ADDON_TAG,
     MOD_FILTER_NSFW_TEXT_MARKERS,
     MOD_FILTER_TRUE_VALUES,
 )
@@ -18,8 +19,9 @@ def _get_mod_attr(mod, attr, default=None):
 def _get_mod_tags(mod, is_gamebanana: bool = False):
     def _canonical_tag(tag_value):
         normalized = str(tag_value).strip()
-        if normalized.casefold() == CYOP_AFOM_TAG.casefold():
-            return CYOP_AFOM_TAG
+        for special in (CYOP_AFOM_TAG, FB_ADDON_TAG):
+            if normalized.casefold() == special.casefold():
+                return special
         return normalized.lower()
 
     raw_tags = _get_mod_attr(mod, "tags") or []
@@ -179,6 +181,8 @@ def filter_and_sort_mods(
         if (not show_nsfw) and _is_nsfw_mod(mod):
             continue
         if only_gamebanana and not is_gb:
+            continue
+        if filters.get("only_g3m") and mod_id not in GameBananaAPI.g3m_confirmed:
             continue
         if exclude_installed and mod_id in installed_ids:
             continue

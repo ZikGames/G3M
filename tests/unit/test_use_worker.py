@@ -336,3 +336,11 @@ def test_g3m_update_keeps_backup_when_restore_also_fails(tmp_path, monkeypatch):
     staging_roots = list(mods_dir.glob(".g3m-install-*"))
     assert len(staging_roots) == 1
     assert (staging_roots[0] / "previous" / "old.txt").read_text(encoding="utf-8") == "old"
+
+
+def test_gamebanana_metadata_maps_tags_without_duplicates():
+    config = {"tags": ["gameplay"]}
+
+    UseWorker._apply_gb_metadata(config, {"tags": ["Software Used", "Translation", "Medibang", "textedit"]})
+
+    assert config["tags"] == ["gameplay", "other", "textedit"]

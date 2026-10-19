@@ -10,6 +10,7 @@ from PyQt6.QtCore import QEventLoop, QObject, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QApplication
 
 from app.game_ui import show_chapter_mode_instruction
+from config.config import GAME_SPECIFIC_TAGS
 from services.game_detection_service import get_chapter_id_for_game_mode
 from services.localization_service import tr
 from services.mod.filter_service import filter_and_sort_mods
@@ -132,10 +133,13 @@ class LibraryDisplayController(QObject):
                     "other"
                     if _bound_checkbox_is_checked(self.app, "library_tag_other")
                     else None,
-                    "CYOP/AFOM"
-                    if current_game == "pizzatower"
-                    and _bound_checkbox_is_checked(self.app, "library_tag_cyop_afom")
-                    else None,
+                    *(
+                        tag
+                        if current_game == game_id
+                        and _bound_checkbox_is_checked(self.app, f"library_tag_{key}")
+                        else None
+                        for key, tag, game_id in GAME_SPECIFIC_TAGS
+                    ),
                 )
                 if tag
             )
@@ -252,8 +256,9 @@ class LibraryDisplayController(QObject):
                 self.app.library_tag_gameplay: "gameplay",
                 self.app.library_tag_other: "other",
             }
-            if current_game_type == "pizzatower":
-                tag_map[self.app.library_tag_cyop_afom] = "CYOP/AFOM"
+            for key, tag, game_id in GAME_SPECIFIC_TAGS:
+                if current_game_type == game_id:
+                    tag_map[getattr(self.app, f"library_tag_{key}")] = tag
             selected_tags = [
                 tag for checkbox, tag in tag_map.items() if checkbox.isChecked()
             ]

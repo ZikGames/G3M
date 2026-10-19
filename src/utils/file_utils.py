@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import TypeVar
 
 from config.config import (
@@ -21,6 +22,7 @@ from config.config import (
     META_JSON_FILENAME,
     META_TOML_FILENAME,
     MOD_CONFIG_FILENAME,
+    MOD_VERSIONS_DIR,
 )
 from services.migration_service import migrate_legacy_chapter_id
 from utils.network_utils import download_file, get_filename_from_url, get_session
@@ -356,6 +358,58 @@ def get_unique_mod_dir(mods_dir, mod_name):
     while os.path.exists(os.path.join(mods_dir, f"{sanitized}_{counter}")):
         counter += 1
     return f"{sanitized}_{counter}"
+
+
+def find_mod_dir_by_id(mods_dir: str, mod_id: str) -> str | None:
+    for folder_name in os.listdir(mods_dir):
+        if folder_name.startswith("."):
+            continue
+        config_path = os.path.join(mods_dir, folder_name, MOD_CONFIG_FILENAME)
+        try:
+            with open(config_path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("id") == mod_id:
+            return os.path.dirname(config_path)
+    return None
+
+
+def replace_mod_dir(previous: str, staged: str) -> str:
+    """Swap a finished folder into the one it updates, keeping that mod's version snapshots."""
+    if os.path.isdir(versions := os.path.join(previous, MOD_VERSIONS_DIR)):
+        shutil.copytree(versions, os.path.join(staged, MOD_VERSIONS_DIR), dirs_exist_ok=True)
+    retired = tempfile.mkdtemp(prefix=".replaced-", dir=os.path.dirname(previous))
+    parked = os.path.join(retired, "previous")
+    os.rename(previous, parked)
+    try:
+        os.rename(staged, previous)
+    except OSError:
+        os.rename(parked, previous)
+        shutil.rmtree(retired, ignore_errors=True)
+        raise
+    shutil.rmtree(retired, ignore_errors=True)
+    return previous
+
+
+@contextlib.contextmanager
+def staged_mod_dir(mods_dir: str, mod_name: str, mod_id: str):
+    """Yield a folder to build a mod in; it replaces the installed mod only if the build succeeds.
+
+    ``final`` holds the mod's folder once the block has completed.
+    """
+    os.makedirs(mods_dir, exist_ok=True)
+    staged = SimpleNamespace(path=tempfile.mkdtemp(prefix=".staging-", dir=mods_dir), final="")
+    try:
+        yield staged
+        if previous := find_mod_dir_by_id(mods_dir, mod_id):
+            staged.final = replace_mod_dir(previous, staged.path)
+        else:
+            staged.final = os.path.join(mods_dir, get_unique_mod_dir(mods_dir, mod_name))
+            os.rename(staged.path, staged.final)
+    except BaseException:
+        shutil.rmtree(staged.path, ignore_errors=True)
+        raise
 
 
 def ensure_writable(path: str) -> bool:

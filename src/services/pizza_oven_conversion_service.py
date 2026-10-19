@@ -9,18 +9,18 @@ import re
 import shutil
 import tempfile
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from adapters.g3mtool_adapter import G3MToolManager
 from config.config import MOD_CONFIG_FILENAME, MOD_DOCUMENTATION_EXTENSIONS
 from services.localization_service import tr
-from utils.file_utils import get_unique_mod_dir, remove_archive_extension
+from utils.file_utils import remove_archive_extension, staged_mod_dir
 from utils.mod.config import (
-    MOD_CONFIG_TAGS,
     MOD_CONFIG_VERSION,
     write_mod_config,
 )
+from utils.mod.tags import normalize_tags
 from utils.patching.patch_verification_utils import files_match, verify_generated_patch
 
 logger = logging.getLogger(__name__)
@@ -821,7 +821,34 @@ class PizzaOvenConversionService:
     ) -> PizzaOvenConversionResult:
         mod_name = str(metadata.get("name") or "PizzaOven Mod").strip()
         mod_id = str(metadata.get("id") or f"local_po_{uuid.uuid4().hex[:12]}")
-        target_mod_dir = self._prepare_target_mod_dir(mods_dir, mod_name, mod_id)
+        with staged_mod_dir(mods_dir, mod_name, mod_id) as staged:
+            result = self._write_g3m_mod(
+                staged.path,
+                mod_name,
+                mod_id,
+                source_dir,
+                original_game_dir,
+                working_game_dir,
+                changed_files,
+                used_source_files,
+                metadata,
+                reusable_patches,
+            )
+        return replace(result, mod_dir=staged.final)
+
+    def _write_g3m_mod(
+        self,
+        target_mod_dir: str,
+        mod_name: str,
+        mod_id: str,
+        source_dir: str,
+        original_game_dir: str,
+        working_game_dir: str,
+        changed_files: list[str],
+        used_source_files: list[str],
+        metadata: dict[str, Any],
+        reusable_patches: dict[str, str],
+    ) -> PizzaOvenConversionResult:
         changed_remaining = list(changed_files)
         data_file_name = self._write_data_patch(
             target_mod_dir,
@@ -891,7 +918,7 @@ class PizzaOvenConversionService:
             config_data["icon"] = f"${{mod_path}}/{os.path.basename(icon)}"
         tags = metadata.get("tags")
         if isinstance(tags, list):
-            config_data["tags"] = [tag for tag in tags if tag in MOD_CONFIG_TAGS]
+            config_data["tags"] = normalize_tags(tags)
             if not config_data["tags"]:
                 config_data.pop("tags")
         write_mod_config(os.path.join(target_mod_dir, MOD_CONFIG_FILENAME), config_data)
@@ -901,48 +928,6 @@ class PizzaOvenConversionService:
             data_file_name=data_file_name,
             used_source_files=used_source_files,
         )
-
-    @staticmethod
-    def _prepare_target_mod_dir(mods_dir: str, mod_name: str, mod_id: str) -> str:
-        os.makedirs(mods_dir, exist_ok=True)
-        existing = PizzaOvenConversionService._find_existing_mod_dir(mods_dir, mod_id)
-        if existing:
-            for item in os.listdir(existing):
-                if item == "mod_versions":
-                    continue
-                item_path = os.path.join(existing, item)
-                if os.path.isdir(item_path):
-                    shutil.rmtree(item_path, ignore_errors=True)
-                else:
-                    try:
-                        os.remove(item_path)
-                    except OSError:
-                        logger.debug(
-                            "Failed to remove %s during PO reconvert", item_path
-                        )
-            return existing
-        folder_name = get_unique_mod_dir(mods_dir, mod_name)
-        target_mod_dir = os.path.join(mods_dir, folder_name)
-        os.makedirs(target_mod_dir, exist_ok=True)
-        return target_mod_dir
-
-    @staticmethod
-    def _find_existing_mod_dir(mods_dir: str, mod_id: str) -> str | None:
-        for folder_name in os.listdir(mods_dir):
-            folder_path = os.path.join(mods_dir, folder_name)
-            if not os.path.isdir(folder_path):
-                continue
-            config_path = os.path.join(folder_path, "mod_config.json")
-            if not os.path.isfile(config_path):
-                continue
-            try:
-                with open(config_path, encoding="utf-8") as handle:
-                    data = json.load(handle)
-                if isinstance(data, dict) and data.get("id") == mod_id:
-                    return folder_path
-            except Exception:
-                logger.debug("Failed to inspect %s", config_path, exc_info=True)
-        return None
 
     @classmethod
     def _write_extra_files(

@@ -1,3 +1,12 @@
+### Version 3.4.3 — 19.10.26
+
+- Added the **FB-Addon** tag for FRICKBEARS3 content, which converted addons receive automatically. It and **CYOP/AFOM** can be chosen in Mod Editor and the web editor only while FRICKBEARS3 or Pizza Tower is selected.
+- Mods Browser cards now show badges before the likes: **G3M** badge for safe mods confirmed to install without Manual installation, a work-in-progress badge, and a note badge (For some additional info). The new **G3M Verified** filter lists only confirmed **G3M Badge** mods.
+- Fixed GameBanana mods already in G3M format being sent to Manual installation. Unsupported tags are now converted to the closest supported tag, or to `other`.
+- A download that does not match GameBanana's checksum is now kept with a warning, and you decide whether to install it.
+- Fixed updates through Manual installation or conversions leaving a second copy of the mod in the Library.
+- Fixed the filters bar border being cut off at the window edges when the filters do not fit; it now stays in place while the filters scroll.
+
 ### Version 3.4.2 — 10.10.26
 
 - Fixed game detection for games launched through Wine and other process wrappers. G3M now confirms process exit before starting session cleanup, and prevents concurrent instances while forwarding activation requests to the running instance.

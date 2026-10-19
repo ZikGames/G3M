@@ -59,7 +59,7 @@ MOD_CONFIG_RELATION_MODES = frozenset(
     }
 )
 MOD_CONFIG_TAGS = frozenset(
-    {"textedit", "customization", "gameplay", "other", "CYOP/AFOM"}
+    {"textedit", "customization", "gameplay", "other", "CYOP/AFOM", "FB-Addon"}
 )
 
 _ID_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")

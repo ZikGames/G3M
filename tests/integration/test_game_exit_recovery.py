@@ -24,7 +24,8 @@ def test_repeated_process_exit_restores_files(
     mod_service = ModManager(app_state, feedback_service)
     vars(parent)["mod_service"] = mod_service
     launcher = GameLauncher(app_state, feedback_service, mod_service, parent)
-    monkeypatch.setattr(launcher, "_on_game_process_detected", Mock(wraps=launcher._on_game_process_detected))
+    detected = Mock(wraps=launcher._on_game_process_detected)
+    monkeypatch.setattr(launcher, "_on_game_process_detected", detected)
     target = tmp_path / "data.win"
     target.write_bytes(b"ORIGINAL")
     completed = []
@@ -51,7 +52,7 @@ def test_repeated_process_exit_restores_files(
             monitor_thread = launcher.monitor_thread
             assert monitor_thread is not None
             qtbot.waitUntil(lambda thread=monitor_thread: thread.isRunning())
-            qtbot.waitUntil(lambda expected=run + 1: launcher._on_game_process_detected.call_count == expected, timeout=10000)
+            qtbot.waitUntil(lambda expected=run + 1: detected.call_count == expected, timeout=10000)
             process.terminate()
             process.wait(timeout=5)
             qtbot.waitUntil(

@@ -20,7 +20,7 @@ from ui.dialogs.manual_install.detection import (
     verify_operations,
 )
 from ui.utils.thread_lifetime import ManagedQThread, safe_emit
-from utils.file_utils import get_unique_mod_dir
+from utils.file_utils import find_mod_dir_by_id, get_unique_mod_dir, replace_mod_dir
 from utils.mod.archive import archive_format, list_archive_members
 from utils.mod.config import write_mod_config
 from utils.mod.hashing import sha256_path
@@ -109,6 +109,7 @@ def write_import(
     import_root: Path | None = None,
 ) -> Path:
     mods_dir.mkdir(parents=True, exist_ok=True)
+    previous = find_mod_dir_by_id(str(mods_dir), config["id"])
     target = mods_dir / get_unique_mod_dir(str(mods_dir), config["name"])
     target.mkdir()
     try:
@@ -163,6 +164,8 @@ def write_import(
         write_mod_config(target / "mod_config.json", config)
         if cancelled():
             raise InterruptedError
+        if previous:
+            return Path(replace_mod_dir(previous, str(target)))
         return target
     except Exception:
         # Only this freshly-created mod directory belongs to this attempt.

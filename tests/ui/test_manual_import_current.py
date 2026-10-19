@@ -235,7 +235,7 @@ def test_manual_import_refreshes_and_saves_gamebanana_metadata(
     assert config["version"] == (cached_version or "1.01")
     assert config["game"] == "undertale"
     assert config["game_version"] == "1.08"
-    assert config["tags"] == ["customization", "gameplay"]
+    assert config["tags"] == ["customization", "other", "gameplay"]
     assert metadata["description"] == "No description"
     assert fetch.call_args.kwargs["itemtype"] == (
         "Wip" if item_type == "wip" else "Mod"

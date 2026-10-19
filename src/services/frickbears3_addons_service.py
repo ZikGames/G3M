@@ -9,16 +9,18 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from config.config import FB_ADDON_TAG
 from utils.file_utils import (
-    get_unique_mod_dir,
     remove_archive_extension,
     sanitize_filename,
+    staged_mod_dir,
 )
 from utils.mod.config import (
     MOD_CONFIG_VERSION,
     parse_mod_config,
     write_mod_config,
 )
+from utils.mod.tags import normalize_tags
 
 _SIGNATURE_FILES = (
     "opening_dialogue.txt",
@@ -89,17 +91,15 @@ class Frickbears3AddonsService:
         )
         config_data = self._build_config_data(mod_name, metadata)
         parse_mod_config(config_data)
-        target_mod_dir = os.path.join(mods_dir, get_unique_mod_dir(mods_dir, mod_name))
-        os.makedirs(target_mod_dir, exist_ok=True)
+        with staged_mod_dir(mods_dir, mod_name, str(config_data["id"])) as staged:
+            addons_root = os.path.join(staged.path, "addons")
+            os.makedirs(addons_root, exist_ok=True)
+            for root_dir in inspection.guard_root_dirs:
+                guard_name = self._resolve_guard_folder_name(root_dir)
+                shutil.copytree(root_dir, os.path.join(addons_root, guard_name), dirs_exist_ok=True)
 
-        addons_root = os.path.join(target_mod_dir, "addons")
-        os.makedirs(addons_root, exist_ok=True)
-        for root_dir in inspection.guard_root_dirs:
-            guard_name = self._resolve_guard_folder_name(root_dir)
-            shutil.copytree(root_dir, os.path.join(addons_root, guard_name), dirs_exist_ok=True)
-
-        write_mod_config(os.path.join(target_mod_dir, "mod_config.json"), config_data)
-        return target_mod_dir
+            write_mod_config(os.path.join(staged.path, "mod_config.json"), config_data)
+        return staged.final
 
     @staticmethod
     def _is_valid_addon_root(root_dir: str) -> bool:
@@ -176,4 +176,7 @@ class Frickbears3AddonsService:
             value = metadata.get(field_name)
             if value not in (None, "", [], {}):
                 config_data[field_name] = value
+        config_data["tags"] = list(
+            dict.fromkeys([FB_ADDON_TAG, *normalize_tags(metadata.get("tags"))])
+        )
         return config_data

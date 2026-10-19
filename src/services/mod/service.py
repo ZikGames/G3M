@@ -941,7 +941,7 @@ class ModManager(QObject):
             return
         for folder_name in os.listdir(self.app_state.mods_dir):
             folder_path = os.path.join(self.app_state.mods_dir, folder_name)
-            if not os.path.isdir(folder_path):
+            if folder_name.startswith(".") or not os.path.isdir(folder_path):
                 continue
             config_path = os.path.join(folder_path, MOD_CONFIG_FILENAME)
             if not os.path.exists(config_path):

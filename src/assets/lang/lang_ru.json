@@ -4,7 +4,7 @@
     "language_name": "Русский",
     "font": "NotoSans-Bold.ttf",
     "qt_translation": "qtbase_ru",
-    "version": "3.4.2"
+    "version": "3.4.3"
   },
   "onboarding": {
     "title": "Добро пожаловать в G3M",
@@ -170,6 +170,12 @@
     "likes_tooltip": "Количество лайков",
     "edit_mod": "Изменить мод",
     "only_gamebanana": "Только GameBanana",
+    "only_g3m": "Совместим с G3M",
+    "g3m_confirmed_tooltip": "Подтверждено создателем G3M (Y114). Мод или часть его файлов устанавливается без ручной установки.",
+    "g3m_compat_label": "Совместимость с G3M:",
+    "g3m_compat_details": "Подтверждено создателем G3M (Y114). Мод или часть его файлов уже в формате G3M и устанавливается одним щелчком без ручной установки.",
+    "wip_badge_tooltip": "В разработке: этот мод ещё не завершён.",
+    "g3m_note_label": "Примечание:",
     "elements_color": "Цвет элементов:",
     "enable_direct_launch": "Включить прямой запуск для главы {chapter}?\n\nПрямой запуск открывает игру сразу на выбранной главе, без главного меню.\n\nПока прямой запуск включён, опция «Запускать через Steam» будет недоступна.\n\nНа некоторых конфигурациях эта функция всё ещё может работать нестабильно. Продолжить?",
     "enter_author_name": "Введите имя автора",
@@ -452,6 +458,7 @@
   },
   "tags": {
     "cyop_afom": "CYOP/AFOM",
+    "fb_addon": "FB-Addon",
     "gameplay": "Геймплей",
     "other": "Другое",
     "textedit": "Изм. Текста",
@@ -880,7 +887,6 @@
     "recovering_previous_session": "Восстановление предыдущей сессии...",
     "autodetecting_path": "Путь к игре не найден или устарел. Идет автоопределение...",
     "creating_xdelta_patch_for_section": "Создание xdelta-патча для раздела контента {section}...",
-    "cant_update_while_running": "Нельзя обновлять, пока игра запущена.",
     "changelog_load_failed": "<i>Не удалось загрузить список изменений...</i>",
     "deltarune_already_running": "Deltarune уже запущен.",
     "demo_installation_complete": "Полная установка ДЕМОВЕРСИИ завершена.",

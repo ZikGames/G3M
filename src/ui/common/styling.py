@@ -835,7 +835,7 @@ def style_filter_scroll_area(
     )
     apply_scroll_area_chrome(
         scroll_area,
-        max(0, radius - 2),
+        radius,
         scrollbar_radius=radius,
         qss=qss,
         minimum_extent=thickness,

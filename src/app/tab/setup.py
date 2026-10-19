@@ -67,6 +67,7 @@ def setup_search_tab(w):
             "tag_gameplay",
             "tag_other",
             "tag_cyop_afom",
+            "tag_g3m",
             "search_button",
         ),
         optional=("downloads_button", "blocklist_button"),
@@ -92,6 +93,7 @@ def setup_search_tab(w):
         w.tag_gameplay,
         w.tag_other,
         w.tag_cyop_afom,
+        w.tag_g3m,
     ):
         tag_cb.stateChanged.connect(
             lambda: (
@@ -153,6 +155,7 @@ def setup_library_tab(w):
             "library_tag_gameplay",
             "library_tag_other",
             "library_tag_cyop_afom",
+            "library_tag_fb_addon",
             "library_tag_gamebanana",
             "library_tag_widgets",
             "library_search_button",

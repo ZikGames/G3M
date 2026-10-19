@@ -4,7 +4,7 @@
     "language_name": "English",
     "font": "NotoSans-Bold.ttf",
     "qt_translation": "qtbase_en",
-    "version": "3.4.2"
+    "version": "3.4.3"
   },
   "onboarding": {
     "title": "Welcome to G3M",
@@ -170,6 +170,12 @@
     "likes_tooltip": "Number of likes",
     "edit_mod": "Edit Mod",
     "only_gamebanana": "Only GameBanana",
+    "only_g3m": "G3M Verified",
+    "g3m_confirmed_tooltip": "Confirmed by G3M Creator (Y114). The mod, or some of its files, installs without Manual Install.",
+    "g3m_compat_label": "G3M compatibility:",
+    "g3m_compat_details": "Confirmed by G3M Creator (Y114). The mod, or some of its files, is already in G3M format and installs in one click without Manual Install.",
+    "wip_badge_tooltip": "Work in progress: this mod is not finished yet.",
+    "g3m_note_label": "Note:",
     "elements_color": "Elements Color:",
     "enable_direct_launch": "Enable direct launch for Chapter {chapter}?\\n\\nDirect launch starts the game on the selected chapter instead of opening the main menu.\\n\\nWhile direct launch is enabled, 'Launch via Steam' will be unavailable.\\n\\nThis feature can still break on some setups. Continue?",
     "enter_author_name": "Enter author's name",
@@ -452,6 +458,7 @@
   },
   "tags": {
     "cyop_afom": "CYOP/AFOM",
+    "fb_addon": "FB-Addon",
     "gameplay": "Gameplay",
     "other": "Other",
     "textedit": "Text Edit",
@@ -880,7 +887,6 @@
     "recovering_previous_session": "Recovering previous session...",
     "autodetecting_path": "Game path not found or outdated. Auto-detecting...",
     "creating_xdelta_patch_for_section": "Creating an xdelta patch for content section {section}...",
-    "cant_update_while_running": "Cannot update while game is running.",
     "changelog_load_failed": "<i>Could not load changelog...</i>",
     "deltarune_already_running": "Deltarune is already running.",
     "demo_installation_complete": "Full DEMO installation complete.",

@@ -145,7 +145,7 @@ class _RecordWidget(QFrame):
         else:
             self._progress_bar.setRange(0, 100)
             self._progress_bar.setValue(r.progress)
-        if r.error_message and status_key == "failed":
+        if r.error_message and status_key in ("failed", "ready"):
             self._error_label.setText(r.error_message)
             self._error_label.setVisible(True)
         else:

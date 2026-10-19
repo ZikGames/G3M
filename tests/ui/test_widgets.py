@@ -1389,8 +1389,8 @@ class TestCommonWidgets:
         host.deleteLater()
         _drain_events(qapp)
 
-    def test_search_mod_card_widget_shows_wip_marker_after_updated_date(self, qapp):
-        """Checks that search mod card widget shows WIP marker after updated date."""
+    def test_search_mod_card_widget_shows_wip_badge_instead_of_date_suffix(self, qapp):
+        """Checks that a WIP mod gets a badge and an unmodified date."""
         from unittest.mock import patch
 
         from models.mod_models import ModInfo
@@ -1414,7 +1414,8 @@ class TestCommonWidgets:
         vars(mod_data)["is_gamebanana_mod"] = True
         with patch("ui.widgets.mod.search_mod_card_widget.load_mod_icon_universal"):
             widget = SearchModCardWidget(mod_data, parent=host)
-            assert widget.updated_label.text() == "2024-05-01 | WIP"
+            assert widget.updated_label.text() == "2024-05-01"
+            assert list(widget.badges) == ["wip"]
         widget.deleteLater()
         host.deleteLater()
         _drain_events(qapp)

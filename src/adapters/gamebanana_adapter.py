@@ -14,19 +14,52 @@ from config.config import (
     GAMEBANANA_API_BASE,
     GAMEBANANA_TOOL_ID_DELTAMOD,
     GAMEBANANA_TOOL_ID_G3M,
+    MOD_CATALOG_URL,
     NETWORK_TIMEOUT_MEDIUM,
     NETWORK_TIMEOUT_SHORT,
 )
 from models.game_modes import get_gamebanana_reverse_map
 from models.mod_models import BrowserModInfo
+from utils.mod.tags import normalize_tag
 from utils.network_utils import get_session
 
 logger = logging.getLogger(__name__)
+
+_G3M_LIST_TTL_SECONDS = 30
+_G3M_LIST_TIMEOUT = (2, 3)  # connect, read
 
 
 class GameBananaAPI:
     _compatibility_cache: dict[int, dict[str, Any]] = {}
     _app_state = None
+    g3m_confirmed: dict[str, str] = {}  # mod id -> optional note
+    _g3m_confirmed_loaded_at = float("-inf")
+    _g3m_confirmed_etag = ""
+
+    @classmethod
+    def load_g3m_confirmed(cls) -> None:
+        """Read the mods that the G3M creator confirmed install without Manual install.
+
+        One attempt, a few seconds at most: without the list the cards simply lack its badges.
+        """
+        cls._g3m_confirmed_loaded_at = time.monotonic()
+        try:
+            response = requests.get(
+                MOD_CATALOG_URL,
+                headers={"If-None-Match": cls._g3m_confirmed_etag} if cls._g3m_confirmed_etag else {},
+                timeout=_G3M_LIST_TIMEOUT,
+            )
+            if response.status_code == requests.codes.not_modified:
+                return
+            response.raise_for_status()
+            cls._g3m_confirmed_etag = response.headers.get("ETag", "")
+            cls.g3m_confirmed = {
+                str(entry["id"]): str(entry.get("note") or "").strip()
+                for entry in response.json().get("mods", [])
+                if isinstance(entry, dict) and entry.get("id")
+            }
+        except Exception as error:
+            logger.warning("GameBananaAPI: G3M mod list unavailable (%s): %s", type(error).__name__, error)
 
     @classmethod
     def set_app_state(cls, app_state) -> None:
@@ -146,6 +179,8 @@ class GameBananaAPI:
         max_retries=2,
         search_string: str | None = None,
     ):
+        if time.monotonic() - self._g3m_confirmed_loaded_at > _G3M_LIST_TTL_SECONDS:
+            self.load_g3m_confirmed()
         effective_sort = self._normalize_sort(sort)
         params = {
             "_nPage": page,
@@ -723,114 +758,9 @@ class GameBananaAPI:
                 result.append(value)
         return result
 
-    _TAG_MAP = [
-        (
-            "textedit",
-            (
-                "text",
-                "texts",
-                "translation",
-                "translations",
-                "localization",
-                "localizations",
-                "dialogue",
-                "dialogues",
-                "subtitle",
-                "subtitles",
-            ),
-        ),
-        (
-            "gameplay",
-            (
-                "gameplay",
-                "fight",
-                "fights",
-                "difficulty",
-                "difficulties",
-                "multiplayer",
-                "cyop",
-                "afom",
-                "tower",
-                "towers",
-                "level",
-                "levels",
-                "extension",
-                "extensions",
-                "full game",
-                "lap",
-                "laps",
-                "moveset",
-                "movesets",
-                "move set",
-                "game file",
-                "editor",
-                "editors",
-                "rework",
-                "reworks",
-                "rank",
-                "ranks",
-                "change",
-                "changes",
-                "edit",
-                "edits",
-            ),
-        ),
-        (
-            "customization",
-            (
-                "skin",
-                "skins",
-                "reskin",
-                "reskins",
-                "sprite",
-                "sprites",
-                "character",
-                "characters",
-                "animatronic",
-                "animatronics",
-                "guard",
-                "guards",
-                "office",
-                "offices",
-                "clothes",
-                "palette",
-                "palettes",
-                "music",
-                "sound",
-                "sounds",
-                "audio",
-                "settings",
-                "effects",
-                "ui",
-                "taunt",
-                "taunts",
-                "titlecard",
-                "titlecards",
-            ),
-        ),
-    ]
-
     @staticmethod
     def category_to_tag(category) -> str:
-        if not category:
-            return "other"
-        normalized = " ".join(re.findall(r"[a-z0-9]+", str(category).casefold()))
-        if normalized == "cyop afom":
-            return "CYOP/AFOM"
-        words = set(normalized.split())
-        for tag, markers in GameBananaAPI._TAG_MAP:
-            if any(
-                (
-                    any(
-                        word == marker for word in words
-                    )
-                    if " " not in marker
-                    else marker in normalized
-                )
-                for marker in markers
-            ):
-                return tag
-        return "other"
+        return normalize_tag(category)
 
     def _map_mod_data(self, gb_data, game_name, is_wip=False):
         mod_id = gb_data.get("_idRow")

@@ -13,7 +13,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlparse
 
-from config.config import CYOP_AFOM_TAG, MOD_DOCUMENTATION_EXTENSIONS
+from config.config import MOD_DOCUMENTATION_EXTENSIONS
 from models.game_modes import get_all_games
 from services.migration_service import migrate_legacy_chapter_id
 from utils.file_utils import normalize_chapter_id
@@ -32,6 +32,7 @@ from utils.mod.config import (
 )
 from utils.mod.config import MOD_CONFIG_VERSION as CURRENT_MOD_CONFIG_VERSION
 from utils.mod.operation_plan import section_target_root
+from utils.mod.tags import normalize_tags
 
 _DRIVE_PATH_RE = re.compile(r"[A-Za-z]:/")
 _LEGACY_ARCHIVE_SUFFIXES = (
@@ -214,7 +215,6 @@ def migrate_mod_config_legacy_fields(config_data: dict[str, Any]) -> bool:
     return changed
 
 MOD_CONFIG_VERSION = "1.0.0"
-MOD_ALLOWED_TAGS = ("textedit", "customization", "gameplay", "other", CYOP_AFOM_TAG)
 MOD_FIELD_LIMITS = {
     "id": 50,
     "name": 50,
@@ -274,22 +274,6 @@ def _normalize_homepage(value) -> str:
         return ""
     parsed = urlparse(url)
     return url if parsed.scheme in {"http", "https"} and parsed.netloc else ""
-
-
-def _sanitize_tags(tags_raw) -> list[str]:
-    if not isinstance(tags_raw, list):
-        tags_raw = [tags_raw] if tags_raw else []
-    result: list[str] = []
-    for tag in tags_raw:
-        raw_tag = _trim_string(tag, 100)
-        normalized = (
-            CYOP_AFOM_TAG
-            if raw_tag.casefold() == CYOP_AFOM_TAG.casefold()
-            else raw_tag.lower()
-        )
-        if normalized in MOD_ALLOWED_TAGS and normalized not in result:
-            result.append(normalized)
-    return result
 
 
 def _sanitize_extra_files(extra_files_raw, game: str) -> list[dict[str, str]]:
@@ -471,7 +455,7 @@ def normalize_mod_config_data(
             _get_metadata_value(config_data, "game_version"),
             MOD_FIELD_LIMITS["file_value"],
         ),
-        "tags": _sanitize_tags(_get_metadata_value(config_data, "tags")),
+        "tags": normalize_tags(_get_metadata_value(config_data, "tags")),
         "info_files": _sanitize_info_files(config_data.get("info_files")),
         "files": {},
     }
@@ -689,6 +673,16 @@ def _extra_operation(
     return {"source": _source_path(normalized), "target": f"{root}/{relative}", "type": "overwrite"}
 
 
+def _with_supported_tags(config: Mapping[str, object]) -> dict[str, object]:
+    prepared = dict(config)
+    if "tags" in prepared:
+        if tags := normalize_tags(prepared["tags"]):
+            prepared["tags"] = tags
+        else:
+            del prepared["tags"]
+    return prepared
+
+
 def migrate_legacy_config(
     legacy_config: Mapping[str, object],
     *,
@@ -701,7 +695,7 @@ def migrate_legacy_config(
     if _json_depth(legacy_config) > MOD_CONFIG_MAX_JSON_DEPTH:
         raise ModConfigValidationError((ConfigValidationIssue("json_depth", "$", "exceeds the maximum JSON nesting depth"),))
     if legacy_config.get("config_version") == CURRENT_MOD_CONFIG_VERSION:
-        migrated = parse_mod_config(legacy_config)
+        migrated = parse_mod_config(_with_supported_tags(legacy_config))
         if not migrated.get("icon") and (icon := _migrate_icon("", mod_root_path)):
             migrated["icon"] = icon
             return parse_mod_config(migrated)

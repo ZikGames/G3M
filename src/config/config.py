@@ -22,7 +22,7 @@ if _dotenv_path.is_file():
     load_dotenv(dotenv_path=_dotenv_path)
 
 """Application identity and external service configuration."""
-APP_VERSION = "3.4.2"
+APP_VERSION = "3.4.3"
 APP_DISPLAY_NAME = "G3M"
 APP_ORGANIZATION_NAME = "g3m"
 APP_DATA_DIR_NAME = "G3M"
@@ -64,6 +64,7 @@ STEAM_APP_ID_PIZZA_TOWER = "2231450"
 PLUGIN_API_VERSION = "1.3.0"
 PLUGIN_CATALOG_URL = "https://raw.githubusercontent.com/y114git/G3M/main/catalog/plugins/plugins.json"
 THEME_CATALOG_URL = "https://raw.githubusercontent.com/y114git/G3M/main/catalog/themes/themes.json"
+MOD_CATALOG_URL = "https://raw.githubusercontent.com/y114git/G3M/main/catalog/mods/mods.json"
 PLUGIN_HOOKS = {
     "before_mod_apply",
     "after_mod_apply_before_launch",
@@ -133,6 +134,13 @@ ARROW_UP_SVG_TEMPLATE = shared_styles.ARROW_UP_SVG_TEMPLATE
 RICH_HTML_CSS_CLASS_MAP = shared_styles.RICH_HTML_CSS_CLASS_MAP
 BASE_TAG_NAMES = ("textedit", "customization", "gameplay", "other")
 CYOP_AFOM_TAG = "CYOP/AFOM"
+FB_ADDON_TAG = "FB-Addon"
+GAME_SPECIFIC_TAGS = (
+    ("cyop_afom", CYOP_AFOM_TAG, "pizzatower"),
+    ("fb_addon", FB_ADDON_TAG, "frickbears3"),
+)
+# GameBanana's API cannot identify FB-Addon mods, so the Mods Browser has no filter for it.
+BROWSER_GAME_TAGS = tuple(entry for entry in GAME_SPECIFIC_TAGS if entry[1] != FB_ADDON_TAG)
 MOD_MARKDOWN_EXTENSIONS = (".md", ".markdown")
 MOD_HTML_EXTENSIONS = (".html", ".htm")
 MOD_PDF_EXTENSIONS = (".pdf",)
@@ -172,6 +180,8 @@ WIDGET_LOCALIZATIONS = [
     ("tag_customization", "setText", "tags.customization"),
     ("tag_gameplay", "setText", "tags.gameplay"),
     ("tag_other", "setText", "tags.other"),
+    ("tag_g3m", "setText", "ui.only_g3m"),
+    ("tag_g3m", "setToolTip", "ui.g3m_confirmed_tooltip"),
     ("search_button", "setToolTip", "ui.search_placeholder"),
     ("sort_combo", "setToolTip", "tooltips.sort_mode"),
     ("modgame_combo", "setToolTip", "tooltips.select_game"),

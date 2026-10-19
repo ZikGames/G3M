@@ -2,28 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 from unittest.mock import Mock
 
 from helpers import FailingSignal
 
-from workers.download_worker import DownloadWorker, _verify_md5
+from workers.download_worker import CHECKSUM_WARNING, DownloadWorker, _file_md5
 
 
 def test_cancellation_during_checksum_never_reports_download_success(qapp, tmp_path, monkeypatch):
     target = tmp_path / "mod.zip"
     worker = DownloadWorker("record", "https://gamebanana.com/dl/1", str(target), expected_md5="0" * 32)
-    monkeypatch.setattr("utils.network_utils.get_session", object)
-    monkeypatch.setattr("utils.network_utils.download_file", lambda *_args, **_kwargs: target.write_bytes(b"payload"))
+    real_md5 = _file_md5
 
-    def verify(path, expected, **kwargs):
+    def file_md5(path, **kwargs):
         worker.cancel()
-        return _verify_md5(path, expected, **kwargs)
+        return real_md5(path, **kwargs)
 
-    monkeypatch.setattr("workers.download_worker._verify_md5", verify)
-    finished = []
-    worker.download_finished.connect(lambda *args: finished.append(args))
+    monkeypatch.setattr("workers.download_worker._file_md5", file_md5)
 
-    worker.run()
+    finished = _run_download(worker, target, monkeypatch)
 
     assert len(finished) == 1
     assert finished[0][1] is False
@@ -54,24 +53,56 @@ def test_download_worker_suppresses_emit_failure_after_download_error(
     assert "DownloadWorker: failed to emit" in caplog.text
 
 
-def test_download_worker_rejects_checksum_mismatch(qapp, tmp_path, monkeypatch):
+def _run_download(worker, target, monkeypatch, payload=b"payload"):
+    finished = []
+    worker.download_finished.connect(lambda *args: finished.append(args))
+    monkeypatch.setattr("utils.network_utils.get_session", object)
+    monkeypatch.setattr(
+        "utils.network_utils.download_file",
+        lambda _session, _url, path, **_kwargs: target.write_bytes(payload),
+    )
+    worker.run()
+    return finished
+
+
+def test_download_worker_warns_about_checksum_mismatch_and_keeps_file(qapp, tmp_path, monkeypatch):
     target = tmp_path / "mod.zip"
+    worker = DownloadWorker("record_1", "https://gamebanana.com/dl/1", str(target), expected_md5="0" * 32)
+
+    finished = _run_download(worker, target, monkeypatch)
+
+    assert finished[0][1] is True
+    assert finished[0][2] == CHECKSUM_WARNING
+    assert target.exists()
+
+
+def test_download_worker_accepts_file_matching_refreshed_checksum(qapp, tmp_path, monkeypatch):
+    target = tmp_path / "mod.zip"
+    current = hashlib.md5(b"payload", usedforsecurity=False).hexdigest()
     worker = DownloadWorker(
         "record_1",
         "https://gamebanana.com/dl/1",
         str(target),
         expected_md5="0" * 32,
+        md5_refresh=lambda: current,
     )
-    finished = []
-    worker.download_finished.connect(lambda *args: finished.append(args))
+
+    finished = _run_download(worker, target, monkeypatch)
+
+    assert finished[0][1:3] == (True, "")
+
+
+def test_download_worker_discards_stale_partial_file_before_downloading(qapp, tmp_path, monkeypatch):
+    target = tmp_path / "mod.zip"
+    target.write_bytes(b"old partial")
+    worker = DownloadWorker("record_1", "https://gamebanana.com/dl/1", str(target))
+    seen = []
     monkeypatch.setattr("utils.network_utils.get_session", object)
-
-    def write_download(_session, _url, path, **_kwargs):
-        target.write_bytes(b"payload")
-
-    monkeypatch.setattr("utils.network_utils.download_file", write_download)
+    monkeypatch.setattr(
+        "utils.network_utils.download_file",
+        lambda _session, _url, path, **_kwargs: seen.append(os.path.exists(path)),
+    )
 
     worker.run()
 
-    assert finished and finished[0][1] is False
-    assert not target.exists()
+    assert seen == [False]

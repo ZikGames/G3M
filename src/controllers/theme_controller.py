@@ -317,6 +317,8 @@ class ThemeController:
                     "tag_customization",
                     "tag_gameplay",
                     "tag_other",
+                    "tag_cyop_afom",
+                    "tag_g3m",
                 ):
                     w = getattr(self.app, attr, None)
                     if w:

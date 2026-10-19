@@ -48,7 +48,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from config.config import CYOP_AFOM_TAG
+from config.config import GAME_SPECIFIC_TAGS
 from models.game_modes import get_game, get_visible_game_entries
 from services.localization_service import tr
 from ui.common.dialog_theme import DynamicDialog
@@ -369,8 +369,16 @@ class ModEditorDialog(DynamicDialog):
         self.tag_customization = self.localize_text(QCheckBox(self), "tags.customization")
         self.tag_gameplay = self.localize_text(QCheckBox(self), "tags.gameplay")
         self.tag_other = self.localize_text(QCheckBox(self), "tags.other")
-        for index, checkbox in enumerate((self.tag_textedit, self.tag_customization, self.tag_gameplay, self.tag_other)):
+        self._game_tag_boxes = {
+            tag: (self.localize_text(QCheckBox(self), f"tags.{key}"), game_id)
+            for key, tag, game_id in GAME_SPECIFIC_TAGS
+        }
+        for index, checkbox in enumerate(
+            (self.tag_textedit, self.tag_customization, self.tag_gameplay, self.tag_other,
+             *(box for box, _game_id in self._game_tag_boxes.values()))
+        ):
             tags.addWidget(checkbox, index // 2, index % 2)
+        self.game_combo.currentIndexChanged.connect(self._refresh_game_tags)
         form.addRow(self.localize_text(QLabel(self), "ui.mod_tags_label"), tags)
         self.version_edit = QLineEdit(self)
         self.version_edit.setMaxLength(MOD_CONFIG_MAX_DISPLAY_CHARS)
@@ -1455,6 +1463,14 @@ class ModEditorDialog(DynamicDialog):
         else:
             self._validate()
 
+    def _refresh_game_tags(self) -> None:
+        """Offer a game-specific tag only while its game is selected."""
+        for box, game_id in self._game_tag_boxes.values():
+            selected = self.game_combo.currentData() == game_id
+            box.setVisible(selected)
+            if not selected:
+                box.setChecked(False)
+
     def _config(self, mod_id: str | None = None) -> dict[str, object]:
         tags = [
             name
@@ -1466,9 +1482,11 @@ class ModEditorDialog(DynamicDialog):
             )
             if box.isChecked()
         ]
-        existing_tags = self.mod_data.get("tags")
-        if isinstance(existing_tags, list) and CYOP_AFOM_TAG in existing_tags:
-            tags.append(CYOP_AFOM_TAG)
+        tags.extend(
+            tag
+            for tag, (box, game_id) in self._game_tag_boxes.items()
+            if box.isChecked() and self.game_combo.currentData() == game_id
+        )
         config: dict[str, object] = {
             "config_version": MOD_CONFIG_VERSION,
             "id": mod_id or self.mod_id or "editor_hash",
@@ -1684,6 +1702,8 @@ class ModEditorDialog(DynamicDialog):
         tags: list[object] = raw_tags if isinstance(raw_tags, list) else []
         for name, box in (("textedit", self.tag_textedit), ("customization", self.tag_customization), ("gameplay", self.tag_gameplay), ("other", self.tag_other)):
             box.setChecked(name in tags)
+        for tag, (box, _game_id) in self._game_tag_boxes.items():
+            box.setChecked(tag in tags)
         if self.is_creating and not tags:
             self.tag_other.setChecked(True)
         wanted = data.get("game") or getattr(getattr(self._app_state, "game_mode", None), "game_id", "")
@@ -1691,6 +1711,7 @@ class ModEditorDialog(DynamicDialog):
             if self.game_combo.itemData(index) == wanted:
                 self.game_combo.setCurrentIndex(index)
                 break
+        self._refresh_game_tags()
         for field in ("dependencies", "conflicts"):
             self._populate_relations(field, data.get(field))
         self._refresh_custom_placeholders()

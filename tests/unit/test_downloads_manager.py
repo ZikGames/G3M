@@ -5,8 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import pytest
-
 from models.download_models import (
     DownloadRecord,
     DownloadStatus,
@@ -23,14 +21,11 @@ def test_manual_setup_metadata_includes_the_game_version(tmp_path):
     assert manager._build_dialog_metadata(record)["game_version"] == "1.08"
 
 
-@pytest.mark.parametrize("checksum", ["0" * 32, "invalid-checksum"])
-def test_gamebanana_checksum_failure_never_installs_over_existing_mod(tmp_path, monkeypatch, checksum):
-    from workers.download_worker import DownloadWorker
+def test_gamebanana_checksum_mismatch_warns_instead_of_installing(tmp_path, monkeypatch):
+    from workers.download_worker import CHECKSUM_WARNING, DownloadWorker
 
     mods_dir = tmp_path / "mods"
     mods_dir.mkdir()
-    existing = mods_dir / "working-data.win"
-    existing.write_bytes(b"original mod")
     manager = DownloadsManager(str(tmp_path), lambda: {})
     manager.set_app_context(mods_dir=str(mods_dir))
     install = Mock()
@@ -38,21 +33,21 @@ def test_gamebanana_checksum_failure_never_installs_over_existing_mod(tmp_path, 
     monkeypatch.setattr(DownloadWorker, "start", lambda worker: worker.run())
     monkeypatch.setattr("utils.network_utils.get_session", lambda: object())
     monkeypatch.setattr("utils.network_utils.download_file", lambda _session, _url, path, **_kwargs: Path(path).write_bytes(b"corrupt archive"))
+    monkeypatch.setattr(DownloadsManager, "_fetch_live_md5", staticmethod(lambda _metadata: None))
 
     record_id, _duplicate = manager.enqueue(
         "Update", source_kind=SourceKind.GAMEBANANA,
-        source_url="https://gamebanana.com/dl/123", metadata={"md5": checksum}, auto_use=True,
+        source_url="https://gamebanana.com/dl/123", metadata={"md5": "0" * 32}, auto_use=True,
     )
 
     record = manager.store.find(record_id)
     assert record is not None
-    assert record.download_status == DownloadStatus.FAILED
-    assert record is not None
-    assert record.use_status == UseStatus.FAILED
-    assert record is not None
-    assert record.file_exists is False
+    assert record.download_status == DownloadStatus.DOWNLOADED
+    assert record.use_status == UseStatus.READY
+    assert record.error_message == CHECKSUM_WARNING
+    assert record.file_exists is True
+    assert record.needs_attention is True
     install.assert_not_called()
-    assert existing.read_bytes() == b"original mod"
 
 
 def test_worker_cleanup_uses_native_safe_retirement(monkeypatch) -> None:
