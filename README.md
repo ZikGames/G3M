@@ -185,15 +185,14 @@ pytest
 Useful local commands:
 
 ```bash
-ruff check src tests
+ruff check .
+basedpyright
 pytest tests/unit
 pytest tests/integration
 pytest tests/ui
 ```
 
 The repository includes unit, integration, and Qt UI coverage for core areas such as protocol handling, downloads, profiles, plugin services, GameBanana integration, patching, game versions, dialogs, and widgets.
-
-(put LC_ALL=C at beginning, if you are not using english as main language (prevent some failed tests))
 
 <details>
 <summary>also you can use xvfb</summary>
@@ -207,8 +206,25 @@ LC_ALL=C xvfb-run -a pytest -k "not test_removed_usage_reporting_has_no_tracked_
 
 ## installation
 
+### NixOS
+
+```nix
+# flake.nix
+inputs.g3m.url = "github:ZikGames/G3M/python-nix";
+
+# configuration.nix
+{ inputs, pkgs, ... }:
+{
+  imports = [ inputs.g3m.nixosModules.default ];
+  programs.g3m = {
+    enable = true;
+    package = inputs.g3m.packages.${pkgs.stdenv.hostPlatform.system}.g3m;
+  };
+}
+```
+
 <details>
-<summary>ready-to-work simple nixos module (for dendritic)</summary>
+<summary>Ready-to-use module for the dendritic pattern</summary>
 
 ```nix
 {
@@ -219,29 +235,13 @@ LC_ALL=C xvfb-run -a pytest -k "not test_removed_usage_reporting_has_no_tracked_
     imports = [ inputs.g3m.nixosModules.default ];
     programs.g3m = {
       enable = true;
-      package = inputs.g3m.packages.${pkgs.system}.g3m;
+      package = inputs.g3m.packages.${pkgs.stdenv.hostPlatform.system}.g3m;
     };
   };
 }
 ```
 
 </details>
-
-by default
-
-```nix
-# flake.nix
-inputs = {
-      g3m.url = "github:ZikGames/G3M/python-nix";
-};
-
-# configuration.nix
-imports = [ inputs.g3m.nixosModules.default ];
-programs.g3m = {
-  enable = true;
-  package = inputs.g3m.packages.${pkgs.system}.g3m;
-};
-```
 
 ## Customization and Localization
 

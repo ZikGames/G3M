@@ -130,6 +130,9 @@
             export HOME=$(mktemp -d)
             export QT_QPA_PLATFORM=xcb
 
+            install -Dm755 ${config.packages.g3mtool}/bin/G3MTool \
+              src/assets/bin/g3mtool_linux/G3MTool
+
             xvfb-run -a --server-args="-screen 0 1920x1080x24" bash -c '
               openbox --sm-disable &
               sleep 1

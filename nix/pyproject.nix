@@ -19,6 +19,13 @@
       };
 
       runtimeTools = [ pkgs.unrar-free ];
+
+      linkG3MTool = ''
+        if [ -d src/assets ]; then
+          mkdir -p src/assets/bin/g3mtool_linux
+          ln -sfn ${config.packages.g3mtool}/bin/G3MTool src/assets/bin/g3mtool_linux/G3MTool
+        fi
+      '';
     in
     {
       _module.args.project = project;
@@ -34,6 +41,7 @@
             config.packages.g3mtool
           ]
           ++ runtimeTools;
+          shellHook = linkG3MTool;
         };
 
       devShells.devtest =
@@ -53,11 +61,16 @@
             pythonEnv
             config.packages.g3mtool
             python.pkgs.ruff
-            pkgs.pyright
+            pkgs.basedpyright
             pkgs.xvfb-run
             pkgs.openbox
           ]
           ++ runtimeTools;
+          shellHook = linkG3MTool + ''
+            export QT_QPA_PLATFORM=xcb
+            export LC_ALL=C
+            unset WAYLAND_DISPLAY
+          '';
         };
     };
 }

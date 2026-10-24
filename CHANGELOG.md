@@ -1,3 +1,31 @@
+<details>
+<summary><h3>Version 3.4.4 — Unreleased - Y114</h3></summary>
+
+- Fixed G3M not starting when a saved mod version in the Library is a damaged archive. G3M now skips that file and reports it by name.
+- Messages about damaged archives, game launch, shortcuts, exports, and imports now name the affected file, folder, or value.
+- Declining **Force restore** after an interrupted game session now keeps your files as they are, removes the leftover backup, and no longer blocks the next launch.
+- Added a **+** button beside the game list in Manual installation, so a missing custom game can be added on the spot.
+- A custom game can now have its own **Game ID**, also changeable when editing it. The custom game window is wider.
+- Progress bars across G3M now fill smoothly, unless animations are disabled.
+- Fixed an installed local mod showing up in Mods Browser as a second card next to the same mod from GameBanana.
+
+</details>
+
+### Version 3.4.3 — 19.10.26 - Y114
+
+- Added the **FB-Addon** tag for FRICKBEARS3 content, which converted addons receive automatically. It and **CYOP/AFOM** can be chosen in Mod Editor and the web editor only while FRICKBEARS3 or Pizza Tower is selected.
+- Mods Browser cards now show badges before the likes: **G3M** badge for safe mods confirmed to install without Manual installation, a work-in-progress badge, and a note badge (For some additional info). The new **G3M Verified** filter lists only confirmed **G3M Badge** mods.
+- Fixed GameBanana mods already in G3M format being sent to Manual installation. Unsupported tags are now converted to the closest supported tag, or to `other`.
+- A download that does not match GameBanana's checksum is now kept with a warning, and you decide whether to install it.
+- Fixed updates through Manual installation or conversions leaving a second copy of the mod in the Library.
+- Fixed the filters bar border being cut off at the window edges when the filters do not fit; it now stays in place while the filters scroll.
+
+### Version 3.4.2 — 10.10.26 - Y114
+
+- Fixed game detection for games launched through Wine and other process wrappers. G3M now confirms process exit before starting session cleanup, and prevents concurrent instances while forwarding activation requests to the running instance.
+- Fixed GameBanana imports from mod and WIP pages. Imports retain the selected file's version and available mod details, including its icon.
+- Fixed DR Save Manager's collection prompt running outside the GUI thread and appearing for games other than DELTARUNE.
+
 ### Version 3.4.1 — 04.10.26 - Y114
 
 - **Manual installation improvements**
