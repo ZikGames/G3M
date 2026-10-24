@@ -19,7 +19,7 @@ from ui.common.styling import (
     load_mod_icon_universal,
     update_mod_widget_style,
 )
-from utils.mod.utils import get_mod_id
+from utils.mod.utils import get_mod_id, is_gamebanana_id
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ class BaseModWidget(QFrame):
         description_text = self.mod_data.description or tr("ui.no_description")
         try:
             mod_id = get_mod_id(self.mod_data)
-            if mod_id and mod_id.startswith("gb_"):
+            if is_gamebanana_id(mod_id):
                 has_full = getattr(self.mod_data, "has_full_metadata", True)
                 if not has_full:
                     placeholder = tr("ui.loading_placeholder")
@@ -180,7 +180,7 @@ class BaseModWidget(QFrame):
 
     def _resolve_local_icon_fallback(self):
         key = get_mod_id(self.mod_data)
-        if not key or not key.startswith("gb_"):
+        if not is_gamebanana_id(key):
             return None
         app = self.parent_app
         if not app or not hasattr(app, "mod_service"):

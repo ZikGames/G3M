@@ -31,7 +31,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from config.config import MOD_CONFIG_FILENAME, MOD_VERSIONS_DIR
 from presentation.drag_drop import (
     collect_drop_file_paths,
     collect_drop_urls,
@@ -45,139 +44,18 @@ from ui.common.dialog_theme import (
     get_dialog_theme_values,
 )
 from ui.utils.thread_lifetime import ManagedQThread, retire_qthread
-from ui.utils.ui_utils import format_size
+from ui.utils.ui_utils import UIAnimator, format_size
+from utils.mod.utils import is_gamebanana_id
+from utils.mod.version_utils import apply_version_zip as _apply_version_zip
 from utils.mod.version_utils import (
     create_version_zip,
 )
+from utils.mod.version_utils import list_local_versions as _list_local_versions
+from utils.mod.version_utils import resolve_content_path as _resolve_content_path
 from utils.path_utils import colored_icon
 from utils.process_utils import format_filesystem_error, format_network_error
 
 logger = logging.getLogger(__name__)
-
-
-def _list_local_versions(mod_folder: str) -> list[dict]:
-    versions_dir = os.path.join(mod_folder, MOD_VERSIONS_DIR)
-    if not os.path.isdir(versions_dir):
-        return []
-    result = []
-    for fname in sorted(os.listdir(versions_dir)):
-        fpath = os.path.join(versions_dir, fname)
-        if not os.path.isfile(fpath) or not fname.lower().endswith(".zip"):
-            continue
-        try:
-            stat = os.stat(fpath)
-            size = stat.st_size
-            mtime = stat.st_mtime
-        except OSError:
-            size, mtime = 0, 0
-        result.append(
-            {
-                "name": os.path.splitext(fname)[0],
-                "filename": fname,
-                "path": fpath,
-                "size": size,
-                "mtime": mtime,
-            }
-        )
-    return result
-
-
-def _clear_mod_folder(mod_folder: str):
-    for item in os.listdir(mod_folder):
-        if item == MOD_VERSIONS_DIR:
-            continue
-        path = os.path.join(mod_folder, item)
-        if os.path.isdir(path):
-            try:
-                shutil.rmtree(path)
-            except OSError as e:
-                logger.warning("mod_versions: failed to remove %s: %s", path, e)
-        else:
-            try:
-                os.remove(path)
-            except OSError as e:
-                logger.warning("mod_versions: failed to remove %s: %s", path, e)
-
-
-def _resolve_content_path(temp_dir: str) -> str:
-    """Resolve single directory layers and convert deltamod if present."""
-    from utils.file_utils import has_deltamod_info_file
-
-    content_path = temp_dir
-    contents = os.listdir(temp_dir)
-    if len(contents) == 1:
-        single = os.path.join(temp_dir, contents[0])
-        if os.path.isdir(single):
-            content_path = single
-    files_in_root = os.listdir(content_path)
-    if has_deltamod_info_file(files_in_root):
-        from adapters.deltamod_adapter import DeltamodConverter
-
-        converter = DeltamodConverter(content_path, temp_dir)
-        result = converter.convert()
-        if result and os.path.isdir(result):
-            content_path = result
-    return content_path
-
-
-def _apply_version_zip(mod_folder: str, zip_path: str):
-    """Apply version zip, converting deltamod contents if needed."""
-    from utils.file_utils import load_json
-    from utils.mod.config import write_mod_config
-    from utils.mod.legacy_config_migration import migrate_legacy_config
-
-    temp_dir = tempfile.mkdtemp(prefix="mv_apply_")
-    backup_dir = tempfile.mkdtemp(prefix="mv_backup_")
-    staged_current = False
-    try:
-        current_config = load_json(os.path.join(mod_folder, MOD_CONFIG_FILENAME))
-        current_metadata = current_config.get("metadata", {})
-        current_mod_id = (
-            current_metadata.get("id") if isinstance(current_metadata, dict) else None
-        ) or current_config.get("id")
-        from utils.mod.archive import materialize_archive
-
-        materialize_archive(zip_path, temp_dir)
-        content_path = _resolve_content_path(temp_dir)
-        from utils.file_utils import normalize_mod_package
-
-        package = normalize_mod_package(content_path, require_mod_config=True)
-        staged_config_path = package["mod_config_path"]
-        if not staged_config_path:
-            raise FileNotFoundError("Staged mod configuration is missing")
-        staged_config = migrate_legacy_config(
-            load_json(staged_config_path),
-            mod_root_path=content_path,
-        )
-        if current_mod_id:
-            staged_config["id"] = current_mod_id
-        write_mod_config(staged_config_path, staged_config)
-        for item in os.listdir(mod_folder):
-            if item != MOD_VERSIONS_DIR:
-                shutil.move(
-                    os.path.join(mod_folder, item), os.path.join(backup_dir, item)
-                )
-        staged_current = True
-        for item in os.listdir(content_path):
-            src = os.path.join(content_path, item)
-            dst = os.path.join(mod_folder, item)
-            if os.path.isdir(src):
-                if os.path.exists(dst):
-                    shutil.rmtree(dst, ignore_errors=True)
-                shutil.copytree(src, dst)
-            else:
-                shutil.copy2(src, dst)
-    except Exception:
-        if staged_current:
-            _clear_mod_folder(mod_folder)
-            for item in os.listdir(backup_dir):
-                shutil.move(
-                    os.path.join(backup_dir, item), os.path.join(mod_folder, item)
-                )
-        raise
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def _convert_archive_to_version_zip(
@@ -367,11 +245,7 @@ class ModVersionsDialog(DynamicDialog):
             if isinstance(self._mod_data, dict)
             else getattr(self._mod_data, "id", None)
         )
-        return bool(
-            key
-            and isinstance(key, str)
-            and (key.startswith("gb_mod_") or key.startswith("gb_wip_"))
-        )
+        return is_gamebanana_id(key)
 
     def _build_ui(self):
         main = QVBoxLayout(self)
@@ -496,7 +370,7 @@ class ModVersionsDialog(DynamicDialog):
         if hasattr(self, "_gb_btn"):
             self._gb_btn.setEnabled(not busy)
         if busy:
-            self._progress_bar.setValue(0)
+            UIAnimator.progress_to(self._progress_bar, 0, self._app_state)
 
     def _ask_version_name(self, default: str = "") -> str | None:
         name, ok = QInputDialog.getText(
@@ -633,9 +507,12 @@ class ModVersionsDialog(DynamicDialog):
         self._worker = _ModVersionWorker(
             url, self._mod_folder, version_name, parent=self
         )
-        self._worker.progress.connect(self._progress_bar.setValue)
+        self._worker.progress.connect(self._on_worker_progress)
         self._worker.result_ready.connect(self._on_worker_finished)
         self._worker.start()
+
+    def _on_worker_progress(self, value: int) -> None:
+        UIAnimator.progress_to(self._progress_bar, value, self._app_state)
 
     def _on_worker_finished(self, success: bool, error: str):
         if self._worker:

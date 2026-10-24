@@ -450,12 +450,17 @@ class GameLauncher(QObject):
         self.launch_transaction.begin()
         self._continue_launch_with_selections(selections)
 
+    def _ask_recovery_conflict(self, error: ModRecoveryConflictError) -> str:
+        """Ask whether to force the restore; any other answer leaves the game files as they are."""
+        logger.info("Game files changed since G3M applied mods, asking how to proceed: %s", error)
+        resolve = getattr(self.feedback_service, "ask_operation_recovery_conflict", None)
+        return "force" if callable(resolve) and resolve(str(error)) == "force" else "keep"
+
     def _resolve_pending_restore_conflict(
         self, selections: dict[str, Any], error: ModRecoveryConflictError
     ) -> None:
         journal = self._operation_journal
-        resolve = getattr(self.feedback_service, "ask_operation_recovery_conflict", None)
-        choice = resolve(str(error)) if callable(resolve) else "cancel"
+        choice = self._ask_recovery_conflict(error)
         if (
             choice == "force"
             and journal is not None
@@ -471,8 +476,7 @@ class GameLauncher(QObject):
         ):
             return
         if (
-            choice == "keep"
-            and journal is not None
+            journal is not None
             and self._run_journal_operation(
                 "retire",
                 lambda retired, errors, retire_error: self._on_pending_restore_finished(
@@ -546,7 +550,7 @@ class GameLauncher(QObject):
             ):
                 if self._pending_dependency_launch is not None:
                     return
-                logger.error("Failed to start multi-mod patching")
+                logger.error(f"Failed to start patching for {len(selections)} selected mod group(s); see earlier log lines for the reason")
                 self.app_state.progress_bar_visible = False
                 self.app_state.is_patching = False
                 self._handle_launch_failure()
@@ -897,15 +901,10 @@ class GameLauncher(QObject):
             self._restore_after_verified_game_exit(vanilla_mode)
             return
         if isinstance(error, ModRecoveryConflictError):
-            resolve = getattr(self.feedback_service, "ask_operation_recovery_conflict", None)
-            choice = resolve(str(error)) if callable(resolve) else "cancel"
-            if choice == "force":
+            if self._ask_recovery_conflict(error) == "force":
                 self._restore_after_verified_game_exit(vanilla_mode, force=True)
-                return
-            if choice == "keep":
+            else:
                 self._retire_game_exit_journal(vanilla_mode)
-                return
-            self._finish_game_exit_without_restore(vanilla_mode)
             return
         logger.error("Could not verify game-exit changes: %s", errors)
         self._finish_game_exit_without_restore(vanilla_mode)
@@ -1052,7 +1051,7 @@ class GameLauncher(QObject):
             mod_list = mods if isinstance(mods, list) else [mods]
             for mod in mod_list:
                 mod_id = get_mod_id(mod)
-                if not mod_id or mod_id in seen or mod_id.startswith("local_"):
+                if not mod_id or mod_id in seen:
                     continue
                 seen.add(mod_id)
                 result.append(mod_id)
@@ -2326,8 +2325,7 @@ class GameLauncher(QObject):
         cleanup_info: dict | None,
         error: ModRecoveryConflictError,
     ) -> None:
-        resolve = getattr(self.feedback_service, "ask_operation_recovery_conflict", None)
-        choice = resolve(str(error)) if callable(resolve) else "cancel"
+        choice = self._ask_recovery_conflict(error)
         if choice == "force" and operation_journal is not None:
             self._run_journal_operation(
                 "restore",
@@ -2345,7 +2343,7 @@ class GameLauncher(QObject):
                 include_error=True,
             )
             return
-        if choice == "keep" and operation_journal is not None:
+        if operation_journal is not None:
             self._run_journal_operation(
                 "retire",
                 lambda retired, errors, retire_error: self._on_direct_cleanup_retired(
@@ -2436,9 +2434,7 @@ class GameLauncher(QObject):
             )
             return True
         except ModRecoveryConflictError as error:
-            logger.warning("operation session recovery requires user action: %s", error)
-            resolve = getattr(self.feedback_service, "ask_operation_recovery_conflict", None)
-            choice = resolve(str(error)) if callable(resolve) else "cancel"
+            choice = self._ask_recovery_conflict(error)
             try:
                 if choice == "force" and journal is not None:
                     journal.restore(force=True)
@@ -2447,7 +2443,7 @@ class GameLauncher(QObject):
                         tr("status.files_restored"), UI_COLORS["status_success"]
                     )
                     return True
-                if choice == "keep" and journal is not None:
+                if journal is not None:
                     journal.retire()
                     self.launch_transaction.transition(LaunchState.COMPLETED)
                     self._safe_feedback_status(
@@ -2462,10 +2458,6 @@ class GameLauncher(QObject):
                     UI_COLORS["status_error"],
                 )
                 return False
-            self.launch_transaction.fail("operation-recovery-conflict")
-            self._safe_feedback_status(
-                tr("status.restore_skipped_external_changes"), UI_COLORS["status_warning"]
-            )
             return False
         except Exception as error:
             self.launch_transaction.fail("operation-recovery")
@@ -2528,20 +2520,10 @@ class GameLauncher(QObject):
             self._finish_session_recovery()
             return
         if isinstance(thread.error, ModRecoveryConflictError):
-            logger.warning("operation session recovery requires user action: %s", thread.error)
-            resolve = getattr(self.feedback_service, "ask_operation_recovery_conflict", None)
-            choice = resolve(str(thread.error)) if callable(resolve) else "cancel"
-            if choice == "force":
+            if self._ask_recovery_conflict(thread.error) == "force":
                 self._start_session_recovery(journal_root, "restore", force=True)
-                return
-            if choice == "keep":
+            else:
                 self._start_session_recovery(journal_root, "retire")
-                return
-            self.launch_transaction.fail("operation-recovery-conflict")
-            self._safe_feedback_status(
-                tr("status.restore_skipped_external_changes"), UI_COLORS["status_warning"]
-            )
-            self._finish_session_recovery()
             return
         self.launch_transaction.fail("operation-recovery")
         logger.error("operation session recovery failed: %s", "; ".join(errors))

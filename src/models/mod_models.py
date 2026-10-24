@@ -90,7 +90,9 @@ class BaseModInfo:
         return self.sections is None or section_id in self.sections
 
     def is_gamebanana_mod(self) -> bool:
-        return self.id.startswith(("gb_mod_", "gb_wip_"))
+        from utils.mod.utils import is_gamebanana_id
+
+        return is_gamebanana_id(self.id)
 
     def get_gamebanana_mod_id(self) -> str | None:
         from utils.mod.utils import parse_gamebanana_mod_id

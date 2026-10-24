@@ -92,7 +92,7 @@ class DetectionThread(ManagedQThread):
         except ValueError as exception:
             error = str(exception)
         except Exception as exception:
-            logger.exception("Manual-install file detection failed")
+            logger.exception(f"Manual-install file detection failed for {len(self.files)} file(s)")
             error = format_filesystem_error(exception)
         finally:
             done.set()
@@ -194,7 +194,7 @@ class SaveThread(ManagedQThread):
         except InterruptedError:
             pass
         except Exception as exception:
-            logger.exception("Manual import failed")
+            logger.exception(f"Manual import into {self.mods_dir!r} failed")
             error = (
                 str(exception)
                 if isinstance(exception, ValueError)

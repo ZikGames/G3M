@@ -13,7 +13,7 @@ from PyQt6.QtCore import (
     QTimer,
     pyqtSlot,
 )
-from PyQt6.QtWidgets import QGraphicsOpacityEffect, QWidget
+from PyQt6.QtWidgets import QGraphicsOpacityEffect, QProgressBar, QWidget
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,30 @@ class UIAnimator:
         if not app_state:
             return True
         return not app_state.local_config.get("disable_animations", False)
+
+    @staticmethod
+    def progress_to(bar: QWidget, value: int, app_state=None, duration: int = 220) -> None:
+        """Move a progress bar to ``value``, gliding forward instead of jumping.
+
+        Resets, hidden bars and disabled animations set the value directly.
+        """
+        dynamic_bar = cast(Any, bar)
+        if not isinstance(bar, QProgressBar):
+            cast(Any, bar).setValue(value)
+            return
+        animation = getattr(dynamic_bar, "_progress_animation", None)
+        if animation is None:
+            animation = QPropertyAnimation(bar, b"value", bar)
+            animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            dynamic_bar._progress_animation = animation
+        animation.stop()
+        if value <= bar.value() or not bar.isVisible() or not UIAnimator._animations_enabled(app_state):
+            bar.setValue(value)
+            return
+        animation.setDuration(duration)
+        animation.setStartValue(bar.value())
+        animation.setEndValue(value)
+        animation.start()
 
     @staticmethod
     def _stop_existing_fade(widget: QWidget) -> None:

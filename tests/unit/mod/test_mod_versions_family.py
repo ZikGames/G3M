@@ -24,13 +24,13 @@ class TestListLocalVersions:
     """Tests for mod versions."""
     def test_empty(self, mod_folder):
         """Checks that empty input is handled."""
-        from ui.dialogs.mod.versions_dialog import _list_local_versions
+        from utils.mod.version_utils import list_local_versions as _list_local_versions
 
         assert _list_local_versions(mod_folder) == []
 
     def test_returns_zips(self, mod_folder):
         """Checks that returnsing zips."""
-        from ui.dialogs.mod.versions_dialog import _list_local_versions
+        from utils.mod.version_utils import list_local_versions as _list_local_versions
 
         versions_dir = os.path.join(mod_folder, "mod_versions")
         os.makedirs(versions_dir, exist_ok=True)
@@ -45,7 +45,7 @@ class TestListLocalVersions:
 
     def test_ignores_non_zip(self, mod_folder):
         """Checks that ignoresing non zip."""
-        from ui.dialogs.mod.versions_dialog import _list_local_versions
+        from utils.mod.version_utils import list_local_versions as _list_local_versions
 
         versions_dir = os.path.join(mod_folder, "mod_versions")
         os.makedirs(versions_dir, exist_ok=True)
@@ -59,7 +59,7 @@ class TestClearModFolder:
     """Tests for mod versions."""
     def test_preserves_mod_versions(self, mod_folder):
         """Checks that preservesing mod versions."""
-        from ui.dialogs.mod.versions_dialog import _clear_mod_folder
+        from utils.mod.version_utils import clear_mod_folder as _clear_mod_folder
 
         versions_dir = os.path.join(mod_folder, "mod_versions")
         os.makedirs(versions_dir, exist_ok=True)
@@ -91,7 +91,7 @@ class TestSnapshotAndApply:
 
     def test_apply_restores(self, mod_folder):
         """Checks that applying restores."""
-        from ui.dialogs.mod.versions_dialog import _apply_version_zip
+        from utils.mod.version_utils import apply_version_zip as _apply_version_zip
         from utils.mod.version_utils import create_version_zip
 
         zp = create_version_zip(
@@ -105,7 +105,7 @@ class TestSnapshotAndApply:
 
     def test_apply_preserves_mod_versions_dir(self, mod_folder):
         """Checks that applying preserves mod versions dir."""
-        from ui.dialogs.mod.versions_dialog import _apply_version_zip
+        from utils.mod.version_utils import apply_version_zip as _apply_version_zip
         from utils.mod.version_utils import create_version_zip
 
         versions_dir = os.path.join(mod_folder, "mod_versions")
@@ -120,7 +120,7 @@ class TestSnapshotAndApply:
         assert os.path.isfile(marker)
 
     def test_apply_preserves_installed_mod_identity(self, mod_folder, tmp_path):
-        from ui.dialogs.mod.versions_dialog import _apply_version_zip
+        from utils.mod.version_utils import apply_version_zip as _apply_version_zip
 
         config_path = os.path.join(mod_folder, "mod_config.json")
         with open(config_path, "w", encoding="utf-8") as handle:
@@ -148,7 +148,7 @@ class TestSnapshotAndApply:
         self, mod_folder
     ):
         """Checks repeated version switching after DATA conversion does not corrupt the mod."""
-        from ui.dialogs.mod.versions_dialog import _apply_version_zip
+        from utils.mod.version_utils import apply_version_zip as _apply_version_zip
         from utils.mod.version_utils import create_version_zip
 
         config_path = os.path.join(mod_folder, "mod_config.json")
@@ -202,7 +202,7 @@ class TestSnapshotAndApply:
 
     def test_apply_rejects_invalid_zip_without_removing_current_mod(self, mod_folder):
         """Checks that invalid version zips do not uninstall the current mod."""
-        from ui.dialogs.mod.versions_dialog import _apply_version_zip
+        from utils.mod.version_utils import apply_version_zip as _apply_version_zip
 
         versions_dir = os.path.join(mod_folder, "mod_versions")
         os.makedirs(versions_dir, exist_ok=True)

@@ -8,6 +8,7 @@ from config.config import (
     MOD_FILTER_TRUE_VALUES,
 )
 from services.mod.service import parse_mod_date
+from utils.mod.utils import is_gamebanana_id
 
 
 def _get_mod_attr(mod, attr, default=None):
@@ -89,7 +90,7 @@ def _is_nsfw_mod(mod):
     ):
         return True
     mod_id = _get_mod_id(mod)
-    is_gamebanana = _is_prefixed_id(mod_id, "gb_")
+    is_gamebanana = is_gamebanana_id(mod_id)
     if any(
         _contains_nsfw_text(_get_mod_attr(mod, attr, ""))
         for attr in (
@@ -106,10 +107,6 @@ def _is_nsfw_mod(mod):
 
 def _get_mod_id(mod):
     return _get_mod_attr(mod, "id")
-
-
-def _is_prefixed_id(mod_id, prefix: str) -> bool:
-    return isinstance(mod_id, str) and mod_id.startswith(prefix)
 
 
 def _int_value(value, default=0):
@@ -163,7 +160,6 @@ def filter_and_sort_mods(
         filters.get("status_filter", ["approved", "pending"]),
     )
     exclude_installed = filters.get("exclude_installed", False)
-    hide_local = filters.get("hide_local", False)
     show_nsfw = filters.get("show_nsfw", False)
     search_terms = [term for term in str(search_text).casefold().split() if term]
     installed_ids = set(installed_mod_ids or ())
@@ -175,14 +171,19 @@ def filter_and_sort_mods(
         if not isinstance(mod, dict) and _get_mod_bool_attr(mod, "hide_mod"):
             continue
         mod_id = _get_mod_id(mod)
-        if hide_local and _is_prefixed_id(mod_id, "local_"):
-            continue
-        is_gb = _is_prefixed_id(mod_id, "gb_")
+        is_gb = is_gamebanana_id(mod_id)
         if (not show_nsfw) and _is_nsfw_mod(mod):
             continue
         if only_gamebanana and not is_gb:
             continue
+<<<<<<< HEAD
         if filters.get("only_g3m") and mod_id not in GameBananaAPI.g3m_confirmed:
+=======
+        if filters.get("only_g3m") and not (
+            (entry := GameBananaAPI.g3m_confirmed.get(mod_id or ""))
+            and entry.game in ("", selected_game)
+        ):
+>>>>>>> upstream/main
             continue
         if exclude_installed and mod_id in installed_ids:
             continue

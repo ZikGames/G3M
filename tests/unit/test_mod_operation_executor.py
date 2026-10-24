@@ -809,6 +809,7 @@ def test_journal_preserves_external_changes_for_explicit_recovery(tmp_path):
     assert target.read_text(encoding="utf-8") == "external"
     journal.retire()
     assert ModOperationJournal.load(tmp_path / "session").state == "retired"
+    assert not (tmp_path / "session" / "backups").exists()
     ModOperationExecutor(tmp_path / "session")
 
 

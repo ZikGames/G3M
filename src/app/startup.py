@@ -351,6 +351,17 @@ def cleanup_old_temp_directories():
         )
 
 
+def _remove_legacy_lock_dir(legacy_dir: str, current_dir: str) -> None:
+    """Drop the lock file older versions left in a separate app-data folder."""
+    if not legacy_dir or os.path.normcase(legacy_dir) == os.path.normcase(current_dir):
+        return
+    for name in ("g3m.instance.lock", "g3m.instance.lock.lock"):
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(legacy_dir, name))
+    with contextlib.suppress(OSError):
+        os.rmdir(legacy_dir)
+
+
 def run_app(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     user_root = ""
@@ -389,9 +400,10 @@ def run_app(argv: list[str] | None = None) -> int:
             return 1
         socket.disconnectFromServer()
         return 0
-    lock_dir = QStandardPaths.writableLocation(
+    legacy_lock_dir = QStandardPaths.writableLocation(
         QStandardPaths.StandardLocation.AppLocalDataLocation
-    ) or user_root
+    )
+    lock_dir = user_root or legacy_lock_dir
     try:
         os.makedirs(lock_dir, exist_ok=True)
     except OSError as error:
@@ -423,6 +435,7 @@ def run_app(argv: list[str] | None = None) -> int:
             logger.error("Another G3M instance holds the startup lock")
             return 1
     cast(Any, app)._g3m_instance_lock = instance_lock
+    _remove_legacy_lock_dir(legacy_lock_dir, lock_dir)
     QLocalServer.removeServer(SINGLE_INSTANCE_KEY)
     initial_external_game_process = (
         None if args.force_start else check_game_processes()

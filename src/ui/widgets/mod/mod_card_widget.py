@@ -21,7 +21,11 @@ from ui.common.styling import (
     get_widget_dimensions,
 )
 from ui.utils.ui_utils import UIAnimator
+<<<<<<< HEAD
 from utils.mod.utils import get_mod_id
+=======
+from utils.mod.utils import get_mod_id, is_gamebanana_id
+>>>>>>> upstream/main
 from utils.path_utils import colored_icon
 
 from .base_mod_widget import BaseModWidget
@@ -137,7 +141,7 @@ class ModCardWidget(BaseModWidget):
         self._update_style()
         if self.is_installed and hasattr(self, "action_button"):
             self._apply_unaction_button_style()
-        if (get_mod_id(self.mod_data) or "").startswith("gb_"):
+        if is_gamebanana_id(get_mod_id(self.mod_data)):
             QTimer.singleShot(350, self._do_start_compatibility_check)
         UIAnimator.fade_in(
             self,
@@ -181,7 +185,7 @@ class ModCardWidget(BaseModWidget):
         try:
             key = get_mod_id(self.mod_data)
             likes_value = getattr(self.mod_data, "like_count", None)
-            if key and key.startswith("gb_"):
+            if is_gamebanana_id(key):
                 has_full = getattr(self.mod_data, "has_full_metadata", True)
                 if not has_full:
                     return tr("ui.loading_placeholder")
@@ -191,12 +195,20 @@ class ModCardWidget(BaseModWidget):
 
     def _create_badges(self) -> list[QLabel]:
         """Create the G3M, work-in-progress and note badges that apply to this mod."""
+<<<<<<< HEAD
         mod_id = get_mod_id(self.mod_data) or ""
         confirmed = GameBananaAPI.g3m_confirmed
         shown = {
             "g3m": mod_id in confirmed,
             "wip": bool(getattr(self.mod_data, "is_wip", False)),
             "note": bool(confirmed.get(mod_id)),
+=======
+        entry = GameBananaAPI.g3m_confirmed.get(get_mod_id(self.mod_data) or "")
+        shown = {
+            "g3m": entry is not None,
+            "wip": bool(getattr(self.mod_data, "is_wip", False)),
+            "note": bool(entry and entry.note),
+>>>>>>> upstream/main
         }
         self.badges = {kind: QLabel(self) for kind, on in shown.items() if on}
         self._update_badge_tooltips()
@@ -207,7 +219,13 @@ class ModCardWidget(BaseModWidget):
         texts = {
             "g3m": tr("ui.g3m_confirmed_tooltip"),
             "wip": tr("ui.wip_badge_tooltip"),
+<<<<<<< HEAD
             "note": GameBananaAPI.g3m_confirmed.get(get_mod_id(self.mod_data) or "", ""),
+=======
+            "note": getattr(
+                GameBananaAPI.g3m_confirmed.get(get_mod_id(self.mod_data) or ""), "note", ""
+            ),
+>>>>>>> upstream/main
         }
         for kind, badge in getattr(self, "badges", {}).items():
             badge.setToolTip(texts[kind])
@@ -298,7 +316,7 @@ class ModCardWidget(BaseModWidget):
                     exc_info=True,
                 )
                 self.is_installed = False
-            if not self.is_installed and key and key.startswith("gb_"):
+            if not self.is_installed and is_gamebanana_id(key):
                 try:
                     self.is_installed = (
                         key in self.parent_app.mod_service._get_mods_cache()
@@ -416,7 +434,7 @@ class ModCardWidget(BaseModWidget):
             self.action_button.setEnabled(False)
             return
         key = get_mod_id(self.mod_data)
-        if key and key.startswith("gb_"):
+        if is_gamebanana_id(key):
             dm = self._get_downloads_manager()
             if dm:
                 for r in dm.records:
@@ -447,7 +465,7 @@ class ModCardWidget(BaseModWidget):
         self._check_installation_status()
         if was_installed != self.is_installed:
             key = get_mod_id(self.mod_data)
-            if key and key.startswith("gb_"):
+            if is_gamebanana_id(key):
                 if not self.is_installed:
                     for attr, val in [
                         ("gamebanana_compatibility_checked", False),
@@ -496,8 +514,7 @@ class ModCardWidget(BaseModWidget):
                 )
                 key = get_mod_id(self.mod_data)
                 if (
-                    key
-                    and key.startswith("gb_")
+                    is_gamebanana_id(key)
                     and not getattr(self.mod_data, "has_full_metadata", True)
                 ):
                     description = tr("ui.loading_placeholder")

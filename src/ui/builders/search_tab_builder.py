@@ -7,7 +7,6 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFrame,
     QGridLayout,
-    QLabel,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -169,9 +168,6 @@ class ModsBrowserTabBuilder(QObject):
         )
         layout.addWidget(modgame_combo, 0, align_vcenter)
         layout.addSpacing(20)
-        tags_label = QLabel(tr("ui.tags_label"))
-        tags_label.setToolTip(tr("tooltips.filter_by_tag"))
-        layout.addWidget(tags_label, 0, align_vcenter)
         tags = create_tag_checkboxes(
             self.app_state,
             (
@@ -207,7 +203,6 @@ class ModsBrowserTabBuilder(QObject):
                 "sort_combo": sort_combo,
                 "sort_order_btn": sort_btn,
                 "modgame_combo": modgame_combo,
-                "tags_label": tags_label,
                 "show_nsfw_checkbox": show_nsfw_checkbox,
                 "blocklist_button": blocklist_btn,
                 "search_button": search_btn,

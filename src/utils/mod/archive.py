@@ -12,6 +12,7 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+import zlib
 from collections.abc import Iterable
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
@@ -139,7 +140,53 @@ def archive_write_supported(path: str | Path) -> bool:
     return archive_format(path) not in {None, "rar"}
 
 
+def _damage_errors(format_name: str | None) -> tuple[type[BaseException], ...]:
+    errors: tuple[type[BaseException], ...] = (
+        zipfile.BadZipFile,
+        tarfile.TarError,
+        lzma.LZMAError,
+        zlib.error,
+        EOFError,
+    )
+    if format_name == "7z":
+        import py7zr.exceptions
+
+        errors += (py7zr.exceptions.ArchiveError,)
+    elif format_name == "rar":
+        import rarfile
+
+        errors += (rarfile.Error,)
+    return errors
+
+
+@contextmanager
+def _named_damage(archive_path: Path):
+    """Name the file in errors raised by the archive libraries, which only describe the format."""
+    format_name = archive_format(archive_path)
+    try:
+        yield
+    except ArchiveValidationError:
+        raise
+    except _damage_errors(format_name) as error:
+        raise ArchiveValidationError(
+            f"{archive_path} is damaged or is not a valid {format_name} archive ({error}); "
+            "delete or replace this file"
+        ) from error
+
+
 def list_archive_members(path: str | Path) -> tuple[ArchiveMember, ...]:
+    """List a bounded, validated archive tree without extracting it."""
+    with _named_damage(Path(path)):
+        return _list_archive_members(path)
+
+
+def materialize_archive(path: str | Path, destination: str | Path) -> tuple[ArchiveMember, ...]:
+    """Extract a validated archive into an empty private directory."""
+    with _named_damage(Path(path)):
+        return _materialize_archive(path, destination)
+
+
+def _list_archive_members(path: str | Path) -> tuple[ArchiveMember, ...]:
     """List a bounded, validated archive tree without extracting it."""
     archive_path = Path(path)
     format_name = archive_format(archive_path)
@@ -210,7 +257,7 @@ def list_archive_members(path: str | Path) -> tuple[ArchiveMember, ...]:
     raise ArchiveValidationError("unsupported archive format")
 
 
-def materialize_archive(path: str | Path, destination: str | Path) -> tuple[ArchiveMember, ...]:
+def _materialize_archive(path: str | Path, destination: str | Path) -> tuple[ArchiveMember, ...]:
     """Extract a validated archive into an empty private directory."""
     archive_path = Path(path)
     destination_path = Path(destination)

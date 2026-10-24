@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -44,6 +45,7 @@ from ui.common.styling import (
 )
 from ui.utils.ui_utils import UIAnimator
 from ui.widgets.shared.custom_controls import NoScrollComboBox, SectionToggle
+from utils.mod.version_package import VERSION_MODES
 from utils.path_utils import (
     colored_icon,
     get_default_user_data_root,
@@ -882,6 +884,38 @@ class SettingsViewBuilder:
         cl.addWidget(
             game_versions_full_replace_cb, alignment=Qt.AlignmentFlag.AlignCenter
         )
+        layout.addWidget(sec)
+
+        sec, cl = self._collapsible_section(
+            tr("mod_versions.settings_title"),
+            "library_mod_versions",
+            "mod_versions.settings_title",
+            parent=page,
+        )
+        modes_grid = QWidget(page)
+        grid = QGridLayout(modes_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(12)
+        for row, (name, config_key) in enumerate(
+            (
+                ("export", "mod_versions_export_mode"),
+                ("import", "mod_versions_import_mode"),
+            )
+        ):
+            mode_label = self._styled_label(
+                tr(f"mod_versions.settings_{name}"), bold=True
+            )
+            mode_combo = NoScrollComboBox(page)
+            for mode in VERSION_MODES:
+                mode_combo.addItem(tr(f"mod_versions.mode_{mode}"), mode)
+            mode_combo.setToolTip(tr(f"mod_versions.settings_{name}_tooltip"))
+            self._mark_reset(mode_combo, config_key=config_key)
+            grid.addWidget(mode_label, row, 0, Qt.AlignmentFlag.AlignRight)
+            grid.addWidget(mode_combo, row, 1)
+            self.widgets[f"mod_versions_{name}_mode_label"] = mode_label
+            self.widgets[f"mod_versions_{name}_mode_combo"] = mode_combo
+        cl.addWidget(modes_grid, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(sec)
 
         sec, cl = self._collapsible_section(

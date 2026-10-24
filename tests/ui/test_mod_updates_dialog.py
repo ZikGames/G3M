@@ -65,3 +65,14 @@ def test_mod_updates_dialog_keeps_manual_install_outcome_after_refresh(qapp):
 
     assert not dialog._outcome.isHidden()
     assert dialog._outcome.text() == "Manual installation is required in Downloads."
+
+
+def test_mod_updates_dialog_progress_reaches_the_final_value(qapp):
+    dialog = ModUpdatesDialog(
+        SimpleNamespace(local_config={"disable_animations": True}), ["Default"], "Default"
+    )
+
+    dialog.set_progress(1, 4, "First")
+    dialog.set_progress(4, 4, "Last")
+
+    assert dialog._progress.value() == 100

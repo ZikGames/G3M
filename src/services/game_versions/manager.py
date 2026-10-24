@@ -49,6 +49,9 @@ class GameVersionsManager(QObject):
     def records_for_game(self, game_id: str):
         return self._store.records_for_game(game_id)
 
+    def rename_game(self, old_id: str, new_id: str) -> None:
+        self._store.rename_game(old_id, new_id)
+
     def cancel_operation(self, archive_path: str):
         if archive_path in self._applying:
             return

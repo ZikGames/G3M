@@ -1928,6 +1928,19 @@ class TestSearchDisplayController:
         app_window.modgame_combo.currentData.return_value = "deltarune"
         filters, _ = controller._build_filters_and_sort()
         assert filters["tags"] == []
+        assert filters["only_gamebanana"]
+
+    def test_browser_hides_installed_mods_that_are_not_from_gamebanana(self):
+        from services.mod.filter_service import filter_and_sort_mods
+
+        mods = [
+            {"id": "dojo_plus", "name": "Dojo+", "game": "deltarune"},
+            {"id": "gb_mod_730367", "name": "Dojo+", "game": "deltarune"},
+        ]
+
+        shown = filter_and_sort_mods(mods, {"game": "deltarune", "only_gamebanana": True})
+
+        assert [mod["id"] for mod in shown] == ["gb_mod_730367"]
 
     def test_search_display_cleanup_cancels_and_stops_threads(
         self, app_state, feedback_service, monkeypatch

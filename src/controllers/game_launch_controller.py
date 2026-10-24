@@ -25,7 +25,7 @@ from services.localization_service import tr
 from ui.common.styling import get_launch_status_color
 from ui.dialogs.file_picker_dialog import GameBananaFilePickerDialog
 from ui.utils.thread_lifetime import retire_qthread
-from utils.mod.utils import get_mod_id
+from utils.mod.utils import get_mod_id, is_gamebanana_id
 from utils.native_integration import get_existing_directory
 from utils.process_utils import format_filesystem_error
 from workers.install.full_install_worker import FullInstallThread
@@ -729,9 +729,8 @@ class GameLaunchController(QObject):
                 continue
             mod_id = mod_info.get("id")
             if (
-                not isinstance(mod_id, str)
-                or mod_id in seen
-                or not mod_id.startswith(("gb_mod_", "gb_wip_"))
+                mod_id in seen
+                or not is_gamebanana_id(mod_id)
             ):
                 continue
             mod = self.mod_service.create_mod_object_from_info(

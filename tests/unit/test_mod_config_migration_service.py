@@ -73,6 +73,20 @@ def test_migrate_managed_mods_reports_bad_snapshot_without_replacing_it(tmp_path
     assert snapshot_path.read_bytes() == original
 
 
+def test_migrate_managed_mods_reports_a_snapshot_that_is_not_an_archive(tmp_path):
+    versions = tmp_path / "legacy" / MOD_VERSIONS_DIR
+    versions.mkdir(parents=True)
+    snapshot_path = versions / "broken.zip"
+    snapshot_path.write_bytes(b"<html>not a zip</html>")
+
+    report = migrate_managed_mods(tmp_path)
+
+    assert report.snapshots == ()
+    assert [issue.path for issue in report.issues] == [snapshot_path]
+    assert snapshot_path.read_bytes() == b"<html>not a zip</html>"
+    assert str(snapshot_path) in report.issues[0].message
+
+
 def test_migrate_managed_mods_keeps_a_failed_config_for_diagnostics(tmp_path):
     mod_folder = tmp_path / "broken"
     mod_folder.mkdir()

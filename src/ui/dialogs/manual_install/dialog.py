@@ -56,6 +56,7 @@ from ui.common.dialog_theme import (
     get_dialog_theme_values,
 )
 from ui.common.localized_label import LocalizedLabel
+from ui.dialogs.custom_game_dialog import CustomGameDialog, run_custom_game_dialog
 from ui.dialogs.manual_install.detection import (
     default_action,
     scan_files,
@@ -68,6 +69,7 @@ from ui.dialogs.manual_install.workers import (
     SaveThread,
 )
 from ui.dialogs.mod.readme_dialog import ReadmeFileViewer
+from ui.utils.gui_thread import find_attribute
 from ui.utils.thread_lifetime import retire_qthread
 from utils.file_utils import remove_archive_extension
 from utils.mod.archive import archive_format
@@ -96,8 +98,7 @@ from utils.path_utils import (
 )
 
 if TYPE_CHECKING:
-    from models.app_state import AppState
-    from services.settings_service import SettingsManager
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,9 @@ class ManualModInstallDialog(DynamicDialog):
         self.initial_game_type = initial_game_type
         self.target_mods_dir = target_mods_dir
         self.temp_dir_to_cleanup: str | None = None
-        self.app_state, self._settings_service = self._find_services(parent)
+        self.app_state = find_attribute(parent, "app_state")
+        self._settings_service = find_attribute(parent, "settings_service")
+        self._game_registry = find_attribute(parent, "game_registry_service")
         self.all_files = self._scan_files()
         packed = [
             Path(source)
@@ -222,18 +225,6 @@ class ManualModInstallDialog(DynamicDialog):
             self.relocalize_ui()
             self._metadata_thread.start()
 
-    @staticmethod
-    def _find_services(parent) -> tuple[AppState | None, SettingsManager | None]:
-        current, visited = parent, set()
-        while current is not None and id(current) not in visited:
-            visited.add(id(current))
-            state = getattr(current, "app_state", None)
-            if state is not None:
-                return state, getattr(current, "settings_service", None)
-            getter = getattr(current, "parent", None)
-            current = getter() if callable(getter) else None
-        return None, None
-
     def _scan_files(self) -> list[tuple[str, str]]:
         return scan_import_files(Path(self.prepared_files_path))
 
@@ -259,10 +250,19 @@ class ManualModInstallDialog(DynamicDialog):
         root.addWidget(self.tabs, 1)
         form = QFormLayout()
         self.game_combo = QComboBox(self)
-        for game in get_visible_game_entries():
-            self.game_combo.addItem(game.display_name, game.id)
+        self._fill_game_combo()
+        self.add_game_button = QPushButton(self)
+        self.add_game_button.setObjectName("manualInstallAddGameButton")
+        self.add_game_button.setVisible(
+            self._game_registry is not None and self.app_state is not None
+        )
+        self.add_game_button.clicked.connect(self._add_game)
+        game_row = QHBoxLayout()
+        game_row.setSpacing(8)
+        game_row.addWidget(self.game_combo, 1)
+        game_row.addWidget(self.add_game_button)
         self.game_label = QLabel(self)
-        form.addRow(self.game_label, self.game_combo)
+        form.addRow(self.game_label, game_row)
         self.name_edit = QLineEdit(self)
         self.name_edit.setMaxLength(MOD_CONFIG_MAX_DISPLAY_CHARS)
         self.name_label = QLabel(self)
@@ -514,6 +514,27 @@ class ManualModInstallDialog(DynamicDialog):
                 self.document_combo.setCurrentIndex(index)
                 self.tabs.setCurrentIndex(1)
 
+    def _fill_game_combo(self, selected: str = "") -> None:
+        with QSignalBlocker(self.game_combo):
+            self.game_combo.clear()
+            for game in get_visible_game_entries():
+                self.game_combo.addItem(game.display_name, game.id)
+            self.game_combo.setCurrentIndex(max(0, self.game_combo.findData(selected)))
+
+    def _add_game(self) -> None:
+        if self._game_registry is None:
+            return
+        registry = self._game_registry
+        created: list[str] = []
+        saved = run_custom_game_dialog(
+            CustomGameDialog(self.app_state, parent=self),
+            lambda values: created.append(registry.create_custom_game(**values).id),
+        )
+        if saved:
+            self._fill_game_combo(str(self.game_combo.currentData() or ""))
+            # Selecting the new game restarts the detection for it.
+            self.game_combo.setCurrentIndex(self.game_combo.findData(created[0]))
+
     def _populate(self) -> None:
         source_name = (
             remove_archive_extension(os.path.basename(self.source_file_path))
@@ -558,6 +579,8 @@ class ManualModInstallDialog(DynamicDialog):
     def relocalize_ui(self) -> None:
         self.setWindowTitle(tr("dialogs.manual_install_title"))
         self.game_label.setText(tr("ui.mod_type_label"))
+        self.add_game_button.setToolTip(tr("games.add_custom_title"))
+        self.add_game_button.setAccessibleName(tr("games.add_custom_title"))
         self.name_label.setText(tr("ui.mod_name_label"))
         self.document_label.setText(tr("ui.manual_install_file"))
         menu = self.browse_button.menu()
@@ -1360,6 +1383,7 @@ class ManualModInstallDialog(DynamicDialog):
         for widget in (
             self.sources,
             self.game_combo,
+            self.add_game_button,
             self.name_edit,
             self.filter_edit,
             self.hide_configured,

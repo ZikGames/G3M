@@ -43,6 +43,7 @@ from utils.mod.operation_plan import (
     build_mod_operation_plan,
 )
 from utils.path_utils import resolve_execution_runtime, resolve_game_executable
+from workers.mod.operation_worker import describe_step
 
 logger = logging.getLogger(__name__)
 _CUSTOM_PLACEHOLDER_ROOT_RE = re.compile(
@@ -376,9 +377,22 @@ class CreateModpackThread(ManagedQThread):
                 patcher=self._patcher,
                 merger=self._merger,
             )
+            plan = ModOperationPlan(tuple(game_operations), ())
             executor.execute(
-                ModOperationPlan(tuple(game_operations), ()),
+                plan,
                 is_cancelled=self._is_cancelled,
+                step_progress=lambda overall, done, count, operation, percent: _safe_emit(
+                    self.__class__.__name__,
+                    self.progress_update,
+                    5 + int(overall * 70),
+                    describe_step(
+                        plan.operations,
+                        operation,
+                        done + (len(ModOperationExecutor.merge_operations(plan.operations, operation)) or 1),
+                        count,
+                        percent,
+                    ),
+                ),
             )
             entries = [*direct_entries, *self._materialize_game_changes(game_path, staged_game, game_operations)]
 

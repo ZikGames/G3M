@@ -259,7 +259,11 @@ def test_slot_height_sync_settles_and_stops_when_deleted(qapp, qtbot):
     label._slot_row = row
     layout.addWidget(label)
     row.show()
-    qtbot.wait(100)
+    for _ in range(20):  # slow runners deliver the last layout events late
+        seen = len(calls)
+        qtbot.wait(100)
+        if len(calls) == seen:
+            break
     initial = len(calls)
     qtbot.wait(100)
     assert len(calls) == initial

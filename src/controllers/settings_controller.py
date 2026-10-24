@@ -151,6 +151,12 @@ class SettingsUiController:
         ):
             if hasattr(self.app, attr):
                 getattr(self.app, attr).setChecked(config.get(key, False))
+        for attr, key in (
+            ("mod_versions_export_mode_combo", "mod_versions_export_mode"),
+            ("mod_versions_import_mode_combo", "mod_versions_import_mode"),
+        ):
+            if hasattr(self.app, attr):
+                self._set_combo_data(getattr(self.app, attr), config.get(key, "ask"))
         update_settings_library_tab(self.app)
         update_portproton_ui(self.app)
         update_custom_executable_ui(self.app)

@@ -104,6 +104,7 @@ def test_preflight_operation_phase_uses_localized_step_text():
     values = []
     phases = []
     vars(dialog)["_preflight_progress"] = SimpleNamespace(setValue=values.append)
+    vars(dialog)["_app_state"] = None
     vars(dialog)["_preflight_phase"] = SimpleNamespace(set_localized_text=lambda key, **params: phases.append(tr(key, **params)))
 
     dialog._on_preflight_progress(50, "patching_step:global:2:5")

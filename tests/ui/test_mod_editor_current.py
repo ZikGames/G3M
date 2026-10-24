@@ -8,7 +8,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -19,6 +19,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QLayout,
+    QMessageBox,
     QTabWidget,
     QTreeWidgetItem,
     QWidget,
@@ -857,3 +858,262 @@ def test_current_editor_warns_for_a_custom_target(qapp, tmp_path, monkeypatch):
 
     assert dialog._target.text().endswith("/outside/")
     warning.assert_called_once()
+
+
+def _png(path: Path, size: int = 1080) -> str:
+    image = QImage(size, size, QImage.Format.Format_RGB32)
+    image.fill(QColor("magenta"))
+    assert image.save(str(path))
+    return path.as_posix()
+
+
+def test_saving_a_new_icon_from_outside_the_mod_copies_it_and_stays_alive(qtbot, tmp_path, monkeypatch):
+    folder = tmp_path / "mods" / "editor"
+    folder.mkdir(parents=True)
+    parent = _parent(tmp_path)
+    qtbot.addWidget(parent)
+    dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
+    qtbot.addWidget(dialog)
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    picked = _png(downloads / "DojoPlus_logo.png")
+    messages = []
+    monkeypatch.setattr(ModEditorDialog, "_safe_information", staticmethod(lambda *args: messages.append(args[0])))
+    dialog.icon_edit.setText(picked)
+    qtbot.wait(300)
+
+    dialog._save()
+
+    assert dialog.result() == dialog.DialogCode.Accepted
+    assert (folder / "DojoPlus_logo.png").is_file()
+    assert json.loads((folder / "mod_config.json").read_text(encoding="utf-8"))["icon"] == "${mod_path}/DojoPlus_logo.png"
+    assert messages == [parent]
+
+
+def test_leaving_the_editor_stops_its_background_work(qtbot, tmp_path):
+    folder = tmp_path / "mods" / "editor"
+    folder.mkdir(parents=True)
+    parent = _parent(tmp_path)
+    qtbot.addWidget(parent)
+    dialog = ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
+    qtbot.addWidget(dialog)
+    thread = cast(Any, Mock())
+    dialog._hash_threads.add(thread)
+    dialog.icon_edit.setText("pending.png")
+
+    with patch.object(dialog_module, "retire_qthread") as retire:
+        dialog.accept()
+
+    retire.assert_called_once_with(thread)
+    assert not dialog._icon_preview_timer.isActive()
+    assert dialog._hash_threads == set()
+
+
+def _editor(qtbot, tmp_path, creating=False):
+    folder = tmp_path / "mods" / "editor"
+    folder.mkdir(parents=True, exist_ok=True)
+    parent = _parent(tmp_path)
+    qtbot.addWidget(parent)
+    dialog = (
+        ModEditorDialog(parent, is_creating=True)
+        if creating
+        else ModEditorDialog(parent, is_creating=False, mod_data=_config(folder))
+    )
+    qtbot.addWidget(dialog)
+    return dialog, folder
+
+
+def _browse(monkeypatch, picked):
+    monkeypatch.setattr(dialog_module, "get_open_file_name", lambda *_args: (picked, ""))
+
+
+def test_browsing_an_icon_puts_it_in_the_mod_folder_at_once(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor(qtbot, tmp_path)
+    picked = _png(tmp_path / "DojoPlus_logo.png", 64)
+    _browse(monkeypatch, picked)
+
+    dialog._browse_icon()
+
+    assert dialog.icon_edit.text() == "DojoPlus_logo.png"
+    assert (folder / "DojoPlus_logo.png").is_file()
+    assert dialog._config()["icon"] == "${mod_path}/DojoPlus_logo.png"
+
+
+def test_browsing_the_same_picture_again_reuses_the_copy(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor(qtbot, tmp_path)
+    picked = _png(tmp_path / "logo.png", 64)
+    _browse(monkeypatch, picked)
+
+    dialog._browse_icon()
+    dialog._browse_icon()
+
+    assert sorted(path.name for path in folder.glob("logo*")) == ["logo.png"]
+
+
+def test_a_different_picture_with_a_taken_name_gets_its_own_file(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor(qtbot, tmp_path)
+    (folder / "logo.png").write_bytes(b"someone else's icon")
+    _browse(monkeypatch, _png(tmp_path / "logo.png", 64))
+
+    dialog._browse_icon()
+
+    assert dialog.icon_edit.text() == "logo_1.png"
+    assert (folder / "logo.png").read_bytes() == b"someone else's icon"
+
+
+def test_cancelling_removes_the_icon_that_browse_copied(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor(qtbot, tmp_path)
+    _browse(monkeypatch, _png(tmp_path / "logo.png", 64))
+    dialog._browse_icon()
+    monkeypatch.setattr(ModEditorDialog, "_safe_question", staticmethod(lambda *_args: QMessageBox.StandardButton.Yes))
+
+    dialog.reject()
+
+    assert not (folder / "logo.png").exists()
+
+
+def test_picking_another_icon_replaces_the_previous_copy(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor(qtbot, tmp_path)
+    _browse(monkeypatch, _png(tmp_path / "first.png", 64))
+    dialog._browse_icon()
+    _browse(monkeypatch, _png(tmp_path / "second.png", 48))
+    dialog._browse_icon()
+
+    assert not (folder / "first.png").exists()
+    assert (folder / "second.png").is_file()
+
+
+def test_a_mod_still_being_created_keeps_the_picked_path_until_it_is_saved(qtbot, tmp_path, monkeypatch):
+    dialog, _folder = _editor(qtbot, tmp_path, creating=True)
+    picked = _png(tmp_path / "logo.png", 64)
+    _browse(monkeypatch, picked)
+
+    dialog._browse_icon()
+
+    assert dialog.icon_edit.text() == picked
+
+
+def test_closing_an_untouched_editor_does_not_ask_about_changes(qtbot, tmp_path, monkeypatch):
+    dialog, _folder = _editor(qtbot, tmp_path)
+    monkeypatch.setattr(ModEditorDialog, "_safe_question", staticmethod(lambda *_args: pytest.fail("asked")))
+
+    with qtbot.waitSignal(dialog.rejected, timeout=1000):
+        dialog.reject()
+
+
+def test_closing_an_edited_editor_asks_and_can_be_declined(qtbot, tmp_path, monkeypatch):
+    dialog, _folder = _editor(qtbot, tmp_path)
+    questions = []
+
+    def decline(*args):
+        questions.append(args)
+        return QMessageBox.StandardButton.No
+
+    monkeypatch.setattr(ModEditorDialog, "_safe_question", staticmethod(decline))
+    dialog.name_edit.setText("Renamed")
+
+    with qtbot.assertNotEmitted(dialog.rejected):
+        dialog.reject()
+
+    assert len(questions) == 1
+
+
+def test_an_icon_that_no_longer_exists_is_left_out_of_the_saved_config(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor(qtbot, tmp_path)
+    monkeypatch.setattr(ModEditorDialog, "_safe_information", staticmethod(lambda *_args: None))
+    dialog.icon_edit.setText("gone.png")
+
+    dialog._save()
+
+    assert dialog.result() == dialog.DialogCode.Accepted
+    assert "icon" not in json.loads((folder / "mod_config.json").read_text(encoding="utf-8"))
+
+
+def test_an_absolute_icon_that_cannot_be_read_shows_the_default_icon(qtbot, tmp_path):
+    dialog, _folder = _editor(qtbot, tmp_path)
+
+    dialog.icon_edit.setText(str(tmp_path / "missing" / "logo.png"))
+    dialog._load_icon_preview(dialog.icon_edit.text())
+
+    assert not dialog.icon_preview.pixmap().isNull()
+
+
+def test_picking_an_icon_the_mod_already_has_drops_the_previous_copy(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor(qtbot, tmp_path)
+    _png(folder / "kept.png", 32)
+    _browse(monkeypatch, _png(tmp_path / "new.png", 64))
+    dialog._browse_icon()
+    _browse(monkeypatch, str(folder / "kept.png"))
+
+    dialog._browse_icon()
+
+    assert dialog.icon_edit.text() == "kept.png"
+    assert not (folder / "new.png").exists()
+    assert (folder / "kept.png").is_file()
+
+
+def _editor_with_icon(qtbot, tmp_path, icon="icon.png"):
+    folder = tmp_path / "mods" / "editor"
+    folder.mkdir(parents=True, exist_ok=True)
+    if icon.endswith(".png"):
+        _png(folder / icon, 32)
+    else:
+        (folder / icon).write_text("doc", encoding="utf-8")
+    parent = _parent(tmp_path)
+    qtbot.addWidget(parent)
+    dialog = ModEditorDialog(parent, is_creating=False, mod_data={**_config(folder), "icon": f"${{mod_path}}/{icon}"})
+    qtbot.addWidget(dialog)
+    return dialog, folder
+
+
+def test_browsing_replaces_the_icon_inside_the_mod_and_cancel_brings_it_back(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor_with_icon(qtbot, tmp_path)
+    original = (folder / "icon.png").read_bytes()
+    _browse(monkeypatch, _png(tmp_path / "DojoPlus_logo.png", 64))
+
+    dialog._browse_icon()
+
+    assert dialog.icon_edit.text() == "DojoPlus_logo.png"
+    assert not (folder / "icon.png").exists()
+    monkeypatch.setattr(ModEditorDialog, "_safe_question", staticmethod(lambda *_args: QMessageBox.StandardButton.Yes))
+    dialog.reject()
+    assert (folder / "icon.png").read_bytes() == original
+    assert not (folder / "DojoPlus_logo.png").exists()
+
+
+def test_browsing_leaves_an_outside_icon_alone(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor(qtbot, tmp_path)
+    outside = _png(tmp_path / "outside.png", 32)
+    dialog.icon_edit.setText(outside)
+    picked = _png(tmp_path / "picked.png", 64)
+    _browse(monkeypatch, picked)
+
+    dialog._browse_icon()
+
+    assert (tmp_path / "outside.png").is_file()
+    assert (tmp_path / "picked.png").is_file()
+    assert (folder / "picked.png").is_file()
+
+
+def test_saving_a_typed_icon_path_replaces_the_old_icon_then(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor_with_icon(qtbot, tmp_path)
+    monkeypatch.setattr(ModEditorDialog, "_safe_information", staticmethod(lambda *_args: None))
+    dialog.icon_edit.setText(_png(tmp_path / "typed.png", 64))
+    assert (folder / "icon.png").exists()
+
+    dialog._save()
+
+    assert not (folder / "icon.png").exists()
+    assert (folder / "typed.png").is_file()
+    assert json.loads((folder / "mod_config.json").read_text(encoding="utf-8"))["icon"] == "${mod_path}/typed.png"
+
+
+def test_an_icon_that_an_operation_uses_is_not_deleted_on_save(qtbot, tmp_path, monkeypatch):
+    dialog, folder = _editor_with_icon(qtbot, tmp_path, icon="README.md")
+    monkeypatch.setattr(ModEditorDialog, "_safe_information", staticmethod(lambda *_args: None))
+    dialog.icon_edit.setText(_png(tmp_path / "typed.png", 64))
+
+    dialog._save()
+
+    assert (folder / "README.md").is_file()
+    assert (folder / "typed.png").is_file()

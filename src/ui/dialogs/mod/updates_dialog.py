@@ -21,6 +21,7 @@ from models.game_modes import get_game
 from services.localization_service import tr
 from ui.common.dialog_theme import DynamicDialog, build_dialog_theme_stylesheet
 from ui.common.localized_label import LocalizedLabel
+from ui.utils.ui_utils import UIAnimator
 
 
 class ModUpdatesDialog(DynamicDialog):
@@ -166,7 +167,7 @@ class ModUpdatesDialog(DynamicDialog):
 
     def set_progress(self, completed: int, total: int, name: str = "") -> None:
         self._progress.setVisible(total > 0)
-        self._progress.setValue(int(completed * 100 / max(total, 1)))
+        UIAnimator.progress_to(self._progress, int(completed * 100 / max(total, 1)), self._app_state)
         self._status.set_localized_text("mod_updates.progress", current=completed, total=total, name=name)
 
     def set_busy(self, busy: bool) -> None:

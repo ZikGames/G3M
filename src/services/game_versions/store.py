@@ -28,6 +28,11 @@ class GameVersionsStore(BaseJsonStore):
     def records_for_game(self, game: str) -> list[GameVersionRecord]:
         return [r for r in self._records if r.game == game]
 
+    def rename_game(self, old_id: str, new_id: str) -> None:
+        for record in self.records_for_game(old_id):
+            record.game = new_id
+        self.save()
+
     def startup_recovery(self):
         """Clean up stale records using a two-phase grace period.
 

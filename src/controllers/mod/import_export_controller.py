@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import uuid
-import zipfile
+from collections.abc import Collection
 from pathlib import Path
 
 from PyQt6.QtCore import QTimer
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QDialog, QHBoxLayout, QMessageBox, QPushButton, QVBo
 from config.config import MOD_CONFIG_FILENAME
 from services.localization_service import tr
 from services.mod_operation_support import confirm_direct_operation_paths
+from ui.dialogs.unknown_game_dialog import MANUAL_INSTALL, resolve_unknown_game
 from utils.archive_utils import extract_archive, unwrap_single_directory_chain
 from utils.file_utils import find_deltamod_info_file, flatten_single_child_directories
 from utils.mod.config import (
@@ -241,15 +242,7 @@ class ModImportExportController:
                     ):
                         return
 
-                    icon_path = os.path.join(content_path, "_icon.png")
-                    if not os.path.exists(icon_path):
-                        icon_path = os.path.join(content_path, "icon.png")
-                    if os.path.exists(icon_path) and not config.get("icon"):
-                        config["icon"] = (
-                            "${mod_path}/_icon.png"
-                            if os.path.basename(icon_path) == "_icon.png"
-                            else "${mod_path}/icon.png"
-                        )
+                    self._apply_icon_fallback(content_path, config)
                     existing_mod_folder = self.mod_service.get_mod_folder_path(mod_id)
                     if not isinstance(existing_mod_folder, (str, os.PathLike)) or not os.path.isdir(
                         existing_mod_folder
@@ -263,6 +256,30 @@ class ModImportExportController:
                         )
                         return
 
+                    if game_id := config.get("game"):
+                        outcome = resolve_unknown_game(self.app_window, str(game_id), mod_name)
+                        if outcome is None:
+                            return
+                        if outcome == MANUAL_INSTALL:
+                            self._show_import_error_with_manual_install(
+                                file_path, tr("games.mod_unknown_manual_note")
+                            )
+                            return
+                    if not self._resolve_package_versions(content_path):
+                        return
+                    if (chosen_bytes := read_mod_config_bytes(config_path_to_read)) != raw_bytes:
+                        # Another version became the active one, so its paths need confirming too.
+                        config = migrate_legacy_config_bytes(chosen_bytes, mod_root_path=content_path)
+                        config["id"] = mod_id
+                        if not confirm_direct_operation_paths(
+                            getattr(self.app_window, "feedback_service", None),
+                            getattr(self.app_state, "local_config", None),
+                            config,
+                            mod_id=mod_id,
+                        ):
+                            return
+                        self._apply_icon_fallback(content_path, config)
+                        mod_name = str(config.get("name") or mod_name)
                     folder_name = sanitize_filename(mod_name) or remove_archive_extension(
                         os.path.basename(file_path)
                     )
@@ -307,6 +324,30 @@ class ModImportExportController:
                     error=self._format_import_exception(e, file_path=file_path),
                 ),
             )
+
+    @staticmethod
+    def _apply_icon_fallback(content_path: str, config: dict) -> None:
+        icon_path = os.path.join(content_path, "_icon.png")
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(content_path, "icon.png")
+        if os.path.exists(icon_path) and not config.get("icon"):
+            config["icon"] = (
+                "${mod_path}/_icon.png"
+                if os.path.basename(icon_path) == "_icon.png"
+                else "${mod_path}/icon.png"
+            )
+
+    def _resolve_package_versions(self, content_path: str) -> bool:
+        """Let the user pick which saved versions of an imported mod to install."""
+        from ui.dialogs.mod.version_choice_dialog import choose_install_versions
+        from utils.mod.version_package import resolve_package_versions
+
+        return resolve_package_versions(
+            content_path,
+            lambda name, label, versions: choose_install_versions(
+                self.app_window, name, label, versions
+            ),
+        )
 
     def _merge_into_existing_mod(
         self, mod_id: str, content_path: str, file_path: str, mod_name: str, config: dict
@@ -665,30 +706,42 @@ class ModImportExportController:
             return
         self._importing = False
 
-    def export_mod_to_path(self, mod_data, export_path: str) -> bool:
-        """Export a mod to a specific zip path (for drag & drop export)."""
+    def _find_export_dir(self, mod_data) -> str | None:
+        mod_dir = self.mod_service.get_mod_folder_path(get_mod_id(mod_data))
+        if not mod_dir or not os.path.exists(mod_dir):
+            mod_dir = self._find_mod_dir_by_config(mod_data)
+        return mod_dir if mod_dir and os.path.exists(mod_dir) else None
+
+    def choose_export_versions(self, mod_data) -> frozenset[str] | None:
+        """Ask which saved versions to export along with the active one; None when cancelled."""
+        from ui.dialogs.mod.version_choice_dialog import choose_export_versions
+        from utils.mod.version_package import describe_active_version
+        from utils.mod.version_utils import list_local_versions
+
+        mod_dir = self._find_export_dir(mod_data)
+        if not mod_dir or not (versions := list_local_versions(mod_dir)):
+            return frozenset()
+        name, label = describe_active_version(mod_dir)
+        return choose_export_versions(self.app_window, name, label, versions)
+
+    def export_mod_to_path(
+        self, mod_data, export_path: str, versions: Collection[str] = ()
+    ) -> bool:
+        """Export a mod to a zip: its active files and only the named saved versions."""
         try:
-            mod_id = get_mod_id(mod_data)
-            mod_dir = self.mod_service.get_mod_folder_path(mod_id)
-            if not mod_dir or not os.path.exists(mod_dir):
-                mod_dir = self._find_mod_dir_by_config(mod_data)
-            if not mod_dir or not os.path.exists(mod_dir):
+            mod_dir = self._find_export_dir(mod_data)
+            if not mod_dir:
                 logger.error(
-                    f"[DND EXPORT] Mod folder not found for: {getattr(mod_data, 'name', mod_id)}"
+                    f"[EXPORT] Mod folder not found for: {getattr(mod_data, 'name', get_mod_id(mod_data))}"
                 )
                 return False
             if Path(export_path).resolve().is_relative_to(Path(mod_dir).resolve()):
-                logger.error("[DND EXPORT] Export path is inside the source mod folder")
+                logger.error(f"[EXPORT] Export path {export_path!r} is inside the source mod folder {mod_dir!r}")
                 return False
-            with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-                for root, _dirs, files in os.walk(mod_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        if os.path.islink(file_path):
-                            continue
-                        arcname = os.path.relpath(file_path, mod_dir)
-                        zipf.write(file_path, arcname)
+            from utils.mod.version_package import export_mod_archive
+
+            export_mod_archive(mod_dir, export_path, versions)
             return True
         except Exception as e:
-            logger.error(f"[DND EXPORT] Mod export failed: {e}", exc_info=True)
+            logger.error(f"[EXPORT] Mod export failed: {e}", exc_info=True)
             return False

@@ -61,6 +61,7 @@ from ui.common.dialog_theme import (
 from ui.common.localized_label import LocalizedLabel
 from ui.utils.audio_utils import is_audio_playback_available
 from ui.utils.thread_lifetime import ManagedQThread
+from ui.utils.ui_utils import UIAnimator
 from utils.mod.operation_plan import (
     ModOperationPlan,
     ModPathContext,
@@ -755,7 +756,7 @@ class ModDiagnosticsDialog(DynamicDialog):
         self._run_preflight_btn.setEnabled(False)
         self._cancel_preflight_btn.setEnabled(True)
         self._export_preflight_btn.setEnabled(False)
-        self._preflight_progress.setValue(0)
+        UIAnimator.progress_to(self._preflight_progress, 0, self._app_state)
         self._preflight_phase.set_localized_text("diagnostics.actual_phase_staging")
         worker.start()
 
@@ -774,7 +775,7 @@ class ModDiagnosticsDialog(DynamicDialog):
         worker.deleteLater()
 
     def _on_preflight_progress(self, value: int, phase: str) -> None:
-        self._preflight_progress.setValue(value)
+        UIAnimator.progress_to(self._preflight_progress, value, self._app_state)
         if phase.startswith("patching_step:"):
             _prefix, section, step, total = phase.split(":", 3)
             self._preflight_phase.set_localized_text(
@@ -805,7 +806,7 @@ class ModDiagnosticsDialog(DynamicDialog):
             self._preflight_phase.set_localized_text("diagnostics.actual_phase_cancelled")
         elif report.success:
             self._preflight_phase.set_localized_text("diagnostics.actual_phase_completed")
-            self._preflight_progress.setValue(100)
+            UIAnimator.progress_to(self._preflight_progress, 100, self._app_state)
         else:
             self._preflight_phase.set_localized_text("diagnostics.actual_phase_failed")
 
@@ -817,7 +818,7 @@ class ModDiagnosticsDialog(DynamicDialog):
         self._preflight_report = None
         self._refresh_conflict_summary()
         self._export_preflight_btn.setEnabled(False)
-        self._preflight_progress.setValue(0)
+        UIAnimator.progress_to(self._preflight_progress, 0, self._app_state)
         self._preflight_steps_tree.clear()
         self._preflight_resources_tree.clear()
         self._preflight_files_tree.clear()

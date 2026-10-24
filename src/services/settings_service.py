@@ -396,6 +396,12 @@ class SettingsManager(QObject):
     def on_set_automatic_mod_updates_scope(self, scope: str):
         self._toggle_setting("automatic_mod_updates_scope", scope, None)
 
+    def on_set_mod_versions_export_mode(self, mode: str):
+        self._toggle_setting("mod_versions_export_mode", mode, None)
+
+    def on_set_mod_versions_import_mode(self, mode: str):
+        self._toggle_setting("mod_versions_import_mode", mode, None)
+
     def on_toggle_merge_properties(self, enabled: bool):
         self._toggle_setting("merge_properties", enabled, None)
 

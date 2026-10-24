@@ -960,9 +960,16 @@ class ModDetailsOverlay(QWidget):
             *(
                 (
                     ("ui.g3m_compat_label", tr("ui.g3m_compat_details")),
+<<<<<<< HEAD
                     ("ui.g3m_note_label", GameBananaAPI.g3m_confirmed[mod_id]),
                 )
                 if (mod_id := get_mod_id(self.mod_data)) in GameBananaAPI.g3m_confirmed
+=======
+                    ("ui.game_version_label", entry.game_version),
+                    ("ui.g3m_note_label", entry.note),
+                )
+                if (entry := GameBananaAPI.g3m_confirmed.get(get_mod_id(self.mod_data) or ""))
+>>>>>>> upstream/main
                 else ()
             ),
         ):

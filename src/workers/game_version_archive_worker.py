@@ -224,6 +224,9 @@ class CreatePatchedVersionWorker(ManagedQThread):
                     40 + int(done * 40 / max(total, 1)),
                 ),
                 is_cancelled=self.isInterruptionRequested,
+                step_progress=lambda overall, _done, _count, _operation, _percent: _safe_emit(
+                    self.__class__.__name__, self.progress, 40 + int(overall * 40)
+                ),
             )
             if skipped:
                 patching_error = tr(

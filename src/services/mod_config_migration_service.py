@@ -157,7 +157,7 @@ def migrate_managed_mods(mods_dir: str | Path) -> ModConfigMigrationReport:
             try:
                 if _rewrite_snapshot(snapshot_path):
                     snapshots.append(snapshot_path)
-            except (OSError, ValueError) as error:
+            except Exception as error:  # a corrupt snapshot (zip, tar, 7z) must not stop startup
                 issues.append(ModConfigMigrationIssue(snapshot_path, str(error)))
 
     return ModConfigMigrationReport(tuple(configs), tuple(snapshots), tuple(issues))

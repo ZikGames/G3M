@@ -401,7 +401,7 @@ def test_run_app_installs_process_exit_logging(monkeypatch):
     assert registered
 
 
-def test_run_app_creates_qapplication_before_user_data_migration(monkeypatch):
+def test_run_app_creates_qapplication_before_user_data_migration(monkeypatch, tmp_path):
     from app import startup as startup_module
 
     monkeypatch.setattr(
@@ -420,7 +420,7 @@ def test_run_app_creates_qapplication_before_user_data_migration(monkeypatch):
     monkeypatch.setattr(
         startup_module,
         "resolve_user_data_root_with_migration",
-        lambda: call_order.append("resolve") or "C:/Users/Test/AppData/Local/G3M",
+        lambda: call_order.append("resolve") or str(tmp_path),
     )
     monkeypatch.setattr(
         startup_module, "configure_logging", lambda *_args: "g3m.log"
@@ -458,6 +458,7 @@ def test_run_app_creates_qapplication_before_user_data_migration(monkeypatch):
 
 def test_run_app_legacy_user_data_migration_path_runs_after_qapplication_setup(
     monkeypatch,
+    tmp_path,
 ):
     from app import startup as startup_module
 
@@ -477,7 +478,7 @@ def test_run_app_legacy_user_data_migration_path_runs_after_qapplication_setup(
 
     def _resolve_user_root():
         call_order.append("resolve")
-        return "C:/Users/Test/AppData/Local/G3M"
+        return str(tmp_path)
 
     monkeypatch.setattr(
         startup_module,

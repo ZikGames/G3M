@@ -31,3 +31,14 @@ def test_fetch_mods_worker_suppresses_emit_failure_after_error(caplog):
 
     assert "FetchModsThread: Error in run" in caplog.text
     assert "FetchModsThread: failed to emit" in caplog.text
+
+
+def test_refresh_keeps_installed_mods_whatever_their_id_and_drops_browser_cards():
+    mods = [SimpleNamespace(id="dojo_plus"), SimpleNamespace(id="local_pack"), SimpleNamespace(id="gb_mod_1")]
+    context = SimpleNamespace(
+        app_state=SimpleNamespace(local_config={}, all_mods=mods), settings_service=None
+    )
+
+    kept = FetchModsThread(context)._get_local_mods()
+
+    assert [mod.id for mod in kept] == ["dojo_plus", "local_pack"]

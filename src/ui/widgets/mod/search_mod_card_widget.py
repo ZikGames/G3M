@@ -25,7 +25,7 @@ from ui.common.styling import (
     get_theme_color,
     load_mod_icon_universal,
 )
-from utils.mod.utils import get_mod_id
+from utils.mod.utils import get_mod_id, is_gamebanana_id
 from utils.path_utils import colored_icon
 
 from .mod_card_widget import ModCardWidget
@@ -272,7 +272,7 @@ class SearchModCardWidget(ModCardWidget):
 
     def _get_description_text(self):
         key = get_mod_id(self.mod_data)
-        if key and key.startswith("gb_"):
+        if is_gamebanana_id(key):
             return ""
         description = getattr(self.mod_data, "description", "") or ""
         if len(description) > 180:
@@ -500,7 +500,7 @@ class SearchModCardWidget(ModCardWidget):
     def _update_actions_visibility(self):
         if hasattr(self, "expanded_widget"):
             should_show = bool(self.is_selected)
-            if self.expanded_widget.isVisible() != should_show:
+            if self.expanded_widget.isVisibleTo(self) != should_show:  # isVisible() is false while the whole tab is hidden
                 self.expanded_widget.setVisible(should_show)
                 self._refresh_card_geometry(invalidate_parent=True, force=True)
 

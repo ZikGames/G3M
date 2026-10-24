@@ -483,8 +483,6 @@ class LibraryTabBuilder(QObject):
         layout.addWidget(sort_combo, 0, align_vcenter)
         layout.addWidget(sort_btn, 0, align_vcenter)
         layout.addSpacing(20)
-        tags_lbl = QLabel(tr("ui.tags_label"))
-        layout.addWidget(tags_lbl, 0, align_vcenter)
         tags = create_tag_checkboxes(
             self.app_state,
             (
@@ -506,7 +504,6 @@ class LibraryTabBuilder(QObject):
             {
                 "library_sort_combo": sort_combo,
                 "library_sort_order_btn": sort_btn,
-                "library_tags_label": tags_lbl,
                 "library_tag_widgets": list(tags.values()),
             }
         )
@@ -685,9 +682,6 @@ class LibraryTabBuilder(QObject):
                 self._update_profile_settings_button_style(
                     self.widgets["profile_settings_button"], game_combo, colors
                 )
-        tag_lbl = self.widgets.get("library_tags_label")
-        if tag_lbl:
-            tag_lbl.setStyleSheet(f"color: {colors['main_text']};")
         for label_key in ("library_profile_label", "library_game_label"):
             label = self.widgets.get(label_key)
             if label:

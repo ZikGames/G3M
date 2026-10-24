@@ -366,6 +366,10 @@ def setup_settings_tab(w):
             "automatic_mod_updates_checkbox",
             "automatic_mod_updates_replace_current_checkbox",
             "automatic_mod_updates_scope_combo",
+            "mod_versions_export_mode_label",
+            "mod_versions_export_mode_combo",
+            "mod_versions_import_mode_label",
+            "mod_versions_import_mode_combo",
             "ui_scale_label",
             "ui_scale_spinbox",
             "border_radius_label",
@@ -856,6 +860,24 @@ def setup_settings_tab(w):
             str(w.automatic_mod_updates_scope_combo.currentData() or "profile")
         )
     )
+    for mode_combo, config_key, on_change in (
+        (
+            w.mod_versions_export_mode_combo,
+            "mod_versions_export_mode",
+            w.settings_service.on_set_mod_versions_export_mode,
+        ),
+        (
+            w.mod_versions_import_mode_combo,
+            "mod_versions_import_mode",
+            w.settings_service.on_set_mod_versions_import_mode,
+        ),
+    ):
+        mode_combo.setCurrentIndex(
+            max(mode_combo.findData(w.app_state.local_config.get(config_key, "ask")), 0)
+        )
+        mode_combo.currentIndexChanged.connect(
+            lambda _index, combo=mode_combo, apply=on_change: apply(str(combo.currentData()))
+        )
     w.show_reset_buttons_checkbox.setChecked(
         w.app_state.local_config.get("show_reset_buttons", False)
     )

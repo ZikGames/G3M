@@ -34,7 +34,7 @@ from ui.common.dialog_theme import (
     get_dialog_text_color,
     get_dialog_theme_values,
 )
-from ui.utils.ui_utils import format_size
+from ui.utils.ui_utils import UIAnimator, format_size
 from utils.path_utils import colored_icon
 
 logger = logging.getLogger(__name__)
@@ -163,7 +163,7 @@ class _VersionRecordWidget(QFrame):
         self._delete_btn.setVisible(not busy)
 
     def set_progress(self, value: int):
-        self._progress_bar.setValue(value)
+        UIAnimator.progress_to(self._progress_bar, value, self._app_state)
 
     def _on_cancel(self):
         self._manager.cancel_operation(self._record.archive_path)

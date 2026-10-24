@@ -767,6 +767,8 @@ class LibraryDisplayController(QObject):
             controller = getattr(self.app, "mod_import_export_controller", None)
             if not controller:
                 return
+            if (versions := controller.choose_export_versions(mod_data)) is None:
+                return
             mod_name = getattr(mod_data, "name", "mod") or "mod"
             safe_name = "".join(
                 c if c.isalnum() or c in " _-" else "_" for c in mod_name
@@ -778,7 +780,7 @@ class LibraryDisplayController(QObject):
                 "Zip (*.zip)",
             )
             if path:
-                controller.export_mod_to_path(mod_data, path)
+                controller.export_mod_to_path(mod_data, path, versions)
         except Exception as e:
             logger.error(f"Failed to export mod: {e}", exc_info=True)
 

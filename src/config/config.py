@@ -172,8 +172,6 @@ WIDGET_LOCALIZATIONS = [
     ("discord_button", "setToolTip", "buttons.discord"),
     ("community_button", "setText", "ui.community_button"),
     ("shortcut_button", "setText", "buttons.shortcut"),
-    ("tags_label", "setText", "ui.tags_label"),
-    ("tags_label", "setToolTip", "tooltips.filter_by_tag"),
     ("show_nsfw_checkbox", "setText", "ui.show_nsfw"),
     ("show_nsfw_checkbox", "setToolTip", "tooltips.show_nsfw"),
     ("tag_textedit", "setText", "tags.textedit"),
@@ -313,8 +311,6 @@ WIDGET_LOCALIZATIONS = [
     ("priority_button", "setToolTip", "tooltips.priority_steps"),
     ("create_modpack_button", "setText", "ui.create_modpack_button"),
     ("create_modpack_button", "setToolTip", "tooltips.create_modpack"),
-    ("library_tags_label", "setText", "ui.tags_label"),
-    ("library_tags_label", "setToolTip", "tooltips.filter_by_tag"),
     ("library_tag_textedit", "setText", "tags.textedit"),
     ("library_tag_customization", "setText", "tags.customization"),
     ("library_tag_gameplay", "setText", "tags.gameplay"),
@@ -351,8 +347,27 @@ WIDGET_LOCALIZATIONS = [
         "setText",
         "downloads.settings_save_local_imports",
     ),
+    ("mod_versions_export_mode_label", "setText", "mod_versions.settings_export"),
+    (
+        "mod_versions_export_mode_combo",
+        "setToolTip",
+        "mod_versions.settings_export_tooltip",
+    ),
+    ("mod_versions_import_mode_label", "setText", "mod_versions.settings_import"),
+    (
+        "mod_versions_import_mode_combo",
+        "setToolTip",
+        "mod_versions.settings_import_tooltip",
+    ),
+]
+_MOD_VERSION_MODE_KEYS = [
+    "mod_versions.mode_ask",
+    "mod_versions.mode_active",
+    "mod_versions.mode_all",
 ]
 COMBO_LOCALIZATIONS = {
+    "mod_versions_export_mode_combo": _MOD_VERSION_MODE_KEYS,
+    "mod_versions_import_mode_combo": _MOD_VERSION_MODE_KEYS,
     "sort_combo": [
         "ui.sort_by_relevance",
         "ui.sort_by_creation_date",

@@ -24,6 +24,7 @@ from services.migration_service import (
     migrate_legacy_profile_mods,
     migrate_profile_settings,
 )
+from utils.mod.config import write_mod_config
 from utils.mod.scan_utils import scan_mods_directory
 from utils.path_utils import (
     get_user_mods_dir,
@@ -336,7 +337,7 @@ class ProfileService(QObject):
         if not profile_dir.exists():
             return False
         if Path(target_path).resolve().is_relative_to(profile_dir.resolve()):
-            logger.error("Profile export path is inside the source profile folder")
+            logger.error(f"Profile export path {target_path!r} is inside the source profile folder {str(profile_dir)!r}")
             return False
         if name == self._active_name:
             self.save_active()
@@ -433,6 +434,47 @@ class ProfileService(QObject):
                 if any(key == prefix or key.startswith(f"{prefix}_") for prefix in prefixes)
             ]:
                 del self.app_state.local_config[key]
+
+    def rename_game_references(self, old_id: str, new_id: str) -> None:
+        """Move settings, profile choices and installed mods over to a renamed custom game."""
+
+        def move(data: dict[str, Any]) -> bool:
+            changed = False
+            for prefix in ("used_mods_", "mod_steps_", "custom_game_path_", "custom_game_data_", "custom_game_exec_"):
+                if f"{prefix}{old_id}" in data:
+                    value = data.pop(f"{prefix}{old_id}")
+                    if isinstance(value, dict):  # a custom game's only tab is named after the game
+                        value = {new_id if key == old_id else key: item for key, item in value.items()}
+                    data[f"{prefix}{new_id}"] = value
+                    changed = True
+            for key in ("selected_game_type", "direct_launch_chapter"):  # a custom game's tab is named after it
+                if data.get(key) == old_id:
+                    data[key] = new_id
+                    changed = True
+            return changed
+
+        for name in self.list_profiles():
+            data = self._read_profile(name)
+            if move(data):
+                self._write_profile(name, data)
+            self._move_mods_to_game(self._profile_dir(name), old_id, new_id)
+        move(self.app_state.local_config)
+        self.write_local_config()
+
+    @staticmethod
+    def _move_mods_to_game(profile_dir: Path, old_id: str, new_id: str) -> None:
+        """Rewrite ``game`` in the mod configs of one profile; files that do not mention the old ID are only read."""
+        needle = f'"{old_id}"'.encode()
+        for path in [*profile_dir.glob(f"*/{MOD_CONFIG_FILENAME}"), *profile_dir.glob(f"*/*/{MOD_CONFIG_FILENAME}")]:
+            try:
+                raw = path.read_bytes()
+                if needle not in raw:
+                    continue
+                config = json.loads(raw)
+                if config.get("game") == old_id:
+                    write_mod_config(path, {**config, "game": new_id})
+            except Exception as error:
+                logger.warning("ProfileService: could not move %s to game %s: %s", path.parent, new_id, error)
 
     def _next_available_name(self, name: str) -> str:
         base = safe_profile_name(name)

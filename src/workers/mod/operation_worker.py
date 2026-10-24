@@ -48,8 +48,38 @@ def _operation_status_key(operation_type: str) -> str:
         "extract": "operation_extracting",
         "soft-extract": "operation_soft_extracting",
         "hard-extract": "operation_hard_extracting",
-        "info": "operation_inspecting",
     }.get(operation_type, "operation_processing")
+
+
+def describe_step(
+    operations: tuple[PlannedModOperation, ...],
+    operation: PlannedModOperation,
+    current: int,
+    total: int,
+    percent: int = 0,
+) -> str:
+    """The status line for one step, written the same while it runs and once it is done."""
+    target = operation.target or operation.source
+    merged = ModOperationExecutor.merge_operations(operations, operation)
+    if merged:
+        message = tr(
+            "status.operation_merging",
+            count=len(merged),
+            patch_types=", ".join(dict.fromkeys(_patch_format(item.source) for item in merged)),
+            target=_display_path(target),
+            current=current,
+            total=total,
+        )
+    else:
+        message = tr(
+            f"status.{_operation_status_key(operation.type)}",
+            patch_type=_patch_format(operation.source) if operation.type == "patch" else "",
+            from_file=_display_path(operation.source),
+            target=_display_path(target),
+            current=current,
+            total=total,
+        )
+    return tr("status.operation_percent", message=message, percent=percent) if percent else message
 
 
 def _patch_format(value: Path | ArchiveVirtualPath) -> str:
@@ -92,58 +122,65 @@ class ModOperationThread(ManagedQThread):
     def _is_cancelled(self) -> bool:
         return self._cancelled or self.isInterruptionRequested()
 
+    def _on_step_progress(
+        self,
+        overall: float,
+        completed: int,
+        total: int,
+        operation: PlannedModOperation,
+        percent: int,
+    ) -> None:
+        """Smooth progress inside one step, from the percent the patch backend reports."""
+        weight = len(ModOperationExecutor.merge_operations(self.plan.operations, operation)) or 1
+        message = describe_step(
+            self.plan.operations, operation, completed + weight, total, percent
+        )
+        if percent in (0, 25, 50, 75, 100):
+            logger.info(
+                "Mod operation step %s/%s: %s%% (index=%s type=%s)",
+                completed + weight,
+                total,
+                percent,
+                operation.index,
+                operation.type,
+            )
+        _safe_emit(
+            self.__class__.__name__,
+            self.progress_update,
+            int(overall * 100),
+            message,
+        )
+
     def _on_progress(
         self, completed: int, total: int, operation: PlannedModOperation
     ) -> None:
-        progress = int(completed * 100 / max(total, 1))
-        target = operation.target or operation.source
         merged = ModOperationExecutor.merge_operations(self.plan.operations, operation)
         if merged:
-            patch_types = ", ".join(
-                dict.fromkeys(_patch_format(item.source) for item in merged)
-            )
             logger.info(
                 "Merged mod patches: indexes=%s count=%s patch_types=%s progress=%s/%s target=%s",
                 [item.index for item in merged],
                 len(merged),
-                patch_types,
+                ", ".join(dict.fromkeys(_patch_format(item.source) for item in merged)),
                 completed,
                 total,
                 _log_path(operation.target),
             )
-            message = tr(
-                "status.operation_merging",
-                count=len(merged),
-                patch_types=patch_types,
-                target=_display_path(target),
-                current=completed,
-                total=total,
-            )
         else:
-            patch_type = _patch_format(operation.source) if operation.type == "patch" else ""
             logger.info(
                 "Mod operation completed: index=%s type=%s patch_type=%s progress=%s/%s source=%s target=%s",
                 operation.index,
                 operation.type,
-                patch_type,
+                _patch_format(operation.source) if operation.type == "patch" else "",
                 completed,
                 total,
                 _log_path(operation.source),
                 _log_path(operation.target),
             )
-            message = tr(
-                f"status.{_operation_status_key(operation.type)}",
-                patch_type=patch_type,
-                from_file=_display_path(operation.source),
-                target=_display_path(target),
-                current=completed,
-                total=total,
-            )
         _safe_emit(
             self.__class__.__name__,
             self.progress_update,
-            progress,
-            message,
+            int(completed * 100 / max(total, 1)),
+            describe_step(self.plan.operations, operation, completed, total),
         )
 
     def run(self) -> None:
@@ -158,6 +195,7 @@ class ModOperationThread(ManagedQThread):
                 self.plan,
                 progress=self._on_progress,
                 is_cancelled=self._is_cancelled,
+                step_progress=self._on_step_progress,
             )
             success = not self._is_cancelled()
         except ModOperationCancelledError:

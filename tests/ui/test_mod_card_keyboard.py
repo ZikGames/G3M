@@ -48,3 +48,26 @@ def test_search_card_keyboard_selection_details_and_actions(qtbot):
         qtbot.waitUntil(card.action_button.hasFocus)
         assert card.is_selected
         assert card.action_button.isVisible()
+
+
+def test_search_card_collapses_when_deselected_while_its_tab_is_hidden(qtbot):
+    host = QWidget()
+    vars(host)["app_state"] = SimpleNamespace(local_config={})
+    qtbot.addWidget(host)
+    layout = QVBoxLayout(host)
+    mod = ModInfo(
+        id="hidden_tab_mod", name="Hidden Tab Mod", version="1.0.0", authors=["Author"],
+        description="Description", game_version="", description_url="", downloads=0, game="deltarune",
+    )
+    with patch("ui.widgets.mod.search_mod_card_widget.load_mod_icon_universal"):
+        card = SearchModCardWidget(mod, parent=host)
+        layout.addWidget(card)
+        host.show()
+        card.set_selected(True)
+        assert card.expanded_widget.isVisible()
+
+        host.hide()  # the user switched to the Library
+        card.set_selected(False)
+        host.show()  # and came back
+
+        assert not card.expanded_widget.isVisible()

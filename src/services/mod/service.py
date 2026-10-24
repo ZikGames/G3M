@@ -36,6 +36,7 @@ from utils.mod.scan_utils import (
 from utils.mod.utils import (
     get_mod_id,
     get_mod_name,
+    is_gamebanana_id,
     resolve_mod_icon,
 )
 from utils.process_utils import format_filesystem_error
@@ -285,7 +286,7 @@ class ModManager(QObject):
                     continue
             installed_gamebanana_by_id = {}
             for mod_id, config_data in installed_mods.items():
-                if mod_id and mod_id.startswith("gb_"):
+                if is_gamebanana_id(mod_id):
                     installed_gamebanana_by_id[mod_id] = config_data
 
             def _find_mod_by_id(mod_id):
@@ -303,8 +304,6 @@ class ModManager(QObject):
                 ):
                     existing_mod.icon = local_icon
                     existing_mod.icon_path = local_icon
-                    if hasattr(existing_mod, "update_metadata"):
-                        existing_mod.update_metadata({"icon": local_icon})
 
             def _refresh_local_mod_sections(existing_mod, config_data):
                 existing_mod.sections = self._operation_sections(config_data)
@@ -336,19 +335,13 @@ class ModManager(QObject):
                 if (current_mod_id := get_mod_id(mod))
             }
             for mod_id, config_data in list(installed_mods.items()):
-                if mod_id and isinstance(mod_id, str) and mod_id.startswith("local_"):
-                    continue
-                if mod_id and mod_id.startswith("gb_"):
-                    if mod_id in existing_mod_ids:
-                        existing_mod = _find_mod_by_id(mod_id)
-                        if existing_mod:
-                            _refresh_local_mod(existing_mod, config_data, mod_id)
-                    continue
                 if mod_id in existing_mod_ids:
                     existing_mod = _find_mod_by_id(mod_id)
                     if existing_mod:
                         _refresh_local_mod(existing_mod, config_data, mod_id)
                     continue
+                if is_gamebanana_id(mod_id):
+                    continue  # its card comes from GameBanana
                 try:
                     mod_folder_path = self.get_mod_folder_path(mod_id)
                     icon_path = resolve_mod_icon(config_data, mod_folder_path) or ""
@@ -364,37 +357,6 @@ class ModManager(QObject):
                         exc_info=True,
                     )
             self.app_state.all_mods = list(self.app_state.all_mods)
-            for mod_id, config_data in list(installed_mods.items()):
-                if not (mod_id and isinstance(mod_id, str) and mod_id.startswith("local_")):
-                    continue
-                if mod_id in existing_mod_ids:
-                    existing_mod = _find_mod_by_id(mod_id)
-                    if existing_mod:
-                        _refresh_local_mod(existing_mod, config_data, mod_id)
-                        if hasattr(existing_mod, "update_metadata"):
-                            existing_mod.update_metadata(config_data)
-                    continue
-                try:
-                    mod_info_from_cache = cache.get(mod_id)
-                    mod_folder_path = getattr(
-                        mod_info_from_cache, "folder_path", None
-                    ) or self.get_mod_folder_path(mod_id)
-                    icon_path = resolve_mod_icon(
-                        config_data, mod_folder_path or self.get_mod_folder_path(mod_id)
-                    ) or ""
-                    safe_mod_info = self._build_safe_mod_info(
-                        mod_id,
-                        config_data,
-                        icon_path,
-                        default_name=tr("defaults.local_mod"),
-                        tags=["local"],
-                    )
-                    mod = LocalModInfo(**safe_mod_info)
-                    mod.sections = self._operation_sections(config_data)
-                    self._append_mod_if_valid(mod, mod_id, config_data)
-                except Exception as e:
-                    logger.warning(f"Failed to build LocalModInfo: {e}")
-                    continue
             installed_gb_ids = set(installed_gamebanana_by_id)
             for mod in self.app_state.all_mods:
                 mod_id_attr = get_mod_id(mod)
@@ -857,7 +819,7 @@ class ModManager(QObject):
                     continue
                 entry = metadata.setdefault(mod_id, {})
                 if not isinstance(entry, dict):
-                    logger.warning("add_playtime_hours: invalid mod metadata entry")
+                    logger.warning(f"add_playtime_hours: metadata entry for {mod_id!r} is not an object, skipping it")
                     continue
                 current = self._normalize_playtime_hours(entry.get("playtime_hours", 0))
                 entry["playtime_hours"] = round(current + hours, 4)
@@ -901,7 +863,7 @@ class ModManager(QObject):
                 if value not in (None, "")
             }
         )
-        if not (mod_id and isinstance(mod_id, str) and mod_id.startswith("gb_")):
+        if not is_gamebanana_id(mod_id):
             mod_info.pop(self._BROWSER_ONLY_DATE_FIELD, None)
         if all_mods:
             for mod in all_mods:
@@ -983,9 +945,7 @@ class ModManager(QObject):
             found_mod_ids.add(mod_id)
             mod_meta = mods_metadata.get(mod_id)
             if not mod_meta:
-                is_gamebanana = (
-                    mod_id and isinstance(mod_id, str) and mod_id.startswith("gb_")
-                )
+                is_gamebanana = is_gamebanana_id(mod_id)
                 mods_metadata[mod_id] = {
                     "added_date": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "is_gamebanana": is_gamebanana,

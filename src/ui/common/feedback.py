@@ -185,9 +185,9 @@ class FeedbackManager(QObject):
         return "cancel"
 
     def ask_operation_recovery_conflict(self, message: str, details: str = "") -> str:
-        """Let the user resolve external edits detected during session recovery."""
+        """Let the user force the restore or keep external edits; closing the box keeps them."""
         if not self._should_show_dialog():
-            return "cancel"
+            return "keep"
         msg_box = QMessageBox(self.parent_widget)
         msg_box.translator = self._tr
         msg_box.setIcon(QMessageBox.Icon.Warning)
@@ -198,15 +198,11 @@ class FeedbackManager(QObject):
         msg_box.setTextFormat(Qt.TextFormat.RichText)
         msg_box.setText(text)
         force_button = msg_box.add_localized_button("dialogs.patching_warning.force_restore", QMessageBox.ButtonRole.DestructiveRole)
-        keep_button = msg_box.add_localized_button("dialogs.patching_warning.keep_external_changes", QMessageBox.ButtonRole.ActionRole)
-        msg_box.add_localized_button("dialogs.patching_warning.cancel_button", QMessageBox.ButtonRole.RejectRole)
+        keep_button = msg_box.add_localized_button("dialogs.patching_warning.keep_external_changes", QMessageBox.ButtonRole.RejectRole)
         msg_box.setDefaultButton(keep_button)
+        msg_box.setEscapeButton(keep_button)
         msg_box.exec()
-        if msg_box.clickedButton() is force_button:
-            return "force"
-        if msg_box.clickedButton() is keep_button:
-            return "keep"
-        return "cancel"
+        return "force" if msg_box.clickedButton() is force_button else "keep"
 
     def ask_dependency_resolution(
         self,

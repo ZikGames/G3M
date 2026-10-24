@@ -71,6 +71,8 @@ DEFAULT_APP_SETTINGS = {
     "automatic_mod_updates": False,
     "automatic_mod_updates_replace_current": False,
     "automatic_mod_updates_scope": "profile",
+    "mod_versions_export_mode": "ask",
+    "mod_versions_import_mode": "ask",
     "onboarding_completed": False,
     "launch_mode": "launch",
 }

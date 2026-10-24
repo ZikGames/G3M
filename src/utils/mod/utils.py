@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Mapping
+from typing import TypeGuard
 from urllib.parse import urlparse
 
 from utils.mod.config import mod_local_relative_path
@@ -43,16 +44,15 @@ def get_mod_name(mod_data, default="Unknown"):
     return default if mod_data is None else _get_mod_field(mod_data, "name", default)
 
 
+def is_gamebanana_id(mod_id: object) -> TypeGuard[str]:
+    """Whether a mod id names a GameBanana mod or WIP (``gb_mod_<n>`` or ``gb_wip_<n>``)."""
+    return isinstance(mod_id, str) and mod_id.startswith(("gb_mod_", "gb_wip_"))
+
+
 def get_gamebanana_id(mod_data):
     """Get GameBanana id if mod is from GameBanana."""
     mod_id = _get_mod_field(mod_data, "id")
-    return (
-        mod_id
-        if mod_id
-        and isinstance(mod_id, str)
-        and (mod_id.startswith("gb_mod_") or mod_id.startswith("gb_wip_"))
-        else None
-    )
+    return mod_id if is_gamebanana_id(mod_id) else None
 
 
 def parse_gamebanana_mod_id(mod_id):

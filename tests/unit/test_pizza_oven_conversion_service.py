@@ -46,8 +46,14 @@ class FakePizzaOvenG3MTool:
         return (1, "", "unsupported patch target")
 
     def patch_create(
-        self, original_file: str, modified_file: str, output_path: str
+        self,
+        original_file: str,
+        modified_file: str,
+        output_path: str,
+        progress_callback=None,
     ) -> tuple[int, str, str]:
+        if progress_callback:
+            progress_callback(100, "done")
         Path(output_path).write_bytes(self._PATCH_PREFIX + Path(modified_file).read_bytes())
         return (0, "", "")
 
@@ -566,3 +572,23 @@ def test_converted_mod_applies_expected_files_to_clean_game(tmp_path):
     assert (apply_game_dir / "lang" / "graphics" / "english.png").read_bytes() == b"PNG_GRAPHICS"
     assert (apply_game_dir / "lang" / "fonts" / "tutorial_english.png").read_bytes() == b"PNG_FONT"
     assert (apply_game_dir / "sound" / "Desktop" / "music" / "custom.bank").read_bytes() == b"CUSTOM_BANK"
+
+
+def test_conversion_reports_tool_percent_inside_its_stages(tmp_path):
+    source = tmp_path / "po_mod"
+    game = tmp_path / "PizzaTower"
+    mods = tmp_path / "mods"
+    _write_text(source / "mod.json", '{"name": "Progress Mod"}')
+    _write_bytes(source / "data.xdelta", b"data patch")
+    _create_fake_pizzatower_game(game)
+    mods.mkdir()
+    reports = []
+
+    PizzaOvenConversionService(FakePizzaOvenG3MTool()).convert(
+        str(source), str(mods), str(game), progress_callback=lambda value, message: reports.append((value, message))
+    )
+
+    values = [value for value, _message in reports]
+    assert values == sorted(values)
+    assert values[-1] == 100
+    assert any("%" in message for _value, message in reports)

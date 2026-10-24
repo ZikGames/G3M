@@ -94,7 +94,7 @@ class DynamicMessageBox(_DialogUpdates, QMessageBox):
     """A message box with the same update hooks as other dialogs."""
 
     def add_localized_button(self, key: str, role: QMessageBox.ButtonRole) -> QPushButton:
-        button = cast(QPushButton, self.addButton("", role))
+        button = cast(QPushButton, self.addButton(self.translator(key), role))
         return self.localize_text(button, key)
 
 

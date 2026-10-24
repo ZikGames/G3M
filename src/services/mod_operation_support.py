@@ -255,13 +255,20 @@ def confirm_operation_plan(
     )
 
 
+def _progress_arguments(progress: Callable[[int], None] | None) -> dict[str, Any]:
+    """Keyword for G3MTool calls: its (percent, label) reports, passed only when someone listens."""
+    return {"progress_callback": lambda percent, _label: progress(percent)} if progress else {}
+
+
 def create_g3mtool_patcher(
     app_state=None, *, is_cancelled: Callable[[], bool] | None = None
-) -> Callable[[Path, Path, Path], bool]:
+) -> Callable[..., bool]:
     """Create one lazy G3MTool patch adapter with consistent failures."""
     tool = None
 
-    def apply_patch(target: Path, patch: Path, output: Path) -> bool:
+    def apply_patch(
+        target: Path, patch: Path, output: Path, progress: Callable[[int], None] | None = None
+    ) -> bool:
         nonlocal tool
         if is_cancelled is not None and is_cancelled():
             return False
@@ -272,7 +279,9 @@ def create_g3mtool_patcher(
         if not tool.is_available():
             raise ModOperationExecutionError(tool.get_unavailable_reason())
         apply = tool.xpatch_apply if patch.suffix.casefold() in {".xdelta", ".vcdiff"} else tool.apply_patch
-        returncode, stdout, stderr = apply(str(target), str(patch), str(output))
+        returncode, stdout, stderr = apply(
+            str(target), str(patch), str(output), **_progress_arguments(progress)
+        )
         if returncode:
             raise ModOperationExecutionError(
                 f"patch backend failed: {bounded_output_preview(stderr or stdout or str(returncode))}"
@@ -284,11 +293,16 @@ def create_g3mtool_patcher(
 
 def create_g3mtool_merger(
     app_state=None, *, is_cancelled: Callable[[], bool] | None = None
-) -> Callable[[Path, list[Path], Path], bool]:
+) -> Callable[..., bool]:
     """Create the G3MTool merge backend used for one simultaneous profile step."""
     tool = None
 
-    def merge_patches(target: Path, patches: list[Path], output: Path) -> bool:
+    def merge_patches(
+        target: Path,
+        patches: list[Path],
+        output: Path,
+        progress: Callable[[int], None] | None = None,
+    ) -> bool:
         nonlocal tool
         if is_cancelled is not None and is_cancelled():
             return False
@@ -307,6 +321,7 @@ def create_g3mtool_merger(
             merge_properties=(
                 bool(config.get("merge_properties")) if isinstance(config, dict) else False
             ),
+            **_progress_arguments(progress),
         )
         if returncode:
             raise ModOperationExecutionError(

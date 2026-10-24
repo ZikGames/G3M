@@ -262,6 +262,9 @@ class WindowComposition:
         window.downloads_manager.record_updated.connect(
             lambda record: on_downloads_record_updated(window, record)
         )
+        window.game_registry_service.game_renamed.connect(
+            lambda *_: window.mod_service.invalidate_mods_cache()
+        )
         window.game_registry_service.games_changed.connect(
             lambda: on_games_registry_changed(window)
         )

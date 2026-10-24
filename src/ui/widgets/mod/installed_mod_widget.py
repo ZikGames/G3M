@@ -2,11 +2,13 @@
 
 import logging
 import os
+import time
 from typing import cast
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QDrag, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -16,7 +18,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from presentation.drag_drop import LazyFileExportMimeData
+from config.config import UI_COLORS
+from presentation.drag_drop import LazyFileExportMimeData, file_drag_pixmap
 from services.localization_service import tr
 from ui.common.styling import (
     apply_stylesheet_if_changed,
@@ -27,7 +30,7 @@ from ui.common.styling import (
 )
 from ui.utils.ui_utils import UIAnimator
 from utils.mod.config import MOD_CONFIG_VERSION
-from utils.mod.utils import get_mod_id
+from utils.mod.utils import get_mod_id, is_gamebanana_id
 from utils.path_utils import colored_icon, resource_path
 
 from .base_mod_widget import BaseModWidget
@@ -40,6 +43,7 @@ class InstalledModWidget(BaseModWidget):
     use_requested = pyqtSignal(object)
     _gb_status_pixmaps = {}
     _checkmark_icons = {}
+    _CHOICE_LIFETIME = 60.0
 
     def _should_run_entry_animation(self) -> bool:
         parent_app = getattr(self, "parent_app", None)
@@ -63,6 +67,7 @@ class InstalledModWidget(BaseModWidget):
         self.hide()
         self._drag_start_pos = None
         self._drag_in_progress = False
+        self._chosen_versions: tuple[frozenset[str], float] | None = None
         self._is_broken_cache = None
         self._broken_reason = ""
         self._operation_issue: tuple[str, str] | None = None
@@ -336,10 +341,7 @@ class InstalledModWidget(BaseModWidget):
             return broken(str(error))
 
     def _is_gamebanana_linked(self) -> bool:
-        key = get_mod_id(self.mod_data)
-        if not key:
-            return False
-        return isinstance(key, str) and key.startswith("gb_")
+        return is_gamebanana_id(get_mod_id(self.mod_data))
 
     def _update_button_from_status(self):
         if not self.use_button:
@@ -433,7 +435,6 @@ class InstalledModWidget(BaseModWidget):
 
     def mousePressEvent(self, a0):
         event = cast(QMouseEvent, a0)
-        event = cast(QMouseEvent, a0)
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.pos()
         super().mousePressEvent(event)
@@ -457,14 +458,22 @@ class InstalledModWidget(BaseModWidget):
                 return
             self._drag_in_progress = True
             self._drag_start_pos = None
+            versions = self._take_chosen_versions(controller)
+            if versions is None:
+                self._drag_in_progress = False
+                return
             drag = QDrag(self)
             mod_name = getattr(self.mod_data, "name", "mod") or "mod"
+            filename = f"{mod_name}.zip"
             mime = LazyFileExportMimeData(
-                lambda path: controller.export_mod_to_path(self.mod_data, path),
-                f"{mod_name}.zip",
+                lambda path: controller.export_mod_to_path(self.mod_data, path, versions),
+                filename,
                 internal_format="application/x-g3m-installed-mod-export",
             )
             drag.setMimeData(mime)
+            preview = file_drag_pixmap(filename, self.font())
+            drag.setPixmap(preview)
+            drag.setHotSpot(QPoint(preview.deviceIndependentSize().toSize().width() // 2, 24))
             try:
                 drag.exec(Qt.DropAction.CopyAction)
             finally:
@@ -475,6 +484,25 @@ class InstalledModWidget(BaseModWidget):
             logger.warning(
                 f"InstalledModWidget: drag export failed: {e}", exc_info=True
             )
+
+    def _take_chosen_versions(self, controller) -> frozenset[str] | None:
+        """Saved versions to export with a dragged mod; ``None`` when the drag should not start.
+
+        The choice dialog takes the mouse away from the drag, so an answer given there is kept for
+        the next drag of this card instead.
+        """
+        if (chosen := self._chosen_versions) is not None and time.monotonic() < chosen[1]:
+            self._chosen_versions = None
+            return chosen[0]
+        self._chosen_versions = None
+        if (versions := controller.choose_export_versions(self.mod_data)) is None:
+            return None
+        if QApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            return versions
+        self._chosen_versions = (versions, time.monotonic() + self._CHOICE_LIFETIME)
+        if notify := getattr(self.parent_app, "_update_localized_status", None):
+            notify("mod_versions.choice_drag_again", UI_COLORS["status_info"])
+        return None
 
     def mouseDoubleClickEvent(self, a0):
         event = cast(QMouseEvent, a0)

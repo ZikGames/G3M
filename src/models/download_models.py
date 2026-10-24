@@ -6,6 +6,9 @@ from typing import Any
 
 from utils.time_utils import utc_now_iso
 
+# Use-phase result when the user backs out of a choice, so the file can be installed again.
+USE_DECLINED = "declined"
+
 
 class DownloadStatus(StrEnum):
     """Status of the file download phase."""

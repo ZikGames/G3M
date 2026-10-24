@@ -28,6 +28,7 @@ from ui.common.dialog_theme import (
     get_dialog_theme_values,
 )
 from ui.common.dialog_utils import safe_question
+from ui.utils.ui_utils import UIAnimator
 from utils.mod.utils import parse_gamebanana_mod_url
 from utils.native_integration import open_path_native
 from utils.path_utils import colored_icon
@@ -144,7 +145,11 @@ class _RecordWidget(QFrame):
             self._progress_bar.setRange(0, 0)
         else:
             self._progress_bar.setRange(0, 100)
+<<<<<<< HEAD
             self._progress_bar.setValue(r.progress)
+=======
+            UIAnimator.progress_to(self._progress_bar, r.progress, self._app_state)
+>>>>>>> upstream/main
         if r.error_message and status_key in ("failed", "ready"):
             self._error_label.setText(r.error_message)
             self._error_label.setVisible(True)

@@ -2,6 +2,7 @@
 from typing import cast
 from unittest.mock import Mock
 
+from PyQt6 import sip
 from PyQt6.QtWidgets import (
     QGridLayout,
     QLabel,
@@ -36,6 +37,20 @@ def test_empty_browser_keeps_query_and_updates_loading_message(qtbot, app_state)
     assert app_state.search_text == "unmatched query"
     controller._show_bottom_loading_indicator()
     assert labels[0].text() == tr("ui.loading_placeholder")
+    controller.cleanup()
+
+
+def test_a_queued_refresh_is_dropped_quietly_once_the_layout_is_gone(qtbot, app_state, caplog):
+    host = QWidget()
+    qtbot.addWidget(host)
+    vars(host)["mod_list_widget"] = QWidget(host)
+    vars(host)["mod_list_layout"] = QGridLayout(vars(host)["mod_list_widget"])
+    controller = SearchDisplayController(app_state, Mock(), Mock(), Mock(), host)
+    sip.delete(vars(host)["mod_list_layout"])
+
+    controller._do_update_display()
+
+    assert not caplog.records
     controller.cleanup()
 
 

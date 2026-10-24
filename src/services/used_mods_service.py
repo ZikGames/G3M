@@ -537,16 +537,11 @@ class UsedModsManager(QObject):
                 )
         return None
 
-    def _is_local_mod(self, mod_data):
-        mod_id = get_mod_id(mod_data)
-        return mod_id and isinstance(mod_id, str) and mod_id.startswith("local_")
-
     def check_used_mods_need_updates(self) -> bool:
         return any(
             self.mod_service.mod_has_update_available(m)
             for mods in self.used_mods.values()
             for m in mods
-            if not self._is_local_mod(m)
         )
 
     def collect_mods_needing_update(self) -> list:
@@ -563,8 +558,7 @@ class UsedModsManager(QObject):
         for cid in active_ids:
             for mod in self.used_mods.get(cid, []):
                 if (
-                    not self._is_local_mod(mod)
-                    and self.mod_service.mod_has_update_available(mod)
+                    self.mod_service.mod_has_update_available(mod)
                     and mod not in mods_to_update
                 ):
                     mods_to_update.append(mod)

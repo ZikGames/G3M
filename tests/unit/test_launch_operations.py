@@ -605,6 +605,39 @@ def test_launch_can_keep_external_changes_when_recovery_conflicts(qapp, tmp_path
     assert target.read_text(encoding="utf-8") == "external"
 
 
+def test_declining_the_forced_restore_keeps_files_and_unblocks_the_next_launch(qapp, tmp_path):
+    mod_root = tmp_path / "mod"
+    game_root = tmp_path / "game"
+    mod_root.mkdir()
+    game_root.mkdir()
+    (mod_root / "replacement.txt").write_text("replacement", encoding="utf-8")
+    target = game_root / "target.txt"
+    target.write_text("original", encoding="utf-8")
+    app_state = _app_state(tmp_path, game_root)
+    plan = build_mod_operation_plan(
+        _config(
+            [{"source": "${mod_path}/replacement.txt", "target": "${game_path}/target.txt", "type": "overwrite"}]
+        ),
+        ModPathContext.create(
+            mod_path=mod_root,
+            game_path=game_root,
+            game_data_path=None,
+            user_path=tmp_path / "user",
+        ),
+    )
+    session = tmp_path / "config" / "operation-session"
+    ModOperationExecutor(session).execute(plan)
+    target.write_text("external", encoding="utf-8")
+    feedback = Mock()
+    feedback.ask_operation_recovery_conflict.return_value = "cancel"
+    launcher = GameLauncher(app_state, feedback, Mock())
+
+    assert launcher._recover_operation_session() is True
+
+    assert target.read_text(encoding="utf-8") == "external"
+    ModOperationExecutor(session).execute(plan)
+
+
 def test_launch_checkpoints_plugin_changes_before_starting_game(qtbot, tmp_path):
     mod_root = tmp_path / "mod"
     game_root = tmp_path / "game"

@@ -637,7 +637,7 @@ class AppWindow(QWidget):
         self.app_state.progress_bar_visible_changed.connect(
             self.progress_bar.setVisible
         )
-        self.app_state.progress_bar_value_changed.connect(self.progress_bar.setValue)
+        self.app_state.progress_bar_value_changed.connect(self._glide_progress)
         self.bottom_frame.addWidget(self.status_label)
         self.bottom_frame.addWidget(self.progress_bar)
         self.bottom_frame.addLayout(self.action_frame)
@@ -909,7 +909,7 @@ class AppWindow(QWidget):
         obj, ev = cast(Any, a0), cast(Any, a1)
         ev_type = ev.type()
         tooltip_timer = getattr(self, "_tooltip_timer", None)
-        tooltip_widget = getattr(self, "_tooltip_widget", None)
+        tooltip_widget = self._live_tooltip_widget()
         last_tooltip_target: Any = getattr(self, "_last_tooltip_target", None)
         if ev_type == QEvent.Type.MouseButtonDblClick:
             chapter_id = getattr(obj, "_chapter_id", None)
@@ -1044,9 +1044,7 @@ class AppWindow(QWidget):
         if not last_tooltip_target or not last_tooltip_text:
             return
 
-        tooltip_widget = cast(
-            AnimatedToolTip | None, getattr(self, "_tooltip_widget", None)
-        )
+        tooltip_widget = self._live_tooltip_widget()
         if tooltip_widget is None:
             tooltip_widget = AnimatedToolTip(last_tooltip_text, None)
             tooltip_widget._preserve_fade_effect = True
@@ -1106,8 +1104,15 @@ class AppWindow(QWidget):
         else:
             UIAnimator.fade_in(tooltip_widget, 150, self.app_state)
 
+    def _live_tooltip_widget(self) -> AnimatedToolTip | None:
+        widget = cast(AnimatedToolTip | None, getattr(self, "_tooltip_widget", None))
+        if widget is not None and sip.isdeleted(widget):
+            self._tooltip_widget = None
+            return None
+        return widget
+
     def _hide_custom_tooltip(self):
-        tooltip_widget = getattr(self, "_tooltip_widget", None)
+        tooltip_widget = self._live_tooltip_widget()
         if (
             tooltip_widget
             and tooltip_widget.isVisible()
@@ -1166,6 +1171,9 @@ class AppWindow(QWidget):
 
     def _on_update_cleanup(self):
         on_update_cleanup(self)
+
+    def _glide_progress(self, value: int) -> None:
+        UIAnimator.progress_to(self.progress_bar, value, self.app_state)
 
     def _on_progress_update(self, value: int):
         on_progress_update(self, value)

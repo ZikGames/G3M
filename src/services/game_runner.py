@@ -398,7 +398,10 @@ def _launch_game(
         launch_target = _get_executable_path(game_mode, local_config, game_path)
 
     if not launch_target:
-        logger.error("No executable found for game launch")
+        logger.error(
+            f"No executable found for {game_mode.game_id} in game folder {game_path!r} "
+            "(set a custom executable in the game settings or check the game path)"
+        )
         return None
 
     system = platform.system()
@@ -595,7 +598,7 @@ def run_shortcut(shortcut_arg: str):
         sys.exit(1)
 
     if not isinstance(shortcut_config, dict):
-        logger.error("Invalid shortcut config")
+        logger.error(f"Invalid shortcut config: expected a JSON object, got {type(shortcut_config).__name__}")
         sys.exit(1)
     game_id = str(shortcut_config.get("game_id") or "")
     is_chapter_mode = bool(shortcut_config.get("chapter_mode", False))
@@ -623,7 +626,7 @@ def run_shortcut(shortcut_arg: str):
     profile_name = shortcut_config.get("active_profile")
     if profile_name is not None:
         if not isinstance(profile_name, str) or safe_profile_name(profile_name) != profile_name:
-            logger.error("Invalid shortcut profile name")
+            logger.error(f"Invalid shortcut profile name {profile_name!r}: it must be a plain profile folder name")
             sys.exit(1)
         local_config["active_profile"] = profile_name
     game_path = game_mode.get_game_path(local_config)

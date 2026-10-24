@@ -11,6 +11,7 @@ import uuid
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from models.download_models import (
+    USE_DECLINED,
     DownloadRecord,
     DownloadStatus,
     SourceKind,
@@ -352,7 +353,7 @@ class DownloadsManager(QObject):
             self._emit_badge()
             return
         if record.target_kind == TargetKind.MOD and not mods_dir:
-            logger.warning("DownloadsManager: mods_dir not set, cannot run Use")
+            logger.warning(f"DownloadsManager: mods_dir is not set, cannot run Use for {record.display_name or record.id}")
             record.use_status = UseStatus.FAILED
             record.error_message = "Application context not ready"
             self._store.update(record)
@@ -389,6 +390,12 @@ class DownloadsManager(QObject):
         worker = self._workers.pop(record_id, None)
         _cleanup_worker(worker)
 
+        if error == USE_DECLINED:
+            record.use_status = UseStatus.READY
+            self._store.update(record)
+            self.record_updated.emit(record)
+            self._emit_badge()
+            return
         if not success and not needs_manual:
             record.use_status = UseStatus.FAILED
             record.error_message = error or "Use failed"

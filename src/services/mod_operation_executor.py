@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import shutil
@@ -23,9 +24,14 @@ from utils.mod.filesystem import DirectoryTraversalError, iter_directory_tree
 from utils.mod.hashing import sha256_path
 from utils.mod.operation_plan import ModOperationPlan, PlannedModOperation
 
-PatchFunction = Callable[[Path, Path, Path], bool | None]
-MergeFunction = Callable[[Path, list[Path], Path], bool | None]
+# (target, patch, output) plus an optional ``progress`` percent callback, passed only when the
+# caller of ``execute`` asked for step progress.
+PatchFunction = Callable[..., bool | None]
+MergeFunction = Callable[..., bool | None]
 ProgressFunction = Callable[[int, int, PlannedModOperation], None]
+# overall fraction 0..1, operations finished before the step, total operations, the step's first
+# operation, percent of the step the patch backend has reported
+StepProgressFunction = Callable[[float, int, int, PlannedModOperation, int], None]
 _MERGEABLE_DATA_SUFFIXES = frozenset({".win", ".ios", ".droid", ".unx"})
 
 
@@ -244,6 +250,7 @@ class ModOperationJournal:
     def retire(self) -> None:
         """Keep external changes and mark this recovery session as resolved."""
         self._write_manifest("retired")
+        shutil.rmtree(self.backups, ignore_errors=True)
 
     def discard(self) -> None:
         """Forget a successfully committed permanent operation and its backups."""
@@ -318,6 +325,16 @@ class ModOperationJournal:
                 os.unlink(temporary_name)
 
 
+def _accepts_progress(backend: Callable[..., object]) -> bool:
+    try:
+        parameters = inspect.signature(backend).parameters
+    except (TypeError, ValueError):
+        return False
+    return "progress" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
+    )
+
+
 class ModOperationExecutor:
     """Apply a validated plan in its visible order and keep a recovery journal."""
 
@@ -332,6 +349,7 @@ class ModOperationExecutor:
         self.patcher = patcher
         self.merger = merger
         self._hard_reset_roots: set[str] = set()
+        self._tool_progress: Callable[[int], None] | None = None
 
     def execute(
         self,
@@ -339,27 +357,35 @@ class ModOperationExecutor:
         *,
         progress: ProgressFunction | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        step_progress: StepProgressFunction | None = None,
     ) -> ModOperationJournal:
         if plan.has_errors:
             raise ModOperationExecutionError("operation plan contains unresolved errors")
         try:
-            total = len(plan.operations)
+            # Info entries only document a mod; they change nothing, so they are no step.
+            total = sum(1 for operation in plan.operations if operation.type != "info")
             completed = 0
             handled: set[int] = set()
             for operation in plan.operations:
-                if id(operation) in handled:
+                if id(operation) in handled or operation.type == "info":
                     continue
                 if is_cancelled is not None and is_cancelled():
                     raise ModOperationCancelledError("operation cancelled")
                 merge_operations = self.merge_operations(plan.operations, operation)
-                if merge_operations:
-                    self._execute_merge(merge_operations)
-                    handled.update(id(item) for item in merge_operations)
-                    completed += len(merge_operations)
-                else:
-                    self._execute_operation(operation)
-                    handled.add(id(operation))
-                    completed += 1
+                weight = len(merge_operations) or 1
+                self._tool_progress = self._step_reporter(
+                    step_progress, completed, total, weight, operation
+                )
+                try:
+                    if merge_operations:
+                        self._execute_merge(merge_operations)
+                        handled.update(id(item) for item in merge_operations)
+                    else:
+                        self._execute_operation(operation)
+                        handled.add(id(operation))
+                finally:
+                    self._tool_progress = None
+                completed += weight
                 if progress is not None:
                     progress(completed, total, operation)
             self.journal.seal()
@@ -367,6 +393,39 @@ class ModOperationExecutor:
         except Exception:
             self.journal.restore(force=True)
             raise
+
+    def _call_backend(self, backend: Callable[..., bool | None], *arguments: object) -> bool | None:
+        """Run a patch or merge backend, handing it the step progress when it can take it."""
+        if self._tool_progress is not None and _accepts_progress(backend):
+            return backend(*arguments, progress=self._tool_progress)
+        return backend(*arguments)
+
+    @staticmethod
+    def _step_reporter(
+        step_progress: StepProgressFunction | None,
+        completed: int,
+        total: int,
+        weight: int,
+        operation: PlannedModOperation,
+    ) -> Callable[[int], None] | None:
+        """Turn the percent a patch backend reports for one step into overall progress."""
+        if step_progress is None:
+            return None
+        reported = 0
+
+        def report(percent: int) -> None:
+            nonlocal reported
+            reported = max(reported, min(int(percent), 100))
+            step_progress(
+                (completed + weight * reported / 100) / max(total, 1),
+                completed,
+                total,
+                operation,
+                reported,
+            )
+
+        report(0)
+        return report
 
     @staticmethod
     def merge_operations(
@@ -433,7 +492,7 @@ class ModOperationExecutor:
             output = Path(temporary_name)
             try:
                 output.unlink()
-                result = self.merger(resolved_target, patches, output)
+                result = self._call_backend(self.merger, resolved_target, patches, output)
                 if result is False or not output.is_file():
                     raise ModOperationExecutionError(
                         "patch merge backend did not produce an output file"
@@ -535,7 +594,7 @@ class ModOperationExecutor:
         temporary = Path(temporary_name)
         try:
             temporary.unlink()
-            result = self.patcher(target, source, temporary)
+            result = self._call_backend(self.patcher, target, source, temporary)
             if result is False or not temporary.is_file():
                 raise ModOperationExecutionError("patch backend did not produce an output file")
             os.replace(temporary, target)

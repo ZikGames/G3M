@@ -168,6 +168,8 @@ def build_application_context(parent=None) -> ApplicationContext:
         user_root, lambda: app_state.local_config, parent
     )
     game_versions_manager.startup()
+    game_registry_service.game_renamed.connect(profile_service.rename_game_references)
+    game_registry_service.game_renamed.connect(game_versions_manager.rename_game)
     services = ServiceContainer(
         feedback_service=feedback_service,
         settings_service=settings_service,

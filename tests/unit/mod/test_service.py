@@ -93,10 +93,27 @@ def test_load_local_mods_refreshes_sections_after_config_edit(app_state, feedbac
         os.path.join(mod_folder, "mod_config.json"),
         _config("local_operation", "${game_path}/chapter4_windows/data.win"),
     )
-    manager.load_local_mods()
+    assert manager.load_local_mods()
 
     assert app_state.all_mods == [existing]
     assert existing.sections == frozenset({"deltarune_4"})
+
+
+def test_load_local_mods_treats_every_installed_id_alike(app_state, feedback_service):
+    for mod_id in ("dojo_plus", "local_operation"):
+        folder = os.path.join(app_state.mods_dir, mod_id)
+        os.makedirs(folder, exist_ok=True)
+        save_json(os.path.join(folder, "mod_config.json"), {**_config(mod_id), "tags": ["gameplay"]})
+    manager = ModManager(app_state, feedback_service)
+    app_state.all_mods = []
+
+    assert manager.load_local_mods()
+    assert manager.load_local_mods()  # a second pass refreshes the mods it already holds
+
+    assert {mod.id: mod.tags for mod in app_state.all_mods} == {
+        "dojo_plus": ["gameplay"],
+        "local_operation": ["gameplay"],
+    }
 
 
 def test_uninstall_preserves_uninstall_error_when_feedback_fails(

@@ -1,5 +1,7 @@
 """Manual-install additions to the shared dialog theme."""
 
+from PyQt6.QtCore import QSize
+
 from ui.common.dialog_theme import apply_dialog_theme, get_dialog_theme_values
 from utils.path_utils import colored_icon, resource_path
 
@@ -23,6 +25,10 @@ def apply_manual_install_theme(dialog) -> None:
         QToolButton::menu-button {{ subcontrol-origin: padding; subcontrol-position: top right; border-left: 2px solid {theme["border"]}; width: 30px; }}
         QToolButton::menu-button:disabled {{ border-left-color: #6f6f6f; }}
         QToolButton::menu-arrow {{ image: url({arrow}); width: 16px; height: 10px; }}
+        QPushButton#manualInstallAddGameButton {{ background: {theme["elements"]}; border: 2px solid {theme["border"]}; border-radius: {theme["button_radius"]}px; padding: 0px; }}
+        QPushButton#manualInstallAddGameButton:hover:enabled {{ background: {theme["hover"]}; }}
+        QPushButton#manualInstallAddGameButton:focus {{ border-color: {theme["select"]}; }}
+        QPushButton#manualInstallAddGameButton:disabled {{ border-color: #6f6f6f; }}
         QMenu {{ background: {theme["elements"]}; color: {theme["main_text"]}; border: 2px solid {theme["border"]}; }}
         QMenu::item {{ padding: 6px 18px; }}
         QMenu::item:selected {{ background: {theme["hover"]}; }}
@@ -34,3 +40,8 @@ def apply_manual_install_theme(dialog) -> None:
         QTextBrowser {{ background: {theme["elements"]}; color: {theme["main_text"]}; border: 2px solid {theme["border"]}; border-radius: {theme["field_radius"]}px; padding: 12px; selection-background-color: {theme["hover"]}; }}
     """
     )
+    dialog.game_combo.ensurePolished()
+    side = dialog.game_combo.sizeHint().height()
+    dialog.add_game_button.setFixedSize(side, side)
+    dialog.add_game_button.setIconSize(QSize(side // 2, side // 2))
+    dialog.add_game_button.setIcon(colored_icon("add", theme["main_text"]))

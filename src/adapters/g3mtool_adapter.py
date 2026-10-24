@@ -1,5 +1,6 @@
 """G3MTool CLI execution and management."""
 
+import codecs
 import json
 import logging
 import os
@@ -436,19 +437,69 @@ class G3MToolManager:
         chunks: list[str],
         progress_callback: Callable[[int, str], None] | None = None,
     ) -> None:
+        raw = getattr(stream, "buffer", None)
+        if raw is not None and hasattr(raw, "read1"):
+            self._stream_raw_output(raw, chunks, progress_callback)
+            return
         for line in stream:
             chunks.append(line)
-            if not progress_callback:
-                continue
             for text in line.splitlines():
-                progress = self._parse_progress(text)
-                if progress:
-                    try:
-                        progress_callback(*progress)
-                    except Exception:
-                        logger.exception("G3MTool progress callback failed")
-                        progress_callback = None
-                        break
+                progress_callback = self._report_progress(text, progress_callback)
+
+    def _stream_raw_output(
+        self,
+        raw,
+        chunks: list[str],
+        progress_callback: Callable[[int, str], None] | None,
+    ) -> None:
+        """Read as bytes arrive so a progress update is seen the moment its carriage return is.
+
+        A text stream holds back a trailing carriage return until the next character shows up,
+        which made every progress step arrive one update late.
+        """
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        pending = ""
+        after_return = False
+        while True:
+            data = raw.read1(8192)
+            text = decoder.decode(data, final=not data)
+            if after_return and text.startswith("\n"):
+                text = text[1:]
+            if text:
+                after_return = text.endswith("\r")
+            text = text.replace("\r\n", "\n").replace("\r", "\n")
+            if text:
+                chunks.append(text)
+                pending += text
+                *lines, pending = pending.split("\n")
+                for line in lines:
+                    progress_callback = self._report_progress(line, progress_callback)
+            if not data:
+                break
+        if pending:
+            self._report_progress(pending, progress_callback)
+
+    def _report_progress(
+        self, text: str, callback: Callable[[int, str], None] | None
+    ) -> Callable[[int, str], None] | None:
+        """Log and forward one progress line; a failing callback is dropped, not retried."""
+        progress = self._parse_progress(text)
+        if not progress:
+            return callback
+        percent, label = progress
+        logger.debug("G3MTool progress: %s %d%%", label, percent)
+        logged = self.__dict__.setdefault("_last_logged_percent", {})
+        if percent % 25 == 0 and percent != logged.get(label):
+            logged[label] = percent
+            logger.info("G3MTool progress: %s %d%%", label, percent)
+        if callback is None:
+            return None
+        try:
+            callback(percent, label)
+        except Exception:
+            logger.exception("G3MTool progress callback failed")
+            return None
+        return callback
 
     def _run(
         self,

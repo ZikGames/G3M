@@ -7,7 +7,6 @@ from PyQt6.QtCore import QAbstractItemModel, QSize, Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -31,7 +30,7 @@ from ui.common.styling import (
     get_border_radius,
     get_ui_scale_factor,
 )
-from ui.dialogs.custom_game_dialog import CustomGameDialog
+from ui.dialogs.custom_game_dialog import CustomGameDialog, run_custom_game_dialog
 from utils.path_utils import colored_icon
 
 logger = logging.getLogger(__name__)
@@ -217,46 +216,19 @@ class GameManagerDialog(DynamicDialog):
             self._refresh_list()
 
     def _on_add(self) -> None:
-        dialog = CustomGameDialog(self.app_state, parent=self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        self._save_dialog_values(dialog)
+        run_custom_game_dialog(
+            CustomGameDialog(self.app_state, parent=self),
+            lambda values: self.registry_service.create_custom_game(**values),
+        )
 
     def _on_edit(self) -> None:
         entry = self._selected_entry()
         if not entry or entry.is_builtin:
             return
-        dialog = CustomGameDialog(
-            self.app_state, self.registry_service.get_custom_game(entry.id), self
+        run_custom_game_dialog(
+            CustomGameDialog(self.app_state, self.registry_service.get_custom_game(entry.id), self),
+            lambda values: self.registry_service.update_custom_game(entry.id, **values),
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        self._save_dialog_values(dialog, entry.id)
-
-    def _save_dialog_values(
-        self, dialog: CustomGameDialog, game_id: str | None = None
-    ) -> None:
-        values = dialog.values()
-        try:
-            if game_id:
-                self.registry_service.update_custom_game(game_id, **values)
-            else:
-                self.registry_service.create_custom_game(**values)
-        except GameRegistryValidationError as error:
-            self._safe_warning(tr("games.manager_title"), tr(error.key))
-            self._save_dialog_values_retry(dialog, game_id)
-
-    def _save_dialog_values_retry(
-        self, dialog: CustomGameDialog, game_id: str | None = None
-    ) -> None:
-        retry = CustomGameDialog(self.app_state, dialog.record, self)
-        retry.display_name_edit.setText(dialog.display_name_edit.text())
-        retry.primary_executable_edit.setText(dialog.primary_executable_edit.text())
-        retry.data_file_name_edit.setText(dialog.data_file_name_edit.text())
-        retry.steam_app_id_edit.setText(dialog.steam_app_id_edit.text())
-        retry.gamebanana_id_edit.setText(dialog.gamebanana_id_edit.text())
-        if retry.exec() == QDialog.DialogCode.Accepted:
-            self._save_dialog_values(retry, game_id)
 
     def _on_delete(self) -> None:
         entry = self._selected_entry()

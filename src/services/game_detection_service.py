@@ -23,6 +23,25 @@ GAME_PROCESS_START_TIMEOUT_SECONDS = 5 * 60
 GAME_PROCESS_EXIT_CONFIRMATION_CHECKS = 4
 
 
+def _running_processes():
+    """Yield processes with their name in `info`, skipping any process the OS refuses to describe.
+
+    psutil.process_iter(["name"]) stops for good when one process raises an error that is not a
+    psutil.Error (seen on macOS as PermissionError/SystemError), so names are then read one by one.
+    """
+    try:
+        yield from psutil.process_iter(["name"])
+        return
+    except (OSError, SystemError) as error:
+        logger.debug("psutil could not list process names (%s); reading them one by one", error)
+    for process in psutil.process_iter():
+        try:
+            process.info = {"name": process.name()}
+        except (psutil.Error, OSError, SystemError):
+            continue
+        yield process
+
+
 def _process_identity(process: psutil.Process) -> ProcessIdentity | None:
     try:
         return process.pid, process.create_time()
@@ -57,7 +76,7 @@ def _matching_process_name(
             ),
             None,
         )
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError, SystemError):
         return None
 
 
@@ -70,7 +89,7 @@ def get_matching_process_identities(
     identities: set[ProcessIdentity] = set()
     if not normalized_names:
         return identities
-    for process in psutil.process_iter(["name"]):
+    for process in _running_processes():
         try:
             if _matching_process_name(process, names):
                 identity = _process_identity(process)
@@ -160,7 +179,7 @@ def is_game_running(pid: object | None = None):
 
 def get_running_game_process_name(process_names: tuple[str, ...] | list[str] | None = None) -> str | None:
     process_names = process_names or get_all_process_names()
-    for proc in psutil.process_iter(["name"]):
+    for proc in _running_processes():
         try:
             if match := _matching_process_name(proc, process_names or get_all_process_names()):
                 return match

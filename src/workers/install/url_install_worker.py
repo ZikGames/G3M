@@ -22,8 +22,11 @@ from models.exceptions import AppError
 from models.game_modes import get_gamebanana_reverse_map
 from services.localization_service import tr
 from services.migration_service import normalize_theme_settings
+from ui.dialogs.mod.version_choice_dialog import WorkerVersionChoice
+from ui.dialogs.unknown_game_dialog import MANUAL_INSTALL, WorkerGameResolver
 from utils.file_utils import check_filename_is_deltamod_info, has_deltamod_info_file
 from utils.mod.utils import parse_gamebanana_mod_url
+from utils.mod.version_package import resolve_package_versions
 from utils.network_utils import download_file, get_session
 from utils.path_utils import find_theme_config_path
 from utils.process_utils import format_filesystem_error, format_network_error
@@ -36,6 +39,14 @@ from workers.install.helpers_install import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class InstallDeclinedError(Exception):
+    """The user backed out of a choice made during installation."""
+
+
+class ManualInstallChosenError(Exception):
+    """The user chose to install a mod for an unknown game manually."""
 
 
 class UrlInstallThread(BaseInstallWorker):
@@ -52,6 +63,8 @@ class UrlInstallThread(BaseInstallWorker):
         super().__init__(main_window)
         self.main_window = main_window
         self.url = url
+        self._version_choice = WorkerVersionChoice(main_window)
+        self._game_resolver = WorkerGameResolver(main_window)
         if mod_ops := getattr(main_window, "mod_ops", None):
             self.gamebanana_mod_ready.connect(mod_ops.on_gamebanana_url_loaded)
 
@@ -114,6 +127,8 @@ class UrlInstallThread(BaseInstallWorker):
                     self._install_mod_from_archive(archive_path, temp_dir)
                 else:
                     self._prepare_for_manual_install(archive_path)
+        except InstallDeclinedError:
+            self._safe_emit(self.result_ready, False, tr("status.install_cancelled_by_user"))
         except Exception as e:
             self._safe_emit(
                 self.result_ready,
@@ -132,7 +147,11 @@ class UrlInstallThread(BaseInstallWorker):
                 content_path = self._unpack_content_path(archive_path, unpack_dir)
                 files_in_root = os.listdir(content_path)
                 if MOD_CONFIG_FILENAME in files_in_root:
-                    mod_dir = self._install_g3m_mod_from_path(content_path)
+                    try:
+                        mod_dir = self._install_g3m_mod_from_path(content_path)
+                    except ManualInstallChosenError:
+                        self._prepare_for_manual_install(archive_path)
+                        return
                     if mod_dir:
                         mod_name = os.path.basename(mod_dir)
                         self._safe_emit(
@@ -164,8 +183,16 @@ class UrlInstallThread(BaseInstallWorker):
     def _install_g3m_mod_from_path(self, content_path: str) -> str | None:
         mod_config_path = find_mod_config(content_path)
         if not mod_config_path:
-            logger.error("mod_config.json not found in G3M mod archive")
+            logger.error(f"mod_config.json not found in the G3M mod archive content at {content_path!r}")
             return None
+        self._settle_game(mod_config_path)
+        if not resolve_package_versions(
+            content_path,
+            lambda name, label, versions: self._version_choice.ask(
+                name, label, versions, lambda: self._cancelled
+            ),
+        ):
+            raise InstallDeclinedError
         config_data = load_mod_config(mod_config_path)
         if not config_data:
             return None
@@ -186,6 +213,22 @@ class UrlInstallThread(BaseInstallWorker):
             logger.error(f"Failed to save mod config: {e}", exc_info=True)
             return None
         return target_mod_dir
+
+    def _settle_game(self, mod_config_path: str) -> None:
+        """Add the mod's game when the user wants it; stop the install when they do not."""
+        config_data = load_mod_config(mod_config_path) or {}
+        game_id = config_data.get("game")
+        if not isinstance(game_id, str) or not game_id:
+            return
+        outcome = self._game_resolver.resolve(
+            game_id,
+            str(config_data.get("name") or game_id),
+            is_cancelled=lambda: self._cancelled,
+        )
+        if outcome is None:
+            raise InstallDeclinedError
+        if outcome == MANUAL_INSTALL:
+            raise ManualInstallChosenError
 
     def _download_archive(self, url: str, temp_dir: str) -> str:
         from urllib.parse import unquote, urlparse
@@ -425,10 +468,14 @@ class UrlInstallThread(BaseInstallWorker):
                             self._safe_emit(self.progress, 0)
                             self._process_deltamod_archive(redirect_url)
                             return True
+                    except InstallDeclinedError:
+                        raise
                     except Exception as e:
                         logger.warning(
                             f"UrlInstallThread: Error reading redirect config: {e}"
                         )
+        except InstallDeclinedError:
+            raise
         except Exception as e:
             logger.warning(f"UrlInstallThread: Error checking redirect: {e}")
         return False
@@ -477,6 +524,10 @@ class UrlInstallThread(BaseInstallWorker):
                     self.result_ready,
                     True, tr("status.install_complete_success", mod_name=mod_name)
                 )
+        except InstallDeclinedError:
+            self._safe_emit(self.result_ready, False, tr("status.install_cancelled_by_user"))
+        except ManualInstallChosenError:
+            self._prepare_for_manual_install(archive_path)
         except Exception as e:
             logger.error(f"UrlInstallThread: Error installing mod: {e}", exc_info=True)
             self._safe_emit(

@@ -4,6 +4,7 @@ import contextlib
 import logging
 from typing import cast
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QMetaObject, QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QGridLayout, QInputDialog
 
@@ -859,7 +860,7 @@ class SearchDisplayController(QObject):
             "game": selected_game,
             "search_text": self.app_state.search_text,
             "hide_banned": True,
-            "hide_local": True,
+            "only_gamebanana": True,
             "show_nsfw": show_nsfw,
             "only_g3m": _bound_checkbox_is_checked(self.app, "tag_g3m"),
             "status_filter": ["approved", "pending"],
@@ -906,6 +907,10 @@ class SearchDisplayController(QObject):
         self._update_display_debounce.call(self._do_update_display)
 
     def _do_update_display(self):
+        layout = getattr(self.app, "mod_list_layout", None)
+        with contextlib.suppress(TypeError):  # not a Qt object, e.g. a test double
+            if layout is not None and sip.isdeleted(layout):
+                return  # the window is closing; a queued refresh has nothing left to draw on
         if self._update_display_in_progress:
             self._pending_display_update = True
             return
@@ -991,13 +996,7 @@ class SearchDisplayController(QObject):
                 self._remove_centered_loading_indicator()
 
             def get_mod_cache_key(mod):
-                key = get_mod_id(mod)
-                if key and key.startswith("gb_"):
-                    return key
-                if key:
-                    return f"local_{key}"
-                mod_name = getattr(mod, "name", "unknown")
-                return f"name_{mod_name}"
+                return get_mod_id(mod) or f"name_{getattr(mod, 'name', 'unknown')}"
 
             current_page_cache_keys = {
                 get_mod_cache_key(mod) for mod in current_page_mods if mod is not None

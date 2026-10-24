@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 
 from services.localization_service import tr
+from utils.mod.utils import is_gamebanana_id
 from utils.path_utils import get_user_data_root
 
 logger = logging.getLogger(__name__)
@@ -98,7 +99,7 @@ class BlocklistManager:
                     mod_id
                 ).lower() == val:
                     return True
-                if (key := _getattr_first(mod, "id")) and key.startswith("gb_"):
+                if (key := _getattr_first(mod, "id")) and is_gamebanana_id(key):
                     from utils.mod.utils import parse_gamebanana_mod_id
 
                     _, gb_id = parse_gamebanana_mod_id(key)

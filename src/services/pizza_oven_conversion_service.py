@@ -9,6 +9,10 @@ import re
 import shutil
 import tempfile
 import uuid
+<<<<<<< HEAD
+=======
+from collections.abc import Callable
+>>>>>>> upstream/main
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
@@ -75,15 +79,27 @@ class PizzaOvenPatchTool(Protocol):
     def is_available(self) -> bool: ...
 
     def xpatch_apply(
-        self, original_file: str, patch_path: str, output_path: str
+        self,
+        original_file: str,
+        patch_path: str,
+        output_path: str,
+        progress_callback: Callable[[int, str], None] | None = None,
     ) -> tuple[int, str, str]: ...
 
     def patch_create(
-        self, original_file: str, modified_file: str, output_path: str
+        self,
+        original_file: str,
+        modified_file: str,
+        output_path: str,
+        progress_callback: Callable[[int, str], None] | None = None,
     ) -> tuple[int, str, str]: ...
 
     def xpatch_create(
-        self, original_file: str, modified_file: str, output_path: str
+        self,
+        original_file: str,
+        modified_file: str,
+        output_path: str,
+        progress_callback: Callable[[int, str], None] | None = None,
     ) -> tuple[int, str, str]: ...
 
 
@@ -119,6 +135,22 @@ class PizzaOvenConversionService:
 
     def __init__(self, g3mtool: PizzaOvenPatchTool | None = None) -> None:
         self._g3mtool = g3mtool or G3MToolManager()
+        self._progress: Callable[[int, str], None] | None = None
+        self._stage: tuple[int, int, str] | None = None
+        self._reported = 0
+
+    def _tool_arguments(self) -> dict[str, Any]:
+        """Let G3MTool's percent move the bar through the stage that is running."""
+        if self._progress is None or self._stage is None:
+            return {}
+        report, (first, last, message) = self._progress, self._stage
+
+        def forward(percent: int, _label: str) -> None:
+            # Each tool call counts 0-100 again; the bar must not step back between calls.
+            self._reported = max(self._reported, first + (last - first) * percent // 100)
+            report(self._reported, tr("status.operation_percent", message=message, percent=percent))
+
+        return {"progress_callback": forward}
 
     def validate_game_path(self, game_path: str) -> None:
         self._validate_game_path(game_path)
@@ -235,6 +267,7 @@ class PizzaOvenConversionService:
         if progress_callback:
             progress_callback(5, tr("status.po_convert_inspecting_source"))
         temp_root = tempfile.mkdtemp(prefix="g3m_po_convert_")
+        self._progress = progress_callback
         try:
             working_game_dir = os.path.join(temp_root, "game")
             if progress_callback:
@@ -242,6 +275,7 @@ class PizzaOvenConversionService:
             shutil.copytree(game_path, working_game_dir)
             if progress_callback:
                 progress_callback(45, tr("status.po_convert_applying"))
+            self._stage = (45, 68, tr("status.po_convert_applying"))
             simulation = self._simulate_normal_build(source_dir, working_game_dir)
             if progress_callback:
                 progress_callback(68, tr("status.po_convert_collecting_changes"))
@@ -256,6 +290,7 @@ class PizzaOvenConversionService:
                 )
             if progress_callback:
                 progress_callback(82, tr("status.po_convert_building_mod"))
+            self._stage = (82, 98, tr("status.po_convert_building_mod"))
             result = self._build_g3m_mod(
                 source_dir,
                 source_file_path,
@@ -271,6 +306,8 @@ class PizzaOvenConversionService:
                 progress_callback(100, tr("status.po_convert_completed_detail"))
             return result
         finally:
+            self._progress = self._stage = None
+            self._reported = 0
             shutil.rmtree(temp_root, ignore_errors=True)
 
     @staticmethod
@@ -734,7 +771,7 @@ class PizzaOvenConversionService:
             try:
                 temp_output = os.path.join(temp_dir, os.path.basename(target_file))
                 returncode = self._g3mtool.xpatch_apply(
-                    target_file, patch_path, temp_output
+                    target_file, patch_path, temp_output, **self._tool_arguments()
                 )[0]
                 if returncode == 0 and os.path.isfile(temp_output):
                     shutil.move(temp_output, target_file)
@@ -979,7 +1016,7 @@ class PizzaOvenConversionService:
         if self._g3mtool.is_available():
             g3m_path = os.path.join(target_mod_dir, "data.g3mpatch")
             returncode = self._g3mtool.patch_create(
-                original_data, modified_data, g3m_path
+                original_data, modified_data, g3m_path, **self._tool_arguments()
             )[0]
             if (
                 returncode == 0
@@ -994,7 +1031,7 @@ class PizzaOvenConversionService:
                 os.remove(g3m_path)
             xdelta_path = os.path.join(target_mod_dir, "data.win.xdelta")
             returncode = self._g3mtool.xpatch_create(
-                original_data, modified_data, xdelta_path
+                original_data, modified_data, xdelta_path, **self._tool_arguments()
             )[0]
             if (
                 returncode == 0

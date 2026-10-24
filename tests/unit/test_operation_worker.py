@@ -16,10 +16,10 @@ def test_operation_worker_exposes_journal_and_progress(monkeypatch, qapp, tmp_pa
     operation = PlannedModOperation(
         index=1,
         group_path=(),
-        type="info",
+        type="overwrite",
         source=tmp_path / "info.txt",
         source_is_directory=False,
-        target=None,
+        target=tmp_path / "game.txt",
         target_is_directory=False,
         source_hash=None,
         target_hash=None,
@@ -32,7 +32,7 @@ def test_operation_worker_exposes_journal_and_progress(monkeypatch, qapp, tmp_pa
             assert callable(patcher)
             assert callable(merger)
 
-        def execute(self, plan, *, progress, is_cancelled):
+        def execute(self, plan, *, progress, is_cancelled, step_progress=None):
             assert not is_cancelled()
             progress(1, 1, plan.operations[0])
             return journal
@@ -58,7 +58,7 @@ def test_operation_worker_exposes_journal_and_progress(monkeypatch, qapp, tmp_pa
 
     assert worker.journal is journal
     assert progress == [100]
-    assert messages == ["Checking info.txt (1/1)..."]
+    assert messages == ["Copying info.txt to game.txt (1/1)..."]
     assert results == [True]
 
 
@@ -78,7 +78,6 @@ def test_operation_worker_uses_specific_status_for_each_operation(qapp, tmp_path
         "extract",
         "soft-extract",
         "hard-extract",
-        "info",
     )
     for index, operation_type in enumerate(operation_types, start=1):
         operation = PlannedModOperation(
@@ -87,7 +86,7 @@ def test_operation_worker_uses_specific_status_for_each_operation(qapp, tmp_path
             type=operation_type,
             source=tmp_path / "source.bin",
             source_is_directory=False,
-            target=tmp_path / "target.bin" if operation_type != "info" else None,
+            target=tmp_path / "target.bin",
             target_is_directory=False,
             source_hash=None,
             target_hash=None,
@@ -102,7 +101,6 @@ def test_operation_worker_uses_specific_status_for_each_operation(qapp, tmp_path
         "Copying",
         "Copying",
         "Replacing",
-        "Checking",
     ]
     assert all("target.bin" in message or "source.bin" in message for message in messages)
     assert not any("soft" in message.casefold() or "hard" in message.casefold() for message in messages)
@@ -166,3 +164,31 @@ def test_operation_worker_logs_cancellation_without_traceback(monkeypatch, qapp,
     assert results == [False]
     assert "Mod operation plan cancelled; applied files were restored" in caplog.text
     assert "Mod operation plan failed" not in caplog.text
+
+
+def test_operation_worker_shows_percent_inside_a_running_step(qapp, tmp_path):
+    from workers.mod.operation_worker import ModOperationThread
+
+    patch = PlannedModOperation(
+        index=1,
+        group_path=(),
+        type="patch",
+        source=tmp_path / "mod.g3mpatch",
+        source_is_directory=False,
+        target=tmp_path / "data.win",
+        target_is_directory=False,
+        source_hash=None,
+        target_hash=None,
+    )
+    worker = ModOperationThread(SimpleNamespace(), ModOperationPlan((patch,), ()), tmp_path / "journal")
+    updates = []
+    worker.progress_update.connect(lambda value, message: updates.append((value, message)))
+
+    worker._on_step_progress(0.0, 0, 1, patch, 0)
+    worker._on_step_progress(0.4, 0, 1, patch, 40)
+    qapp.processEvents()
+
+    assert updates == [
+        (0, "Applying G3MPatch to data.win (1/1)..."),
+        (40, "Applying G3MPatch to data.win (1/1)... 40%"),
+    ]

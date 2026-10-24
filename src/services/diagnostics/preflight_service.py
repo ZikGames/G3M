@@ -361,11 +361,11 @@ class DiagnosticsPreflightService:
             )
             steps: list[PreflightStepResult] = []
             files: list[PreflightFileChange] = []
-            total = len(staged_plan.operations)
+            total = sum(1 for operation in staged_plan.operations if operation.type != "info")
             completed = 0
             handled: set[int] = set()
             for operation in staged_plan.operations:
-                if id(operation) in handled:
+                if id(operation) in handled or operation.type == "info":
                     continue
                 if self._cancelled:
                     return PreflightReport(False, True, time.monotonic() - started, tuple(steps), files=tuple(files), issues=tuple(issues))
@@ -383,6 +383,10 @@ class DiagnosticsPreflightService:
                     executor.execute(
                         ModOperationPlan(operation_group, ()),
                         is_cancelled=lambda: self._cancelled,
+                        step_progress=lambda _overall, _done, _count, _operation, percent, group=operation_group, base=completed, name=section: emit(
+                            8 + int((base + len(group) * percent / 100) * 86 / max(total, 1)),
+                            f"patching_step:{name}:{base + len(group)}:{total}",
+                        ),
                     )
                 except ModOperationExecutionError as error:
                     if self._cancelled or isinstance(error, ModOperationCancelledError):

@@ -84,6 +84,7 @@ class ModSummaryPanel(QFrame):
     delete_requested = pyqtSignal(object)
     homepage_requested = pyqtSignal(object)
     readme_requested = pyqtSignal(object)
+    _size_ready = pyqtSignal(str, int)
 
     _ACTION_DEFS = [
         ("external", "tooltips.open_homepage", "homepage_requested"),
@@ -108,6 +109,7 @@ class ModSummaryPanel(QFrame):
         self._operation_config: dict[str, object] | None = None
         self._operation_leaves: list[tuple[tuple[str, ...], Mapping[str, object]]] = []
         self._showing_all_operations = False
+        self._size_ready.connect(self._on_size_computed)
         self.setObjectName("summaryPanel")
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setAutoFillBackground(True)
@@ -119,30 +121,32 @@ class ModSummaryPanel(QFrame):
     def _layout_scale(self) -> float:
         return get_card_layout_scale(self._get_config())
 
-    def _compute_folder_size_background(self, mod_folder: str):
-        """Compute folder size in background thread and update UI."""
-        if not mod_folder or not os.path.isdir(mod_folder):
-            return
-
+    def _start_folder_size_computation(self, mod_folder: str) -> None:
+        """Measure a mod folder off the GUI thread; the result comes back through a signal."""
         with self._cache_lock:
             if mod_folder in self._mod_size_cache or mod_folder in self._size_threads:
                 return
-            self._size_threads[mod_folder] = threading.current_thread()
+            thread = threading.Thread(
+                target=self._compute_folder_size_background,
+                args=(mod_folder,),
+                daemon=True,
+            )
+            self._size_threads[mod_folder] = thread
+        thread.start()
 
+    def _compute_folder_size_background(self, mod_folder: str):
+        """Runs on a plain Python thread, so it must only touch Qt through a signal."""
         try:
             total = sum(
                 os.path.getsize(os.path.join(r, f))
                 for r, _, files in os.walk(mod_folder)
                 for f in files
             )
-
             with self._cache_lock:
                 self._mod_size_cache[mod_folder] = total
-
-            from PyQt6.QtCore import QTimer
-
-            QTimer.singleShot(0, lambda: self._on_size_computed(mod_folder, total))
-
+            self._size_ready.emit(mod_folder, total)
+        except RuntimeError:
+            logger.debug("ModSummaryPanel: panel was deleted before the size arrived")
         except Exception as e:
             logger.debug(
                 f"ModSummaryPanel: failed to calculate mod folder size for {mod_folder}: {e}",
@@ -472,12 +476,7 @@ class ModSummaryPanel(QFrame):
                     f"<span style='color:{tc}'>{tr('ui.size_label')}</span> <span style='color:{sc}'>{size_text}</span>"
                 )
             else:
-                thread = threading.Thread(
-                    target=self._compute_folder_size_background,
-                    args=(mod_folder,),
-                    daemon=True,
-                )
-                thread.start()
+                self._start_folder_size_computation(mod_folder)
                 parts.append(
                     f"<span style='color:{tc}'>{tr('ui.size_label')}</span> <span style='color:{sc}'>...</span>"
                 )

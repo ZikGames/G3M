@@ -18,7 +18,6 @@ from config.config import (
     UI_COLORS,
 )
 from config.settings_schema import get_theme_color_key
-from utils.mod.utils import get_mod_id
 from utils.path_utils import colored_icon
 
 logger = logging.getLogger(__name__)
@@ -167,6 +166,11 @@ def sync_scroll_area_height(widget, scroll_area) -> None:
     scrollbar_height = scroll_area.horizontalScrollBar().sizeHint().height()
     if not isinstance(height, int) or not isinstance(scrollbar_height, int):
         return
+    # The scrollbar only takes room when the strip is wider than the area it scrolls in.
+    needed = widget.minimumSizeHint().expandedTo(widget.minimumSize()).width()
+    available = scroll_area.viewport().width()
+    if isinstance(needed, int) and isinstance(available, int) and needed <= available:
+        scrollbar_height = 0
     scroll_area.setFixedHeight(height + scrollbar_height)
 
 
@@ -176,10 +180,20 @@ def install_size_hint_height_sync(
     def sync_height() -> None:
         sync_scroll_area_height(widget, scroll_area)
 
+    viewport_width = []
+
+    def sync_on_width_change() -> None:
+        # Only a width change can add or remove the scrollbar; heights set from outside stay put.
+        width = scroll_area.viewport().width()
+        if viewport_width != [width]:
+            viewport_width[:] = [width]
+            sync_height()
+
+    install_widget_update_handler(widget, sync_height, attr_name=attr_name)
     install_widget_update_handler(
-        widget,
-        sync_height,
-        attr_name=attr_name,
+        scroll_area.viewport(),
+        sync_on_width_change,
+        attr_name=f"{attr_name}_viewport",
     )
     install_widget_update_handler(
         scroll_area.horizontalScrollBar(),
@@ -1149,29 +1163,12 @@ def load_mod_icon_universal(
             if os.path.isabs(icon_source):
                 local_icon_to_load = icon_source
             else:
-                key = get_mod_id(mod_data)
-                is_local_key = key and isinstance(key, str) and key.startswith("local_")
-                if is_local_key:
-                    mod_folder_path = None
-                    try:
-                        if hasattr(mod_data, "folder_path"):
-                            mod_folder_path = mod_data.folder_path
-                    except Exception as e:
-                        logger.debug(
-                            f"load_mod_icon_universal: Error getting folder_path from mod_data: {e}"
-                        )
-                    if mod_folder_path and os.path.isdir(mod_folder_path):
-                        resolved_path = os.path.normpath(
-                            os.path.join(mod_folder_path, icon_source)
-                        )
-                        if os.path.exists(resolved_path):
-                            local_icon_to_load = resolved_path
-                        else:
-                            local_icon_to_load = icon_source
-                    else:
-                        local_icon_to_load = icon_source
-                else:
-                    local_icon_to_load = icon_source
+                local_icon_to_load = icon_source
+                mod_folder_path = getattr(mod_data, "folder_path", None)
+                if mod_folder_path and os.path.isdir(mod_folder_path):
+                    resolved_path = os.path.normpath(os.path.join(mod_folder_path, icon_source))
+                    if os.path.exists(resolved_path):
+                        local_icon_to_load = resolved_path
         elif icon_path:
             local_icon_to_load = icon_path
         if local_icon_to_load and os.path.exists(local_icon_to_load):

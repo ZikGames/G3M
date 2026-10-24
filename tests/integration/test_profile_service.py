@@ -3,6 +3,7 @@
 import json
 import os
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -402,3 +403,59 @@ class TestReorder:
         assert profiles[0] == "a"
         assert profiles[1] == "Default"
         assert profiles[2] == "b"
+
+
+def test_rename_game_references_moves_settings_and_installed_mods(profile_service, app_state, profiles_dir):
+    profile_service.initialize()
+    mod_dir = os.path.join(_profile_dir(profiles_dir, "Default"), "Pack")
+    os.makedirs(mod_dir)
+    config = {
+        "config_version": "2.0.0",
+        "id": "pack",
+        "name": "Pack",
+        "version": "1.0.0",
+        "authors": ["Me"],
+        "game": "hotline",
+        "files": [],
+    }
+    with open(os.path.join(mod_dir, "mod_config.json"), "w", encoding="utf-8") as f:
+        json.dump(config, f)
+    profile_service._write_profile(
+        "Default",
+        {
+            "selected_game_type": "hotline",
+            "direct_launch_chapter": "hotline",
+            "used_mods_hotline": {"hotline": ["pack"]},
+            "used_mods_hotline_2": {},
+        },
+    )
+    app_state.local_config.update(
+        {"selected_game_type": "hotline", "direct_launch_chapter": "hotline", "custom_game_path_hotline": "C:/Games/Hotline"}
+    )
+
+    profile_service.rename_game_references("hotline", "hotline-new")
+
+    data = profile_service._read_profile("Default")
+    assert data["selected_game_type"] == "hotline-new"
+    assert data["direct_launch_chapter"] == "hotline-new"
+    assert data["used_mods_hotline-new"] == {"hotline-new": ["pack"]}
+    assert "used_mods_hotline" not in data
+    assert "used_mods_hotline_2" in data
+    assert app_state.local_config["custom_game_path_hotline-new"] == "C:/Games/Hotline"
+    assert "custom_game_path_hotline" not in app_state.local_config
+    with open(os.path.join(mod_dir, "mod_config.json"), encoding="utf-8") as f:
+        assert json.load(f)["game"] == "hotline-new"
+
+
+def test_rename_game_references_leaves_other_games_mods_untouched(profile_service, profiles_dir):
+    profile_service.initialize()
+    other = os.path.join(_profile_dir(profiles_dir, "Default"), "Other")
+    os.makedirs(other)
+    config_path = os.path.join(other, "mod_config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write('{"id": "other", "game": "deltarune", "description": "made for hotline fans"}')
+    before = Path(config_path).read_bytes()
+
+    profile_service.rename_game_references("hotline", "hotline-new")
+
+    assert Path(config_path).read_bytes() == before

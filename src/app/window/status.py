@@ -4,6 +4,7 @@ import logging
 
 from config.config import UI_COLORS
 from services.localization_service import localization_service, tr
+from ui.utils.ui_utils import UIAnimator
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +50,9 @@ def on_update_cleanup(window) -> None:
 
 
 def on_progress_update(window, value: int) -> None:
-    window.progress_bar.setValue(value)
     if value > 0 and (not window.progress_bar.isVisible()):
         window.progress_bar.setVisible(True)
+    UIAnimator.progress_to(window.progress_bar, value, getattr(window, "app_state", None))
 
 
 def update_status(window, message: str, color: str = "white") -> None:

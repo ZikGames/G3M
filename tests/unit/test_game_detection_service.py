@@ -47,3 +47,23 @@ def test_runner_process_without_game_command_is_ignored(monkeypatch):
     monkeypatch.setattr("services.game_detection_service.psutil.process_iter", lambda *_args: iter([Process()]))
 
     assert get_running_game_process_name(("Frickbears3.exe", "runner")) is None
+
+
+def test_one_process_the_os_refuses_to_describe_does_not_hide_the_game(monkeypatch):
+    class Process:
+        def __init__(self, name) -> None:
+            self._name = name
+
+        def name(self):
+            if self._name is None:
+                raise PermissionError("force permission denied")
+            return self._name
+
+    def process_iter(attrs=None):
+        if attrs:
+            raise SystemError("proc_cmdline returned a result with an exception set")
+        return iter([Process(None), Process("PizzaTower.exe")])
+
+    monkeypatch.setattr("services.game_detection_service.psutil.process_iter", process_iter)
+
+    assert get_running_game_process_name(("PizzaTower.exe",)) == "PizzaTower.exe"
