@@ -28,9 +28,10 @@
           pythonRelaxDeps = [
             # "PyQt6"
             "defusedxml"
-            "rarfile"
+            # "rarfile"
             "python-dotenv"
             "urllib3"
+            "py7zr"
           ];
 
           pypaBuildFlags = [ "--skip-dependency-check" ];

@@ -25,6 +25,7 @@ test-collection.log
 # --- Nix ---
 result
 result-*
+.pre-commit-config.yaml
 .direnv/
 
 # --- runtime binaries fetched/built by CI or by hand (see test-g3m.yml) ---
