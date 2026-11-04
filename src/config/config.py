@@ -22,7 +22,7 @@ if _dotenv_path.is_file():
     load_dotenv(dotenv_path=_dotenv_path)
 
 """Application identity and external service configuration."""
-APP_VERSION = "3.4.3"
+APP_VERSION = "3.4.5"
 APP_DISPLAY_NAME = "G3M"
 APP_ORGANIZATION_NAME = "g3m"
 APP_DATA_DIR_NAME = "G3M"
@@ -347,6 +347,12 @@ WIDGET_LOCALIZATIONS = [
         "setText",
         "downloads.settings_save_local_imports",
     ),
+    ("manual_install_always_checkbox", "setText", "downloads.settings_manual_install_always"),
+    ("manual_install_always_checkbox", "setToolTip", "downloads.settings_manual_install_always_tip"),
+    ("manual_install_docs_as_info_checkbox", "setText", "downloads.settings_docs_as_info"),
+    ("manual_install_docs_as_info_checkbox", "setToolTip", "downloads.settings_docs_as_info_tip"),
+    ("use_mod_after_install_checkbox", "setText", "downloads.settings_use_after_install"),
+    ("use_mod_after_install_checkbox", "setToolTip", "downloads.settings_use_after_install_tip"),
     ("mod_versions_export_mode_label", "setText", "mod_versions.settings_export"),
     (
         "mod_versions_export_mode_combo",

@@ -244,11 +244,8 @@ def apply_filters_frame_style(frame: QFrame, app_state):
         # Tighter combo padding and arrow area: the strip is the first thing to run out of room.
         frame.setStyleSheet(
             f"QFrame#filters {{ background-color: {filter_bg_color}; border: none; padding: {padding + border_width}px; border-radius: {radius}px; }}"
-<<<<<<< HEAD
-=======
             f"QFrame#filters QComboBox {{ padding: {max(1, int(5 * zoom_factor))}px {max(1, int(6 * zoom_factor))}px {max(1, int(5 * zoom_factor))}px {max(1, int(9 * zoom_factor))}px; }}"
             f"QFrame#filters QComboBox::drop-down {{ width: {max(1, int(22 * zoom_factor))}px; margin-right: {max(1, int(2 * zoom_factor))}px; }}"
->>>>>>> upstream/main
         )
         # The border sits on the scroll viewport so it stays put while the strip scrolls.
         if not (viewport := frame.parentWidget()):

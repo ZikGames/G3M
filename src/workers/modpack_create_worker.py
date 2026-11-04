@@ -28,6 +28,7 @@ from services.mod_operation_support import (
     create_g3mtool_patcher,
     format_direct_operation_paths,
 )
+from services.mod_usage import hold_mods
 from ui.utils.thread_lifetime import ManagedQThread
 from ui.utils.thread_lifetime import safe_emit as _safe_emit
 from utils.mod.archive import ArchiveVirtualPath
@@ -410,6 +411,10 @@ class CreateModpackThread(ManagedQThread):
         write_mod_config(self.modpack_dir / "mod_config.json", config_data, indent=4)
 
     def run(self) -> None:
+        with hold_mods(self._selected_mod_ids()):
+            self._run()
+
+    def _run(self) -> None:
         success = False
         try:
             self._build_bundle()

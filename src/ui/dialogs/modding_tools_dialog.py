@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from services.localization_service import localization_service, tr
+from services.mod_usage import hold_mods
 from services.warning_service import create_warning_event
 from ui.common.dialog_theme import (
     DynamicDialog,
@@ -1071,6 +1072,10 @@ class _DataConvertWorkerThread(ManagedQThread):
         self._game_data_path = game_data_path
 
     def run(self):
+        with hold_mods([self._config_data.get("id")]):
+            self._run()
+
+    def _run(self):
         try:
             from pathlib import Path
 

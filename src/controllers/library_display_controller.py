@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QApplication
 
 from app.game_ui import show_chapter_mode_instruction
 from config.config import GAME_SPECIFIC_TAGS
+from models.exceptions import AppError
 from services.game_detection_service import get_chapter_id_for_game_mode
 from services.localization_service import tr
 from services.mod.filter_service import filter_and_sort_mods
@@ -812,6 +813,11 @@ class LibraryDisplayController(QObject):
         try:
             from PyQt6.QtWidgets import QMessageBox
 
+            try:
+                self.mod_service.ensure_mod_idle(mod_data)
+            except AppError as error:
+                self._safe_feedback_call("show_message", "warning", tr("errors.error"), str(error))
+                return
             reply = self._safe_question(
                 tr("dialogs.delete_confirmation"),
                 tr("dialogs.delete_mod_confirmation"),

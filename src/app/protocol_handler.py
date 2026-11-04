@@ -1,13 +1,22 @@
 """One-click install handler extracted from AppWindow."""
 
 import os
+import re
 from urllib.parse import unquote, urlparse
 
-from config.config import PRIMARY_URL_SCHEME, URL_PROTOCOL_PREFIXES
+from PyQt6.QtWidgets import QMessageBox
+
+from config.config import (
+    PRIMARY_URL_SCHEME,
+    URL_PROTOCOL_PREFIXES,
+    URL_PROTOCOL_SCHEMES,
+)
 from services.game_detection_service import is_game_running
 from services.localization_service import tr
 from ui.common.feedback import safe_show_message
-from utils.mod.utils import parse_gamebanana_mod_url
+from utils.mod.utils import parse_gamebanana_download_link, parse_gamebanana_mod_url
+
+_PAIR_URL = re.compile(rf"(?:{'|'.join(URL_PROTOCOL_SCHEMES)})://gb_pair/([\w-]+)/([\w-]+)/?", re.ASCII | re.IGNORECASE)
 
 
 def _parse_g3m_url(url: str) -> str:
@@ -24,6 +33,9 @@ def _parse_g3m_url(url: str) -> str:
 
 def handle_one_click_install(w, url: str):
     """Handle one-click install from a supported protocol URL. `w` is the AppWindow instance."""
+    if pair := _PAIR_URL.fullmatch(url):
+        _pair_remote_install(w, *pair.groups())
+        return
     if is_game_running():
         safe_show_message(w.feedback_service, "warning", "ui.warning", tr("errors.game_running"))
         return
@@ -34,6 +46,14 @@ def handle_one_click_install(w, url: str):
         _enqueue_g3m_url(w, url)
     else:
         w.mod_service.install_from_url(url)
+
+
+def _pair_remote_install(w, member_id: str, secret_key: str):
+    """Store the GameBanana Remote Install key after the user agrees to receive its queue."""
+    if QMessageBox.question(
+        w, tr("downloads.remote_install_title"), tr("downloads.remote_install_pair")
+    ) == QMessageBox.StandardButton.Yes:
+        w.remote_install_service.pair(member_id, secret_key)
 
 
 def _enqueue_g3m_url(w, url: str):
@@ -57,6 +77,19 @@ def _enqueue_g3m_url(w, url: str):
         return
     if parse_gamebanana_mod_url(download_url):
         w.mod_service.install_from_url(download_url)
+        return
+    link = parse_gamebanana_download_link(url.partition("://")[2])
+    if link and link[1]:
+        file_id, (item_type, mod_id) = link[0], link[1]
+        w.downloads_manager.enqueue_with_feedback(
+            w.feedback_service,
+            display_name=f"GameBanana mod {mod_id}",
+            source_kind=SourceKind.GAMEBANANA,
+            target_kind=TargetKind.MOD,
+            source_url=f"https://gamebanana.com/dl/{file_id}",
+            canonical_key=f"gb_{item_type.lower()}_{mod_id}_{file_id}",
+            metadata={"gb_mod_id": int(mod_id), "item_type": item_type.lower(), "gb_file_id": int(file_id)},
+        )
         return
     if local_path:
         w.downloads_manager.enqueue_with_feedback(

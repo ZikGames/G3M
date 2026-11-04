@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtGui import QScreen
+from PyQt6.QtGui import QFontMetrics, QGuiApplication, QScreen
 from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QStyle,
     QVBoxLayout,
+    QWidget,
 )
 
 from services.localization_service import tr
@@ -27,6 +28,13 @@ from services.warning_service import (
 )
 from ui.common.dialog_theme import DynamicDialog as QDialog
 from ui.common.dialog_theme import DynamicMessageBox as QMessageBox
+from utils.process_utils import (
+    DIALOG_MAX_CHARS,
+    DIALOG_MAX_LINES,
+    SCROLL_DIALOG_MAX_CHARS,
+    SCROLL_DIALOG_MAX_LINES,
+    limit_dialog_text,
+)
 
 if TYPE_CHECKING:
     from models.app_state import AppState
@@ -57,11 +65,23 @@ class FeedbackManager(QObject):
             return not self.app_state.game_is_running
         return True
 
-    @staticmethod
-    def _format_html(text: str) -> str:
-        return html.escape(text, quote=False).replace("\\n", "<br>").replace(
-            "\n", "<br>"
+    def _text_limits(self) -> tuple[int, int]:
+        """Lines and characters a plain message box can show without outgrowing its screen."""
+        parent = self.parent_widget
+        screen = parent.screen() if isinstance(parent, QWidget) else QGuiApplication.primaryScreen()
+        if screen is None:
+            return DIALOG_MAX_LINES, DIALOG_MAX_CHARS
+        # Two screen rows per line leave room for wrapping, the title and the buttons.
+        row = QFontMetrics(QGuiApplication.font()).lineSpacing()
+        lines = max(DIALOG_MAX_LINES, (screen.availableGeometry().height() - 260) // (row * 2))
+        return lines, max(DIALOG_MAX_CHARS, lines * 100)
+
+    def _format_html(self, text: str, max_lines: int = 0, max_chars: int = 0) -> str:
+        default_lines, default_chars = self._text_limits()
+        text = limit_dialog_text(
+            text.replace("\\n", "\n"), max_lines or default_lines, max_chars or default_chars
         )
+        return html.escape(text, quote=False).replace("\n", "<br>")
 
     def show_message(
         self, message_type: str, message_key: str, details: str = "", **kwargs
@@ -269,7 +289,8 @@ class FeedbackManager(QObject):
         while True:
             full_message = self._format_html(message_text)
             if details:
-                full_message = f"{full_message}<br><br>{self._format_html(details)}"
+                scrolled = self._format_html(details, SCROLL_DIALOG_MAX_LINES, SCROLL_DIALOG_MAX_CHARS)
+                full_message = f"{full_message}<br><br>{scrolled}"
             action, dont_show_again = self._exec_patching_warning_dialog(
                 title,
                 full_message,
@@ -305,7 +326,7 @@ class FeedbackManager(QObject):
         dialog.setModal(True)
         available = cast(QScreen, dialog.screen()).availableGeometry()
         dialog.setMinimumWidth(min(420, available.width() - 40))
-        dialog.setMaximumSize(available.width() - 40, available.height() - 80)
+        dialog.setMaximumSize(available.width() - 40, available.height())
         dialog.resize(min(760, dialog.maximumWidth()), min(460, dialog.maximumHeight()))
         dialog.setObjectName("patching_warning_dialog")
         result = {"action": "cancel"}
@@ -337,7 +358,9 @@ class FeedbackManager(QObject):
             definition = get_warning_definition(warning_event.warning_id)
             dialog.set_localized_title(definition.title_key, **warning_event.context)
             if not warning_event.fallback_message:
-                details = self._format_html(warning_event.details)
+                details = self._format_html(
+                    warning_event.details, SCROLL_DIALOG_MAX_LINES, SCROLL_DIALOG_MAX_CHARS
+                )
                 dialog.localize(
                     lambda text: message_label.setText(self._format_html(text) + (f"<br><br>{details}" if details else "")),
                     definition.body_key,

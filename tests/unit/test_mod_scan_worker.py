@@ -10,6 +10,7 @@ import pytest
 from PyQt6 import sip
 from PyQt6.QtCore import QObject
 
+from config.config import MOD_CONFIG_FILENAME
 from ui.utils.thread_lifetime import retire_qthread
 from utils.mod.scan_utils import scan_mods_directory
 from workers.mod.scan_worker import ModScanThread
@@ -192,3 +193,95 @@ def test_scan_mods_directory_stops_when_cancelled(tmp_path):
 
     assert cache == {}
     assert names == {}
+
+
+def _write_config(folder, **fields):
+    folder.mkdir()
+    (folder / MOD_CONFIG_FILENAME).write_text(json.dumps(fields), encoding="utf-8")
+
+
+def test_scan_reports_mods_saved_for_a_newer_g3m_and_keeps_the_rest(tmp_path):
+    _write_config(tmp_path / "future", config_version="3.0.0", id="future", name="Future Mod")
+    _write_config(tmp_path / "broken", config_version="2.0.0", id="broken")
+    _write_config(tmp_path / "old", config_version="1.0.0", id="old", name="Old Mod")
+    newer: list[str] = []
+
+    cache, _ = scan_mods_directory(str(tmp_path), newer_config_mods=newer)
+
+    assert newer == ["Future Mod"]
+    assert cache == {}
+
+
+@pytest.mark.parametrize("newest_folder", ["Kaizo Knight", "Kaizo Knight_1"])
+def test_scan_keeps_the_newest_version_when_two_folders_share_a_mod_id(tmp_path, newest_folder):
+    versions = {"Kaizo Knight": "2.3.3", "Kaizo Knight_1": "2.3.3"}
+    versions[newest_folder] = "3.0"
+    for folder, version in versions.items():
+        mod = tmp_path / folder
+        mod.mkdir()
+        (mod / MOD_CONFIG_FILENAME).write_text(
+            json.dumps(
+                {
+                    "config_version": "2.0.0",
+                    "id": "gb_mod_1",
+                    "name": "Kaizo Knight",
+                    "version": version,
+                    "authors": [],
+                    "game": "deltarune",
+                    "files": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    cache, mods_by_name = scan_mods_directory(str(tmp_path))
+    rescanned, _ = scan_mods_directory(str(tmp_path), cache)
+
+    for result in (cache, rescanned):
+        assert result["gb_mod_1"].folder_name == newest_folder
+        assert result["gb_mod_1"].config_data["version"] == "3.0"
+    assert mods_by_name == {"kaizo knight": "gb_mod_1"}
+
+
+def test_scan_forgets_the_old_name_of_a_mod_replaced_by_a_newer_copy(tmp_path):
+    for folder, name, version in (("Old", "Old Name", "1.0"), ("New", "New Name", "2.0")):
+        mod = tmp_path / folder
+        mod.mkdir()
+        (mod / MOD_CONFIG_FILENAME).write_text(
+            json.dumps(
+                {
+                    "config_version": "2.0.0",
+                    "id": "gb_mod_2",
+                    "name": name,
+                    "version": version,
+                    "authors": [],
+                    "game": "deltarune",
+                    "files": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    _, mods_by_name = scan_mods_directory(str(tmp_path))
+
+    assert mods_by_name == {"new name": "gb_mod_2"}
+
+
+def test_scan_reports_two_folders_with_one_mod_id_only_once(tmp_path, caplog, monkeypatch):
+    monkeypatch.setattr("utils.mod.scan_utils._reported_duplicates", set())
+    for folder in ("Twin", "Twin_1"):
+        mod = tmp_path / folder
+        mod.mkdir()
+        (mod / MOD_CONFIG_FILENAME).write_text(
+            json.dumps(
+                {"config_version": "2.0.0", "id": "gb_twin", "name": "Twin", "version": "1.0",
+                 "authors": [], "game": "deltarune", "files": []}
+            ),
+            encoding="utf-8",
+        )
+    caplog.set_level("WARNING", logger="utils.mod.scan_utils")
+
+    for _ in range(3):
+        scan_mods_directory(str(tmp_path))
+
+    assert caplog.text.count("share the mod id gb_twin") == 1

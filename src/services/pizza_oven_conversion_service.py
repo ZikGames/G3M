@@ -9,10 +9,7 @@ import re
 import shutil
 import tempfile
 import uuid
-<<<<<<< HEAD
-=======
 from collections.abc import Callable
->>>>>>> upstream/main
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 

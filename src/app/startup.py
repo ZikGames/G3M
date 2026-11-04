@@ -9,6 +9,7 @@ import os
 import platform
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -44,6 +45,7 @@ from config.config import (
 )
 from services.game_detection_service import get_running_game_process_name
 from services.localization_service import localization_service, tr
+from utils.log_format import ConciseFormatter
 from utils.path_utils import get_launcher_dir, resource_path
 
 logger = logging.getLogger(__name__)
@@ -77,7 +79,7 @@ def configure_logging(app_name: str, user_data_root: str) -> str:
     root = logging.getLogger()
     had_handlers = bool(root.handlers)
     root.setLevel(logging.INFO)
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    fmt = ConciseFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     has_log_file_handler = any(
         isinstance(handler, logging.FileHandler)
         and os.path.abspath(getattr(handler, "baseFilename", ""))
@@ -118,6 +120,17 @@ def _safe_critical(title: str, message: str) -> None:
         QMessageBox.critical(None, title, message)
     except Exception:
         logger.exception("Failed to show startup critical dialog")
+
+
+def _fail_startup(message: str) -> int:
+    """A windowed build has no console, so a startup failure needs a dialog and a file that survive a missing log."""
+    logger.error("STARTUP ERROR: %s", message)
+    log_file = os.path.join(tempfile.gettempdir(), "g3m-startup-error.log")
+    opener = lambda path, flags: os.open(path, flags, 0o600)  # noqa: E731  (owner only, /tmp is shared on Linux)
+    with contextlib.suppress(Exception), open(log_file, "a", encoding="utf-8", opener=opener) as handle:
+        handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+    _safe_critical(APP_DISPLAY_NAME, message)
+    return 1
 
 
 def install_crash_diagnostics(app_name: str, log_path: str) -> str:
@@ -207,14 +220,16 @@ def install_excepthook(show_message_callback=None):
     sys.excepthook = _hook
 
 
-def register_url_protocol():
+def _protocol_executable() -> str:
     if getattr(sys, "frozen", False):
-        executable_path = f'"{sys.executable}"'
-    else:
-        main_script_path = os.path.abspath(
-            os.path.join(get_launcher_dir(), "..", "src", "main.py")
-        )
-        executable_path = f'"{sys.executable}" "{main_script_path}"'
+        return f'"{sys.executable}"'
+    # get_launcher_dir() is src/utils when running from source, so main.py sits one level up
+    main_script_path = os.path.abspath(os.path.join(get_launcher_dir(), "..", "main.py"))
+    return f'"{sys.executable}" "{main_script_path}"'
+
+
+def register_url_protocol():
+    executable_path = _protocol_executable()
     system = platform.system()
     try:
         if system == "Windows":
@@ -320,7 +335,6 @@ def setup_app():
 
 def cleanup_old_temp_directories():
     import glob
-    import tempfile
 
     from utils.file_utils import safe_rmtree
 
@@ -381,9 +395,8 @@ def run_app(argv: list[str] | None = None) -> int:
         install_excepthook()
         cleanup_old_temp_directories()
     except Exception as e:
-        logger.exception("STARTUP ERROR: failed to initialize process: %s", e)
         traceback.print_exc(file=sys.stderr)
-        return 1
+        return _fail_startup(f"Failed to initialize: {e}\n\n{traceback.format_exc()}")
     parser = argparse.ArgumentParser(description=APP_DISPLAY_NAME)
     parser.add_argument(
         "--force-start",
@@ -397,7 +410,7 @@ def run_app(argv: list[str] | None = None) -> int:
     if socket.waitForConnected(500):
         payload = url_arg or SINGLE_INSTANCE_ACTIVATE
         if not _forward_to_running_instance(socket, payload):
-            return 1
+            return _fail_startup("Another G3M window is open but did not answer.")
         socket.disconnectFromServer()
         return 0
     legacy_lock_dir = QStandardPaths.writableLocation(
@@ -407,15 +420,13 @@ def run_app(argv: list[str] | None = None) -> int:
     try:
         os.makedirs(lock_dir, exist_ok=True)
     except OSError as error:
-        logger.error("Could not prepare the single-instance lock: %s", error)
-        return 1
+        return _fail_startup(f"Could not prepare the single-instance lock: {error}")
     instance_lock = QLockFile(os.path.join(lock_dir, "g3m.instance.lock"))
     instance_lock.setStaleLockTime(0)
     if not instance_lock.tryLock(0):
         lock_error = instance_lock.error()
         if lock_error != QLockFile.LockError.LockFailedError:
-            logger.error("Could not acquire the single-instance lock: %s", lock_error)
-            return 1
+            return _fail_startup(f"Could not acquire the single-instance lock: {lock_error}")
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             socket = QLocalSocket()
@@ -432,8 +443,7 @@ def run_app(argv: list[str] | None = None) -> int:
                 break
             time.sleep(0.1)
         else:
-            logger.error("Another G3M instance holds the startup lock")
-            return 1
+            return _fail_startup("Another G3M instance holds the startup lock.")
     cast(Any, app)._g3m_instance_lock = instance_lock
     _remove_legacy_lock_dir(legacy_lock_dir, lock_dir)
     QLocalServer.removeServer(SINGLE_INSTANCE_KEY)

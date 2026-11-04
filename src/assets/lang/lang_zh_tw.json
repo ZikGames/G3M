@@ -4,7 +4,7 @@
     "language_name": "繁體中文",
     "font": "NotoSans-Bold.ttf",
     "qt_translation": "qtbase_zh_tw",
-    "version": "3.4.3"
+    "version": "3.4.5"
   },
   "onboarding": {
     "title": "歡迎使用 G3M",
@@ -112,7 +112,7 @@
     "mod_summary_show_all": "顯示全部",
     "mod_summary_show_summary": "顯示摘要",
     "mod_summary_all_operations": "所有操作 ({count})",
-    "more_operation_warnings": "... 還有 {count} 則操作警告",
+    "more_in_log": "... 還有 {count} 項。詳情請查看日誌。",
     "manual_install_hint": "{count} 個項目 · {configured} 個已設定 · {unconfigured} 個未設定",
     "manual_install_configure": "儲存並進一步設定",
     "manual_install_unconfigured": "未設定",
@@ -739,6 +739,7 @@
     "unexpected_startup_error": "啟動時發生未預期錯誤：{details}",
     "modpack_creation_failed": "建立模組包失敗",
     "mod_patching_failed": "模組操作失敗。請查看日誌以瞭解詳細資訊。",
+    "mod_patch_mismatch": "{mod} 的修補檔 {patch} 與遊戲檔案不符。它是為另一個遊戲版本製作，或是為原始檔案製作而其他 Mod 已修改該檔案。請將修改同一檔案的 Mod 放入同一步驟，或安裝相符的遊戲版本。",
     "plugin_hook_failed": "外掛操作失敗。請查看日誌以瞭解詳細資訊。",
     "changelog_load_failed": "加載更新日誌失敗",
     "deletion_error": "刪除錯誤",
@@ -858,6 +859,7 @@
     "copy_font_failed": "複製字體失敗。",
     "gamebanana_install_failed": "從GameBanana安裝模組失敗：{error}",
     "mod_uninstall_failed": "卸載模組失敗：{error}",
+    "mod_busy": "模組「{mod_name}」正在套用補丁或分析中。請等待完成，或先取消操作。",
     "uninstall_failed": "卸載模組失敗",
     "game_running": "遊戲已經在執行。請先關閉它。"
   },
@@ -1008,6 +1010,8 @@
     "clear_downloads": "清除下載",
     "open_folder": "開啟資料夾",
     "external_download": "外部下載",
+    "remote_install_title": "GameBanana 遠端安裝",
+    "remote_install_pair": "要將此 G3M 連結到你的 GameBanana 遠端安裝嗎？你在 GameBanana 上傳送的模組將自動下載到這裡。",
     "empty_list": "目前沒有下載。",
     "status_downloading": "下載中 {progress}%",
     "status_installing": "安裝中…",
@@ -1031,6 +1035,12 @@
     "settings_no_auto_use": "不自動安裝已下載的檔案",
     "settings_delete_after_use": "安裝後刪除已下載的檔案",
     "settings_save_local_imports": "將本地匯入儲存到下載",
+    "settings_manual_install_always": "一律使用手動安裝",
+    "settings_manual_install_always_tip": "關閉時：手動安裝的自動掃描設定好已下載模組的所有檔案後，模組會自動安裝。",
+    "settings_docs_as_info": "自動將文件標記為資訊檔案",
+    "settings_docs_as_info_tip": "手動安裝的自動掃描會把 .md、.txt 等檔案設為資訊檔案。",
+    "settings_use_after_install": "安裝後立即使用模組",
+    "settings_use_after_install_tip": "模組會立即啟用，無需先選取再按 Use。",
     "already_downloading": "已在佇列中或正在下載",
     "enqueued": "已新增至下載：{name}",
     "confirm_external_title": "外部下載",
@@ -1544,7 +1554,11 @@
       "merge_failed": "合併失敗",
       "steam_launch_with_mods": "Steam 可能會啟動其他遊戲資料夾",
       "patching_warning": "其他補丁警告",
-      "direct_absolute_operation_paths": "模組使用直接絕對路徑"
+      "direct_absolute_operation_paths": "模組使用直接絕對路徑",
+      "missing_dependencies": "缺少所需模組",
+      "inactive_dependencies": "所需模組未啟用",
+      "mod_order_suggestion": "可以最佳化模組順序",
+      "newer_mod_config": "模組需要更新的 G3M"
     },
     "messages": {
       "xdelta_apply_failed": {
@@ -1570,6 +1584,10 @@
       "direct_absolute_operation_paths": {
         "title": "模組使用直接絕對路徑",
         "body": "此模組會存取設定的遊戲和模組資料夾以外的路徑。只有在信任此模組時才繼續。稍後可在模組編輯器中修改這些路徑。"
+      },
+      "newer_mod_config": {
+        "title": "部分模組需要更新的 G3M",
+        "body": "部分已安裝的模組是為較新版本的 G3M 製作的，不會顯示在你的清單中。請將 G3M 更新到最新版本以使用它們。仍要啟動嗎？"
       }
     },
     "tooltips": {
@@ -1578,7 +1596,11 @@
       "merge_failed": "當 G3MTool 無法合併所選模組或補丁時顯示。",
       "steam_launch_with_mods": "當 Steam 可能開啟的遊戲資料夾不是 G3M 剛修補的資料夾時顯示。",
       "patching_warning": "用於尚未分類的修補/合併風險。",
-      "direct_absolute_operation_paths": "當模組操作使用字面檔案系統路徑而非佔位符根目錄時顯示。"
+      "direct_absolute_operation_paths": "當模組操作使用字面檔案系統路徑而非佔位符根目錄時顯示。",
+      "missing_dependencies": "當所選模組需要未安裝的模組，或安裝這些模組失敗時，在啟動前顯示。",
+      "inactive_dependencies": "當所選模組需要已安裝但未選擇的模組時，在啟動前顯示。G3M 會建議啟用它們。",
+      "mod_order_suggestion": "當所選模組的順序與作者建議的順序不同時，在啟動前顯示。",
+      "newer_mod_config": "當已安裝的模組使用了此 G3M 無法讀取的較新格式時，在啟動前顯示。"
     }
   },
   "data_root": {

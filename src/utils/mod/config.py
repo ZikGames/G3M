@@ -210,7 +210,10 @@ class ModConfigValidationError(ValueError):
 
     def __init__(self, issues: tuple[ConfigValidationIssue, ...]) -> None:
         self.issues = issues
-        super().__init__("; ".join(f"{issue.path}: {issue.message}" for issue in issues))
+        details = [f"{issue.path}: {issue.message}" for issue in issues]
+        if len(details) > 10:
+            details = [*details[:10], f"... and {len(details) - 10} more"]
+        super().__init__("; ".join(details))
 
 
 class _DuplicateJsonKeyError(ValueError):
@@ -837,6 +840,21 @@ def load_mod_config(path: str | Path) -> dict[str, object]:
             (ConfigValidationIssue("json_depth", "$", "exceeds the maximum JSON nesting depth"),)
         ) from error
     return parse_mod_config(parsed)
+
+
+def newer_config_mod_name(path: str | Path) -> str | None:
+    """Name of the mod when its config_version is above the one this G3M reads, otherwise None."""
+    try:
+        data = json.loads(read_mod_config_bytes(path).decode("utf-8"))
+    except ValueError:
+        return None
+    version = data.get("config_version") if isinstance(data, dict) else None
+    if not isinstance(version, str):
+        return None
+    parts = tuple(int(part) for part in re.findall(r"\d+", version)[:3])
+    if parts <= tuple(int(part) for part in MOD_CONFIG_VERSION.split(".")):
+        return None
+    return str(data.get("name") or data.get("id") or Path(path).parent.name)
 
 
 def _write_config_payload(config_path: Path, payload: bytes) -> None:

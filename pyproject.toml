@@ -1,16 +1,17 @@
 [build-system]
-requires = ["setuptools==84.0.0", "wheel==0.48.0"]
+requires = ["setuptools==84.2.1", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "G3M"
-version = "3.4.3"
+version = "3.4.5"
 description = "G3M - GameMaker Mod Manager"
 readme = "README.md"
 requires-python = ">=3.14"
 license = { text = "GPL-3.0" }
 authors = [{ name = "Y114" }]
 dependencies = [
+    # Do not update: Qt 6.12 needs macOS 14 and drops older Macs.
     "PyQt6==6.11.0",
     "defusedxml==0.7.1",
     "playsound3==3.3.2",
@@ -25,12 +26,12 @@ dependencies = [
 [project.optional-dependencies]
 build = ["pyinstaller==6.22.3"]
 test = [
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-mock==3.17.0",
     "pytest-qt==4.5.0",
     "responses==0.26.3",
 ]
-dev = ["basedpyright==1.40.2", "ruff==0.17.1"]
+dev = ["basedpyright==1.40.2", "ruff==0.17.3"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

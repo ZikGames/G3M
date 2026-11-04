@@ -4,7 +4,7 @@
     "language_name": "English",
     "font": "NotoSans-Bold.ttf",
     "qt_translation": "qtbase_en",
-    "version": "3.4.3"
+    "version": "3.4.5"
   },
   "onboarding": {
     "title": "Welcome to G3M",
@@ -112,7 +112,7 @@
     "mod_summary_show_all": "Show all",
     "mod_summary_show_summary": "Show summary",
     "mod_summary_all_operations": "All operations ({count})",
-    "more_operation_warnings": "... and {count} more operation warnings",
+    "more_in_log": "... and {count} more. See the log for details.",
     "manual_install_hint": "{count} items · {configured} configured · {unconfigured} unconfigured",
     "manual_install_configure": "Save and configure",
     "manual_install_unconfigured": "Unconfigured",
@@ -739,6 +739,7 @@
     "unexpected_startup_error": "Unexpected startup error: {details}",
     "modpack_creation_failed": "Failed to create modpack",
     "mod_patching_failed": "Mod operation failed. Check the log for details.",
+    "mod_patch_mismatch": "The patch {patch} of {mod} does not fit the game file. It was made for another game version, or for the original file while another mod already changed it. Put mods that patch the same file into one step, or install the matching game version.",
     "plugin_hook_failed": "Plugin action failed. Check the log for details.",
     "changelog_load_failed": "Failed to load changelog",
     "deletion_error": "Deletion Error",
@@ -858,6 +859,7 @@
     "copy_font_failed": "Failed to copy font.",
     "gamebanana_install_failed": "Failed to install mod from GameBanana: {error}",
     "mod_uninstall_failed": "Failed to uninstall mod: {error}",
+    "mod_busy": "Mod '{mod_name}' is being patched or analyzed right now. Wait for it to finish or cancel it first.",
     "uninstall_failed": "Failed to uninstall mod",
     "game_running": "The game is already running. Close it first."
   },
@@ -1008,6 +1010,8 @@
     "clear_downloads": "Clear downloads",
     "open_folder": "Open folder",
     "external_download": "External download",
+    "remote_install_title": "GameBanana Remote Install",
+    "remote_install_pair": "Link this G3M to your GameBanana Remote Install? Mods you send from GameBanana will download here automatically.",
     "empty_list": "No downloads yet.",
     "status_downloading": "Downloading {progress}%",
     "status_installing": "Installing…",
@@ -1031,6 +1035,12 @@
     "settings_no_auto_use": "Do not install downloaded files automatically",
     "settings_delete_after_use": "Delete downloaded file after use",
     "settings_save_local_imports": "Save local imports in Downloads",
+    "settings_manual_install_always": "Always install through Manual installation",
+    "settings_manual_install_always_tip": "Off: when the automatic scan in Manual installation sets up every file of a downloaded mod, the mod installs by itself.",
+    "settings_docs_as_info": "Mark documents as info files automatically",
+    "settings_docs_as_info_tip": "The automatic scan in Manual installation sets .md, .txt and similar files as info files.",
+    "settings_use_after_install": "Use a mod right after it is installed",
+    "settings_use_after_install_tip": "The mod is turned on at once, with no need to select it and press Use.",
     "already_downloading": "Already queued or downloading",
     "enqueued": "Added to Downloads: {name}",
     "confirm_external_title": "External Download",
@@ -1571,7 +1581,11 @@
       "merge_failed": "Merge failed",
       "steam_launch_with_mods": "Steam may launch a different game folder",
       "patching_warning": "Other patching warning",
-      "direct_absolute_operation_paths": "Mod uses direct absolute paths"
+      "direct_absolute_operation_paths": "Mod uses direct absolute paths",
+      "missing_dependencies": "Required mods are missing",
+      "inactive_dependencies": "Required mods are not active",
+      "mod_order_suggestion": "Mod order can be improved",
+      "newer_mod_config": "Mods need a newer G3M"
     },
     "messages": {
       "xdelta_apply_failed": {
@@ -1597,6 +1611,10 @@
       "direct_absolute_operation_paths": {
         "title": "Mod uses direct absolute paths",
         "body": "This mod accesses paths outside the configured game and mod roots. Only continue if you trust the mod. You can edit these paths later in the Mod Editor."
+      },
+      "newer_mod_config": {
+        "title": "Some mods need a newer G3M",
+        "body": "Some installed mods were made for a newer version of G3M and are not shown in your list. Update G3M to the latest version to use them. Launch anyway?"
       }
     },
     "tooltips": {
@@ -1605,7 +1623,11 @@
       "merge_failed": "Shown when G3MTool cannot merge the selected mods or patches.",
       "steam_launch_with_mods": "Shown when Steam launch may open a different game folder than the one G3M patched.",
       "patching_warning": "Shown for uncategorized patching and merging risks.",
-      "direct_absolute_operation_paths": "Shown when a mod operation uses a literal filesystem path instead of a placeholder root."
+      "direct_absolute_operation_paths": "Shown when a mod operation uses a literal filesystem path instead of a placeholder root.",
+      "missing_dependencies": "Shown before launch when a selected mod needs mods that are not installed, and when installing them did not work.",
+      "inactive_dependencies": "Shown before launch when a selected mod needs installed mods that are not selected. G3M offers to activate them.",
+      "mod_order_suggestion": "Shown before launch when the order of the selected mods differs from the order their authors recommend.",
+      "newer_mod_config": "Shown before launch when installed mods use a newer mod format than this G3M reads."
     }
   },
   "data_root": {

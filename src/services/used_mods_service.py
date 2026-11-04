@@ -522,7 +522,8 @@ class UsedModsManager(QObject):
         """Find mod by id from all_mods, installed mods, or config."""
         if hasattr(self.app_state, "all_mods") and self.app_state.all_mods:
             for mod in self.app_state.all_mods:
-                if get_mod_id(mod) == mod_id:
+                # all_mods also holds browser entries, which must not revive a deleted mod
+                if get_mod_id(mod) == mod_id and not self._is_mod_confirmed_missing(mod_id):
                     return mod
         if self.parent_widget:
             for im in self.mod_service.get_installed_mods_list():

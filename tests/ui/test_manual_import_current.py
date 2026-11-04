@@ -1541,7 +1541,7 @@ def test_manual_install_can_close_and_delete_while_detection_runs(qtbot, manual_
     (tmp_path / "file.bin").write_bytes(b"payload")
     started, released = threading.Event(), threading.Event()
 
-    def detect(_files, _context, _apply, *, cancelled, progress):
+    def detect(_files, _context, _apply, *, cancelled, progress, **_options):
         started.set()
         try:
             assert released.wait(5)
@@ -1613,3 +1613,55 @@ def test_empty_manual_install_save_tooltip_explains_how_to_retry(qtbot, manual_p
         assert not button.isEnabled()
         assert button is not None
         assert button.toolTip() == tr("tooltips.manual_install_save_no_files")
+
+
+def test_manual_install_adds_a_custom_game_and_selects_it(
+    qtbot, manual_parent, tmp_path, monkeypatch
+):
+    import ui.dialogs.manual_install.dialog as module
+    from ui.dialogs.custom_game_dialog import CustomGameDialog
+
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    (prepared / "patch.xdelta").write_text("patch", encoding="utf-8")
+    entries = [SimpleNamespace(id="deltarune", display_name="DELTARUNE")]
+
+    def create(**values):
+        entries.append(SimpleNamespace(id="mystery", display_name=values["display_name"]))
+        return entries[-1]
+
+    registry = Mock(create_custom_game=Mock(side_effect=create))
+    vars(manual_parent)["game_registry_service"] = registry
+    monkeypatch.setattr(module, "get_visible_game_entries", lambda: list(entries))
+    monkeypatch.setattr(module, "get_game", lambda _game_id: None)
+
+    def accept(dialog):
+        dialog.display_name_edit.setText("Mystery")
+        dialog.primary_executable_edit.setText("mystery.exe")
+        dialog.data_file_name_edit.setText("data.win")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(CustomGameDialog, "exec", accept)
+    dialog = ManualModInstallDialog(manual_parent, str(prepared))
+    assert dialog.add_game_button.toolTip() == tr("games.add_custom_title")
+    assert not dialog.add_game_button.icon().isNull()
+
+    dialog.add_game_button.click()
+
+    assert [dialog.game_combo.itemData(i) for i in range(dialog.game_combo.count())] == [
+        "deltarune",
+        "mystery",
+    ]
+    assert dialog.game_combo.currentData() == "mystery"
+    assert registry.create_custom_game.call_args.kwargs["primary_executable"] == "mystery.exe"
+    dialog._stop_detection()
+
+
+def test_manual_install_hides_the_add_game_button_without_a_registry(manual_parent, tmp_path):
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    (prepared / "patch.xdelta").write_text("patch", encoding="utf-8")
+    dialog = ManualModInstallDialog(manual_parent, str(prepared))
+
+    assert dialog.add_game_button.isHidden()
+    dialog._stop_detection()

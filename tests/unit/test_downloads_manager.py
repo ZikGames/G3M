@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from models.download_models import (
     DownloadRecord,
     DownloadStatus,
@@ -227,3 +229,90 @@ def test_gamebanana_update_uses_its_snapshotted_mods_directory(tmp_path, monkeyp
         }
     }
     assert not (active_profile / "mods_data.json").exists()
+
+
+def test_installs_run_one_at_a_time(tmp_path, monkeypatch):
+    manager = DownloadsManager(str(tmp_path), lambda: {})
+    manager.set_app_context(mods_dir=str(tmp_path))
+    archive = tmp_path / "mod.zip"
+    archive.write_bytes(b"x")
+    running = DownloadRecord(id="running", target_kind=TargetKind.MOD, use_status=UseStatus.USING, file_path=str(archive), file_exists=True)
+    waiting = DownloadRecord(id="waiting", target_kind=TargetKind.MOD, file_path=str(archive), file_exists=True)
+    manager.store.add(running)
+    manager.store.add(waiting)
+    manager._workers["running"] = Mock()
+    retries = []
+    monkeypatch.setattr("services.downloads.manager.QTimer.singleShot", lambda ms, callback: retries.append((ms, callback)))
+
+    manager._start_use("waiting")
+
+    assert waiting.use_status != UseStatus.USING
+    assert len(retries) == 1
+
+
+def _finished_mod_record(**changes):
+    return DownloadRecord(id="old", display_name="Mod", canonical_key="gb_mod_1_2", download_status=DownloadStatus.DOWNLOADED,
+                          use_status=UseStatus.READY, file_exists=False, **changes)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"ever_installed": True},
+        {"use_status": UseStatus.NEEDS_MANUAL},
+        {"use_status": UseStatus.FAILED},
+        {"use_status": UseStatus.CANCELLED},
+    ],
+)
+def test_a_mod_can_be_downloaded_again_after_a_finished_attempt(tmp_path, monkeypatch, changes):
+    manager = DownloadsManager(str(tmp_path), lambda: {})
+    started = []
+    monkeypatch.setattr(manager, "_start_download", started.append)
+    previous = _finished_mod_record()
+    for name, value in changes.items():
+        setattr(previous, name, value)
+    manager.store.add(previous)
+
+    record_id, duplicate = manager.enqueue("Mod", canonical_key="gb_mod_1_2")
+
+    assert not duplicate
+    assert record_id != previous.id
+    assert manager.store.find(previous.id) is None
+    assert len(started) == 1
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"download_status": DownloadStatus.DOWNLOADING},
+        {"use_status": UseStatus.USING},
+        {"use_status": UseStatus.PENDING_AUTO},
+        {"use_status": UseStatus.READY},  # downloaded and waiting for the user to install it
+    ],
+)
+def test_a_mod_that_is_active_or_waiting_is_not_queued_twice(tmp_path, monkeypatch, changes):
+    manager = DownloadsManager(str(tmp_path), lambda: {})
+    monkeypatch.setattr(manager, "_start_download", lambda _record: None)
+    previous = _finished_mod_record()
+    for name, value in changes.items():
+        setattr(previous, name, value)
+    manager.store.add(previous)
+
+    assert manager.enqueue("Mod", canonical_key="gb_mod_1_2") == (previous.id, True)
+
+
+@pytest.mark.parametrize(("always_manual", "queued"), [(False, ["manual"]), (True, [])])
+def test_a_mod_that_needs_manual_install_is_tried_automatically_unless_the_setting_forbids_it(
+    tmp_path, qapp, monkeypatch, always_manual, queued
+):
+    manager = DownloadsManager(str(tmp_path), lambda: {"manual_install_always": always_manual})
+    record = DownloadRecord(id="manual", display_name="Mod", target_kind=TargetKind.MOD)
+    manager._store.add(record)
+    monkeypatch.setattr(manager, "_next_auto_manual", Mock())
+
+    manager._on_use_finished("manual", False, True, "")
+
+    assert manager._auto_manual_queue == queued
+    stored = manager._store.find("manual")
+    assert stored is not None
+    assert stored.use_status == UseStatus.NEEDS_MANUAL

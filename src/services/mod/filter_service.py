@@ -176,14 +176,10 @@ def filter_and_sort_mods(
             continue
         if only_gamebanana and not is_gb:
             continue
-<<<<<<< HEAD
-        if filters.get("only_g3m") and mod_id not in GameBananaAPI.g3m_confirmed:
-=======
         if filters.get("only_g3m") and not (
             (entry := GameBananaAPI.g3m_confirmed.get(mod_id or ""))
             and entry.game in ("", selected_game)
         ):
->>>>>>> upstream/main
             continue
         if exclude_installed and mod_id in installed_ids:
             continue

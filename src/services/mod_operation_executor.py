@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
+import logging
 import os
 import shutil
 import stat
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from services.mod_usage import hold_mods
 from utils.mod.archive import (
     ArchiveVirtualPath,
     archive_format,
@@ -32,6 +36,7 @@ ProgressFunction = Callable[[int, int, PlannedModOperation], None]
 # overall fraction 0..1, operations finished before the step, total operations, the step's first
 # operation, percent of the step the patch backend has reported
 StepProgressFunction = Callable[[float, int, int, PlannedModOperation, int], None]
+logger = logging.getLogger(__name__)
 _MERGEABLE_DATA_SUFFIXES = frozenset({".win", ".ios", ".droid", ".unx"})
 
 
@@ -47,6 +52,15 @@ def _is_mergeable_target(target: Path | ArchiveVirtualPath | None) -> bool:
 
 class ModOperationExecutionError(RuntimeError):
     """An operation cannot safely be applied."""
+
+
+class ModPatchMismatchError(ModOperationExecutionError):
+    """A patch was made for another file than the one it met: another game version or another mod's earlier patch."""
+
+    def __init__(self, mod_id: str | None, patch: str) -> None:
+        super().__init__(f"{mod_id or 'a mod'}: patch {patch} does not match the file it was applied to")
+        self.mod_id = mod_id
+        self.patch = patch
 
 
 class ModOperationCancelledError(ModOperationExecutionError):
@@ -78,7 +92,7 @@ class ModOperationJournal:
             previous = self.load(self.root)
             if previous.state not in {"restored", "retired"}:
                 raise ModOperationExecutionError("a previous operation session requires recovery")
-            shutil.rmtree(self.backups, ignore_errors=True)
+            remove_tree(self.backups, ignore_errors=True)
         self.root.mkdir(parents=True, exist_ok=True)
         self.backups.mkdir(exist_ok=True)
         self.entries: list[JournalEntry] = []
@@ -218,7 +232,7 @@ class ModOperationJournal:
                 else:
                     _remove_controlled_paths(target, entry.controlled_paths)
                 continue
-            _remove_path(target)
+            remove_path(target)
             if entry.kind == "file":
                 backup = self.root / str(entry.backup)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -250,11 +264,11 @@ class ModOperationJournal:
     def retire(self) -> None:
         """Keep external changes and mark this recovery session as resolved."""
         self._write_manifest("retired")
-        shutil.rmtree(self.backups, ignore_errors=True)
+        remove_tree(self.backups, ignore_errors=True)
 
     def discard(self) -> None:
         """Forget a successfully committed permanent operation and its backups."""
-        shutil.rmtree(self.root)
+        remove_tree(self.root)
 
     def _capture_one(
         self,
@@ -275,6 +289,7 @@ class ModOperationJournal:
             return
         backup_relative = f"backups/{len(self.entries):08d}"
         backup = self.root / backup_relative
+        remove_tree(backup, ignore_errors=True)  # a leftover from an earlier session must not block this copy
         if _path_exists(target):
             if _is_link(target):
                 backup.parent.mkdir(parents=True, exist_ok=True)
@@ -325,6 +340,23 @@ class ModOperationJournal:
                 os.unlink(temporary_name)
 
 
+def _discard_temporary(path: Path) -> None:
+    """Remove a temp file; a just-killed backend may still hold it for a moment."""
+    for attempt in range(10):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == 9:
+                # the real failure (a cancel or a backend error) is already propagating
+                logger.warning("Could not remove the temporary file %s", path)
+                return
+            time.sleep(0.2)
+        else:
+            return
+
+
 def _accepts_progress(backend: Callable[..., object]) -> bool:
     try:
         parameters = inspect.signature(backend).parameters
@@ -358,6 +390,16 @@ class ModOperationExecutor:
         progress: ProgressFunction | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         step_progress: StepProgressFunction | None = None,
+    ) -> ModOperationJournal:
+        with hold_mods(operation.mod_id for operation in plan.operations):
+            return self._execute(plan, progress, is_cancelled, step_progress)
+
+    def _execute(
+        self,
+        plan: ModOperationPlan,
+        progress: ProgressFunction | None,
+        is_cancelled: Callable[[], bool] | None,
+        step_progress: StepProgressFunction | None,
     ) -> ModOperationJournal:
         if plan.has_errors:
             raise ModOperationExecutionError("operation plan contains unresolved errors")
@@ -497,10 +539,9 @@ class ModOperationExecutor:
                     raise ModOperationExecutionError(
                         "patch merge backend did not produce an output file"
                     )
-                os.replace(output, resolved_target)
+                replace_file(output, resolved_target)
             finally:
-                with suppress(FileNotFoundError):
-                    output.unlink()
+                _discard_temporary(output)
             if isinstance(target, ArchiveVirtualPath):
                 if archive_root is None:
                     raise ModOperationExecutionError("archive merge workspace is unavailable")
@@ -594,13 +635,17 @@ class ModOperationExecutor:
         temporary = Path(temporary_name)
         try:
             temporary.unlink()
-            result = self._call_backend(self.patcher, target, source, temporary)
+            try:
+                result = self._call_backend(self.patcher, target, source, temporary)
+            except ModOperationExecutionError as error:
+                if "checksum mismatch" in str(error):  # xdelta3: the patch expects a different source file
+                    raise ModPatchMismatchError(operation.mod_id, source.name) from error
+                raise
             if result is False or not temporary.is_file():
                 raise ModOperationExecutionError("patch backend did not produce an output file")
-            os.replace(temporary, target)
+            replace_file(temporary, target)
         finally:
-            with suppress(FileNotFoundError):
-                temporary.unlink()
+            _discard_temporary(temporary)
 
     def _apply_overwrite(self, operation: PlannedModOperation, source: Path, target: Path) -> None:
         soft = operation.type == "soft-overwrite"
@@ -610,7 +655,7 @@ class ModOperationExecutor:
             destination = target / source.name if operation.target_is_directory else target
             if hard:
                 if operation.target_is_directory:
-                    _remove_path(destination)
+                    remove_path(destination)
                 else:
                     self._clear_hard_root(operation, target.parent)
             _copy_tree(source, destination, soft=soft)
@@ -687,7 +732,7 @@ def _copy_file(source: Path, target: Path, *, soft: bool) -> None:
     if _path_exists(target):
         if soft:
             return
-        _remove_path(target)
+        remove_path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
 
@@ -723,13 +768,13 @@ def _extract_tree(source: Path, target: Path, *, soft: bool) -> None:
 def _clear_directory(path: Path) -> None:
     _assert_target_parents_safe(path)
     if _is_link(path) or (_path_exists(path) and not path.is_dir()):
-        _remove_path(path)
+        remove_path(path)
     path.mkdir(parents=True, exist_ok=True)
     for child in path.iterdir():
-        _remove_path(child)
+        remove_path(child)
 
 
-def _remove_path(path: Path) -> None:
+def remove_path(path: Path) -> None:
     if not _path_exists(path):
         return
     _assert_target_parents_safe(path)
@@ -737,9 +782,50 @@ def _remove_path(path: Path) -> None:
         _unlink_link(path)
         return
     if path.is_dir():
-        shutil.rmtree(path)
-    else:
+        remove_tree(path)
+        return
+    try:
         path.unlink()
+    except PermissionError:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+        path.unlink()
+
+
+def replace_file(source: Path, target: Path) -> None:
+    """os.replace that copes with a read-only target and a file another program holds for a moment."""
+    for attempt in range(4):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == 3:
+                raise
+            with contextlib.suppress(OSError):
+                os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+            time.sleep(0.2 * (attempt + 1))
+
+
+def remove_tree(path: Path, *, ignore_errors: bool = False) -> None:
+    """Remove a tree whose folders may be read-only, as Windows game folders often are."""
+
+    def clear_read_only(function: Callable[[str], object], name: str, error: BaseException) -> None:
+        try:
+            os.chmod(name, stat.S_IWRITE | stat.S_IREAD | stat.S_IEXEC)
+            function(name)
+        except FileNotFoundError:
+            return
+        except OSError:
+            if not ignore_errors:
+                raise error from None
+
+    if _is_link(path):
+        try:
+            _unlink_link(path)
+        except OSError:
+            if not ignore_errors:
+                raise
+    elif path.exists():
+        shutil.rmtree(path, onexc=clear_read_only)
 
 
 def _restore_directory_preserving_external(
@@ -749,7 +835,7 @@ def _restore_directory_preserving_external(
     if not _path_exists(target):
         shutil.copytree(backup, target, symlinks=True)
     elif _is_link(target) or not target.is_dir():
-        _remove_path(target)
+        remove_path(target)
         shutil.copytree(backup, target, symlinks=True)
     else:
         for source in backup.iterdir():
@@ -757,7 +843,7 @@ def _restore_directory_preserving_external(
             if source.is_dir() and not _is_link(source) and destination.is_dir() and not _is_link(destination):
                 _restore_directory_preserving_external(source, destination, ())
             else:
-                _remove_path(destination)
+                remove_path(destination)
                 if _is_link(source):
                     _copy_link(source, destination)
                 elif source.is_dir():
@@ -792,7 +878,7 @@ def _controlled_paths(source: Path, destination: Path, root: Path) -> tuple[str,
 
 def _remove_controlled_paths(target: Path, controlled_paths: tuple[str, ...]) -> None:
     for relative_path in controlled_paths:
-        _remove_path(target / relative_path)
+        remove_path(target / relative_path)
 
 
 def _path_hash(path: Path) -> str | None:
@@ -813,7 +899,7 @@ def _ensure_directory(path: Path, *, soft: bool) -> bool:
     if _is_link(path) or (_path_exists(path) and not path.is_dir()):
         if soft:
             return False
-        _remove_path(path)
+        remove_path(path)
     path.mkdir(parents=True, exist_ok=True)
     return True
 

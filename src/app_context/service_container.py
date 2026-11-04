@@ -18,6 +18,7 @@ from services.plugins.install_service import PluginInstallService
 from services.plugins.runtime_service import PluginRuntimeService
 from services.plugins.state_service import PluginStateService
 from services.profile_service import ProfileService
+from services.remote_install_service import RemoteInstallService
 from services.settings_service import SettingsManager
 from services.updatecheck_service import UpdateChecker
 from services.used_mods_service import UsedModsManager
@@ -38,6 +39,7 @@ class ServiceContainer:
     customization_service: CustomizationManager
     used_mods_service: UsedModsManager
     downloads_manager: DownloadsManager
+    remote_install_service: RemoteInstallService
     game_versions_manager: GameVersionsManager
     pizza_oven_conversion_service: PizzaOvenConversionService
     plugin_state_service: PluginStateService | None

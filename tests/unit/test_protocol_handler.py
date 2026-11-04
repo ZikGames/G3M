@@ -1,6 +1,9 @@
 """Tests for protocol handler functionality."""
 from unittest.mock import Mock, patch
 
+import pytest
+from PyQt6.QtWidgets import QMessageBox
+
 from app.protocol_handler import (
     _enqueue_g3m_url,
     _local_protocol_path,
@@ -263,3 +266,46 @@ class TestProtocolHandler:
 
         call_args = w.downloads_manager.enqueue_with_feedback.call_args
         assert call_args[1]['display_name'] == 'example.com'
+
+
+@pytest.mark.parametrize("scheme", ["g3m", "deltahub", "G3M"])
+@patch("app.protocol_handler.QMessageBox.question")
+def test_pair_link_stores_the_key_after_the_user_agrees(question, scheme):
+    question.return_value = QMessageBox.StandardButton.Yes
+    w = Mock()
+
+    handle_one_click_install(w, f"{scheme}://gb_pair/4242/Secret-Key_1/")
+
+    w.remote_install_service.pair.assert_called_once_with("4242", "Secret-Key_1")
+
+
+@patch("app.protocol_handler.QMessageBox.question")
+def test_pair_link_is_ignored_when_the_user_declines(question):
+    question.return_value = QMessageBox.StandardButton.No
+    w = Mock()
+
+    handle_one_click_install(w, "g3m://gb_pair/4242/key")
+
+    w.remote_install_service.pair.assert_not_called()
+
+
+@pytest.mark.parametrize("url", ["g3m://gb_pair/4242", "g3m://gb_pair/4242/a/b", "g3m://gb_pair//key", "g3m://gb_pairs/4242/key"])
+@patch("app.protocol_handler.is_game_running", Mock(return_value=True))
+@patch("app.protocol_handler.QMessageBox.question")
+def test_malformed_pair_link_is_not_a_pair(question, url):
+    w = Mock()
+
+    handle_one_click_install(w, url)
+
+    question.assert_not_called()
+    w.remote_install_service.pair.assert_not_called()
+
+
+def test_source_run_registers_the_real_main_script():
+    from pathlib import Path
+
+    from app import startup
+
+    command = startup._protocol_executable()
+
+    assert Path(command.split('" "')[-1].rstrip('"')).is_file()

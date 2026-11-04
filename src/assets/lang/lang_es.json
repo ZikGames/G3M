@@ -4,7 +4,7 @@
     "language_name": "Español",
     "font": "NotoSans-Bold.ttf",
     "qt_translation": "qtbase_es",
-    "version": "3.4.3"
+    "version": "3.4.5"
   },
   "onboarding": {
     "title": "Bienvenido a G3M",
@@ -112,7 +112,7 @@
     "mod_summary_show_all": "Mostrar todo",
     "mod_summary_show_summary": "Mostrar resumen",
     "mod_summary_all_operations": "Todas las operaciones ({count})",
-    "more_operation_warnings": "... y {count} advertencias de operaciones más",
+    "more_in_log": "... y {count} más. Consulta el registro para ver los detalles.",
     "manual_install_hint": "{count} elementos · {configured} configurados · {unconfigured} sin configurar",
     "manual_install_configure": "Guardar y configurar",
     "manual_install_unconfigured": "Sin configurar",
@@ -739,6 +739,7 @@
     "unexpected_startup_error": "Error inesperado al iniciar: {details}",
     "modpack_creation_failed": "Error al crear modpack",
     "mod_patching_failed": "Error en la operación del mod. Consulta el registro para más detalles.",
+    "mod_patch_mismatch": "El parche {patch} de {mod} no corresponde al archivo del juego. Se hizo para otra versión del juego, o para el archivo original cuando otro mod ya lo había cambiado. Pon los mods que parchean el mismo archivo en un solo paso, o instala la versión del juego adecuada.",
     "plugin_hook_failed": "Error en la acción del plugin. Consulta el registro para más detalles.",
     "changelog_load_failed": "Error al cargar registro de cambios",
     "deletion_error": "Error de Eliminación",
@@ -858,6 +859,7 @@
     "copy_font_failed": "No se pudo copiar la fuente.",
     "gamebanana_install_failed": "Error al instalar el mod desde GameBanana: {error}",
     "mod_uninstall_failed": "Error al desinstalar mod: {error}",
+    "mod_busy": "El mod '{mod_name}' se está parcheando o analizando ahora. Espera a que termine o cancélalo primero.",
     "uninstall_failed": "Error al desinstalar mod",
     "game_running": "El juego ya se está ejecutando. Ciérralo primero."
   },
@@ -1008,6 +1010,8 @@
     "clear_downloads": "Limpiar descargas",
     "open_folder": "Abrir carpeta",
     "external_download": "Descarga externa",
+    "remote_install_title": "Instalación remota de GameBanana",
+    "remote_install_pair": "¿Vincular este G3M a tu instalación remota de GameBanana? Los mods que envíes desde GameBanana se descargarán aquí automáticamente.",
     "empty_list": "No hay descargas aún.",
     "status_downloading": "Descargando {progress}%",
     "status_installing": "Instalando…",
@@ -1031,6 +1035,12 @@
     "settings_no_auto_use": "No instalar archivos descargados automáticamente",
     "settings_delete_after_use": "Eliminar archivo descargado después de instalar",
     "settings_save_local_imports": "Guardar importaciones locales en Descargas",
+    "settings_manual_install_always": "Instalar siempre con la instalación manual",
+    "settings_manual_install_always_tip": "Desactivado: si el escaneo automático de la instalación manual configura todos los archivos de un mod descargado, el mod se instala solo.",
+    "settings_docs_as_info": "Marcar los documentos como archivos de info automáticamente",
+    "settings_docs_as_info_tip": "El escaneo automático de la instalación manual marca .md, .txt y similares como archivos de info.",
+    "settings_use_after_install": "Usar un mod justo después de instalarlo",
+    "settings_use_after_install_tip": "El mod se activa al instante, sin seleccionarlo ni pulsar Use.",
     "already_downloading": "Ya en cola o descargando",
     "enqueued": "Añadido a Descargas: {name}",
     "confirm_external_title": "Descarga externa",
@@ -1558,7 +1568,11 @@
       "merge_failed": "Falló la fusión",
       "steam_launch_with_mods": "Steam puede iniciar otra carpeta del juego",
       "patching_warning": "Otra advertencia de parcheo",
-      "direct_absolute_operation_paths": "El mod usa rutas absolutas directas"
+      "direct_absolute_operation_paths": "El mod usa rutas absolutas directas",
+      "missing_dependencies": "Faltan mods requeridos",
+      "inactive_dependencies": "Los mods requeridos no están activos",
+      "mod_order_suggestion": "El orden de los mods se puede mejorar",
+      "newer_mod_config": "Los mods necesitan un G3M más nuevo"
     },
     "messages": {
       "xdelta_apply_failed": {
@@ -1584,6 +1598,10 @@
       "direct_absolute_operation_paths": {
         "title": "El mod usa rutas absolutas directas",
         "body": "Este mod accede a rutas fuera de las carpetas configuradas del juego y del mod. Continúa solo si confías en el mod. Puedes editar estas rutas después en el editor de mods."
+      },
+      "newer_mod_config": {
+        "title": "Algunos mods necesitan un G3M más nuevo",
+        "body": "Algunos mods instalados se crearon para una versión más nueva de G3M y no aparecen en tu lista. Actualiza G3M a la última versión para usarlos. ¿Iniciar de todos modos?"
       }
     },
     "tooltips": {
@@ -1592,7 +1610,11 @@
       "merge_failed": "Se muestra cuando G3MTool no puede fusionar los mods o parches seleccionados.",
       "steam_launch_with_mods": "Se muestra cuando Steam puede abrir una carpeta de juego distinta de la que G3M parcheó.",
       "patching_warning": "Se muestra para riesgos aún no clasificados de parcheo y fusión.",
-      "direct_absolute_operation_paths": "Se muestra cuando una operación de mod usa una ruta literal del sistema de archivos en lugar de una raíz con marcador de posición."
+      "direct_absolute_operation_paths": "Se muestra cuando una operación de mod usa una ruta literal del sistema de archivos en lugar de una raíz con marcador de posición.",
+      "missing_dependencies": "Se muestra antes de iniciar cuando un mod seleccionado necesita mods que no están instalados, y cuando no se pudieron instalar.",
+      "inactive_dependencies": "Se muestra antes de iniciar cuando un mod seleccionado necesita mods instalados que no están seleccionados. G3M ofrece activarlos.",
+      "mod_order_suggestion": "Se muestra antes de iniciar cuando el orden de los mods seleccionados difiere del que recomiendan sus autores.",
+      "newer_mod_config": "Se muestra antes de iniciar cuando hay mods instalados con un formato más nuevo del que lee este G3M."
     }
   },
   "data_root": {

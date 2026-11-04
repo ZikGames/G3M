@@ -12,14 +12,12 @@ from PyQt6.QtCore import pyqtSignal
 from adapters.gamebanana_adapter import GameBananaAPI
 from config.config import (
     MOD_CONFIG_FILENAME,
-    NETWORK_TIMEOUT_SHORT,
     THEME_CONFIG_FILENAME,
     THEME_CONFIG_FILENAMES,
     UI_COLORS,
     URL_PROTOCOL_PREFIXES,
 )
 from models.exceptions import AppError
-from models.game_modes import get_gamebanana_reverse_map
 from services.localization_service import tr
 from services.migration_service import normalize_theme_settings
 from ui.dialogs.mod.version_choice_dialog import WorkerVersionChoice
@@ -93,22 +91,8 @@ class UrlInstallThread(BaseInstallWorker):
             else:
                 download_url = self.url
             if item := parse_gamebanana_mod_url(download_url):
-                api = GameBananaAPI()
                 item_type, mod_id = item
-                profile = api.get_mod_profile_page(mod_id, itemtype=item_type, max_retries=0, timeout=NETWORK_TIMEOUT_SHORT)
-                if not profile:
-                    raise AppError("errors.mod_not_found")
-                game_id = api._safe_int((profile.get("_aGame") or {}).get("_idRow")) or 0
-                mod = api._map_mod_data(profile, get_gamebanana_reverse_map().get(game_id, "deltarune"), is_wip=item_type == "Wip")
-                if not mod:
-                    raise AppError("errors.mod_not_found")
-                files = profile.get("_aFiles") or []
-                for entry in files.values() if isinstance(files, dict) else files:
-                    if not isinstance(entry, dict) or not (file_id := api._safe_int(entry.get("_idRow"))) or not entry.get("_bHasContents", True) or entry.get("_bIsArchived"):
-                        continue
-                    mod.gamebanana_supported_files.append(api._build_file_metadata(file_id, entry))
-                if not mod.gamebanana_supported_files:
-                    raise AppError("errors.mod_no_files", mod_name=mod.name)
+                mod = GameBananaAPI().get_installable_mod(mod_id, item_type)
                 self._safe_emit(self.gamebanana_mod_ready, self, None if self._cancelled or self.isInterruptionRequested() else mod)
                 return
             with tempfile.TemporaryDirectory(prefix="g3m-url-install-") as temp_dir:

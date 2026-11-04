@@ -1,15 +1,34 @@
-<details>
-<summary><h3>Version 3.4.4 — Unreleased - Y114</h3></summary>
+### Version 3.4.5 — 04.11.26
 
+- Dates now follow your system region format (DD-MM-YYYY, MM/DD/YYYY, and so on).
+- When the automatic scan in Manual installation sets up every file of a downloaded mod, the mod now goes straight to the Library without opening the window. The **Always install through Manual installation** checkbox turns this off.
+- Added the **Mark documents as info files automatically** checkbox: the scan sets .md and .txt files in Manual installation as info files.
+- Added the **Use a mod right after it is installed** checkbox: a new mod is turned on at once, with no need to select it and press Use.
+- Fixed several bugs and crashes.
+
+### Version 3.4.4 — 01.11.26
+
+- **Adjustment:** the Linux builds need glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39), not 2.34 as the 3.4.0 notes said. On older systems G3M does not start.
 - Fixed G3M not starting when a saved mod version in the Library is a damaged archive. G3M now skips that file and reports it by name.
 - Messages about damaged archives, game launch, shortcuts, exports, and imports now name the affected file, folder, or value.
 - Declining **Force restore** after an interrupted game session now keeps your files as they are, removes the leftover backup, and no longer blocks the next launch.
 - Added a **+** button beside the game list in Manual installation, so a missing custom game can be added on the spot.
 - A custom game can now have its own **Game ID**, also changeable when editing it. The custom game window is wider.
 - Progress bars across G3M now fill smoothly, unless animations are disabled.
+- Added GameBanana **Remote Install**: after pairing G3M on GameBanana, mods you send from the site download here within a minute, with no prompts.
+- Mods that finish downloading together are now installed one after another.
 - Fixed an installed local mod showing up in Mods Browser as a second card next to the same mod from GameBanana.
-
-</details>
+- Fixed Cancel not stopping a patch in progress and a deleted mod blocking the next launch; a mod can no longer be deleted while it is being patched or analyzed.
+- Fixed long warning and error lists making dialogs taller than the screen. They now show the first lines and point to the log for the rest.
+- **Auto-install** in the GameBanana file list is now **Yes** only for DeltaMod files and mods on the **G3M Verified** list; every other file is installed manually in Downloads.
+- Added a **Major** warning before launch when installed mods were made for a newer version of G3M and are not shown; it asks you to update G3M.
+- Fixed the G3M update prompt not appearing when the server answered after the start-up check, or when an update was published while G3M was open. The refresh button now checks for it too.
+- Refresh now also checks the GameBanana Remote Install queue right away. Pairing G3M with another GameBanana account replaces the previous pairing.
+- Fixed folders made read-only by Windows blocking the restore of game files after the game closed, and then every following launch.
+- Fixed an older copy of a mod replacing a newer one in the Library when two folders hold the same mod. The newest version is shown.
+- Fixed patching sometimes failing right after a patch tool was stopped, because its temporary files were still in use.
+- The GameBanana file list no longer repeats the file description after the file name.
+- Updated the FRICKG3M theme with new background music and font by KirbyKid.
 
 ### Version 3.4.3 — 19.10.26 - Y114
 

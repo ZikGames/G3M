@@ -1,11 +1,14 @@
 """Helpers for launching external processes safely from packaged builds."""
 
 import errno
+import logging
 import os
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from services.localization_service import tr
+
+logger = logging.getLogger(__name__)
 
 
 def bounded_output_preview(value: object, limit: int = 4000) -> str:
@@ -29,6 +32,48 @@ def bounded_output_preview(value: object, limit: int = 4000) -> str:
     prefix_length = retained * 2 // 3
     suffix_length = retained - prefix_length
     return text[:prefix_length] + marker + (text[-suffix_length:] if suffix_length else "")
+
+
+DIALOG_MAX_LINES = 15
+DIALOG_MAX_CHARS = 1500
+# the patching warning scrolls inside a fixed-height dialog, so it can list more than a plain box
+SCROLL_DIALOG_MAX_LINES = 100
+SCROLL_DIALOG_MAX_CHARS = 12_000
+LIST_MAX_ITEMS = 10
+
+
+def limit_dialog_text(
+    text: str, max_lines: int = DIALOG_MAX_LINES, max_chars: int = DIALOG_MAX_CHARS
+) -> str:
+    """Cut text shown in a dialog to the given size; the full text goes to the log.
+
+    The result never exceeds the limits, so limiting it again changes nothing.
+    """
+    lines = text.splitlines()
+    if len(lines) <= max_lines and len(text) <= max_chars:
+        return text
+    logger.info("Dialog text shortened, full text:\n%s", bounded_output_preview(text, 100_000))
+    budget = max_chars - 100  # room for the closing line
+    shown: list[str] = []
+    used = 0
+    for line in lines[: max_lines - 1]:
+        if used + len(line) + 1 > budget:
+            break
+        shown.append(line)
+        used += len(line) + 1
+    if not shown and lines:
+        shown.append(lines[0][:budget])
+    marker = tr("ui.more_in_log", count=max(len(lines) - len(shown), 1))
+    return "\n".join([*shown, marker])
+
+
+def join_limited(items: Iterable[str], separator: str = ", ", max_items: int = LIST_MAX_ITEMS) -> str:
+    """Join names for a message, keeping the first few and pointing to the log for the rest."""
+    names = [str(item) for item in items]
+    if len(names) <= max_items:
+        return separator.join(names)
+    logger.info("List shortened, full list: %s", separator.join(names))
+    return separator.join([*names[:max_items], tr("ui.more_in_log", count=len(names) - max_items)])
 
 
 def build_external_process_env(

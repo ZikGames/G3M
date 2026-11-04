@@ -298,7 +298,7 @@ def hide_running_games(monkeypatch):
     def is_game(process) -> bool:
         try:
             name = (getattr(process, "info", None) or {}).get("name") or process.name()
-        except psutil.Error:
+        except (psutil.Error, OSError, SystemError):
             return False
         return name.casefold() in game_names
 

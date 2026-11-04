@@ -4,7 +4,7 @@
     "language_name": "한국어",
     "font": "NotoSansKR-Bold.ttf",
     "qt_translation": "qtbase_ko",
-    "version": "3.4.3"
+    "version": "3.4.5"
   },
   "onboarding": {
     "title": "G3M에 오신 것을 환영합니다",
@@ -112,7 +112,7 @@
     "mod_summary_show_all": "모두 표시",
     "mod_summary_show_summary": "요약 표시",
     "mod_summary_all_operations": "모든 작업 ({count})",
-    "more_operation_warnings": "... 작업 경고 {count}개 더",
+    "more_in_log": "... 외 {count}개. 자세한 내용은 로그를 확인하세요.",
     "manual_install_hint": "항목 {count}개 · 설정됨 {configured}개 · 미설정 {unconfigured}개",
     "manual_install_configure": "저장 후 추가 설정",
     "manual_install_unconfigured": "미설정",
@@ -739,6 +739,7 @@
     "unexpected_startup_error": "예기치 않은 시작 오류: {details}",
     "modpack_creation_failed": "모드팩 생성에 실패했습니다",
     "mod_patching_failed": "모드 작업에 실패했습니다. 자세한 내용은 로그를 확인하세요.",
+    "mod_patch_mismatch": "{mod}의 패치 {patch}이(가) 게임 파일과 맞지 않습니다. 다른 게임 버전용이거나, 다른 모드가 이미 바꾼 원본 파일용으로 만들어졌습니다. 같은 파일을 패치하는 모드는 한 단계로 묶거나 맞는 게임 버전을 설치하세요.",
     "plugin_hook_failed": "플러그인 작업에 실패했습니다. 자세한 내용은 로그를 확인하세요.",
     "changelog_load_failed": "변경 사항 목록을 불러오지 못했습니다",
     "deletion_error": "삭제 오류",
@@ -858,6 +859,7 @@
     "copy_font_failed": "폰트 복사에 실패했습니다.",
     "gamebanana_install_failed": "GameBanana에서 모드 설치 실패: {error}",
     "mod_uninstall_failed": "모드 제거 실패: {error}",
+    "mod_busy": "모드 '{mod_name}'을(를) 지금 패치하거나 분석하는 중입니다. 끝날 때까지 기다리거나 먼저 취소하세요.",
     "uninstall_failed": "모드 제거 실패",
     "game_running": "게임이 이미 실행 중입니다. 먼저 종료하세요."
   },
@@ -1008,6 +1010,8 @@
     "clear_downloads": "다운로드 기록 비우기",
     "open_folder": "폴더 열기",
     "external_download": "외부 다운로드",
+    "remote_install_title": "GameBanana 원격 설치",
+    "remote_install_pair": "이 G3M을 GameBanana 원격 설치에 연결할까요? GameBanana에서 보낸 모드가 자동으로 여기에 다운로드됩니다.",
     "empty_list": "아직 다운로드한 항목이 없습니다.",
     "status_downloading": "다운로드 중 {progress}%",
     "status_installing": "설치 중…",
@@ -1031,6 +1035,12 @@
     "settings_no_auto_use": "다운로드한 파일을 자동으로 설치하지 않음",
     "settings_delete_after_use": "사용 후 다운로드한 파일 삭제",
     "settings_save_local_imports": "로컬에서 가져온 항목을 다운로드 폴더에 저장",
+    "settings_manual_install_always": "항상 수동 설치 사용",
+    "settings_manual_install_always_tip": "끄면: 수동 설치의 자동 스캔이 다운로드한 모드의 모든 파일을 설정하면 모드가 자동으로 설치됩니다.",
+    "settings_docs_as_info": "문서를 정보 파일로 자동 표시",
+    "settings_docs_as_info_tip": "수동 설치의 자동 스캔이 .md, .txt 등을 정보 파일로 설정합니다.",
+    "settings_use_after_install": "설치 직후 모드 사용",
+    "settings_use_after_install_tip": "모드가 바로 켜지므로 선택한 뒤 Use를 누를 필요가 없습니다.",
     "already_downloading": "이미 대기열에 있거나 다운로드 중입니다",
     "enqueued": "다운로드에 추가됨: {name}",
     "confirm_external_title": "외부 다운로드",
@@ -1549,7 +1559,11 @@
       "merge_failed": "병합 실패",
       "steam_launch_with_mods": "Steam이 다른 게임 폴더를 실행할 수 있음",
       "patching_warning": "기타 패치 경고",
-      "direct_absolute_operation_paths": "모드가 직접 절대 경로를 사용함"
+      "direct_absolute_operation_paths": "모드가 직접 절대 경로를 사용함",
+      "missing_dependencies": "필요한 모드가 없음",
+      "inactive_dependencies": "필요한 모드가 활성화되지 않음",
+      "mod_order_suggestion": "모드 순서를 개선할 수 있음",
+      "newer_mod_config": "모드에 더 새로운 G3M이 필요함"
     },
     "messages": {
       "xdelta_apply_failed": {
@@ -1575,6 +1589,10 @@
       "direct_absolute_operation_paths": {
         "title": "모드가 직접 절대 경로를 사용함",
         "body": "이 모드는 설정된 게임 및 모드 폴더 밖의 경로에 접근합니다. 모드를 신뢰하는 경우에만 계속하세요. 나중에 모드 편집기에서 이 경로를 수정할 수 있습니다."
+      },
+      "newer_mod_config": {
+        "title": "일부 모드에 더 새로운 G3M이 필요합니다",
+        "body": "설치된 일부 모드는 더 새로운 버전의 G3M용으로 만들어져 목록에 표시되지 않습니다. 사용하려면 G3M을 최신 버전으로 업데이트하세요. 그래도 실행할까요?"
       }
     },
     "tooltips": {
@@ -1583,7 +1601,11 @@
       "merge_failed": "G3MTool이 선택한 모드나 패치를 병합할 수 없을 때 표시됩니다.",
       "steam_launch_with_mods": "Steam이 G3M이 패치한 폴더와 다른 게임 폴더를 열 수 있을 때 표시됩니다.",
       "patching_warning": "아직 분류되지 않은 패치/병합 위험에 표시됩니다.",
-      "direct_absolute_operation_paths": "모드 작업이 플레이스홀더 루트 대신 직접 파일 시스템 경로를 사용할 때 표시됩니다."
+      "direct_absolute_operation_paths": "모드 작업이 플레이스홀더 루트 대신 직접 파일 시스템 경로를 사용할 때 표시됩니다.",
+      "missing_dependencies": "선택한 모드에 설치되지 않은 모드가 필요하거나 설치에 실패했을 때 실행 전에 표시됩니다.",
+      "inactive_dependencies": "선택한 모드에 설치되어 있지만 선택되지 않은 모드가 필요할 때 실행 전에 표시됩니다. G3M이 활성화를 제안합니다.",
+      "mod_order_suggestion": "선택한 모드의 순서가 제작자가 권장하는 순서와 다를 때 실행 전에 표시됩니다.",
+      "newer_mod_config": "설치된 모드가 이 G3M이 읽을 수 없는 더 새로운 형식일 때 실행 전에 표시됩니다."
     }
   },
   "data_root": {

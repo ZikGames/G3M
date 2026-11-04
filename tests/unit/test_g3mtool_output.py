@@ -98,3 +98,31 @@ def test_xpatch_commands_keep_their_original_arguments(
         input_path,
         "output.win",
     ]
+
+
+def test_cancel_kills_a_running_command_at_once():
+    import sys
+    import time
+
+    manager = G3MToolManager(Mock(local_config={}))
+    started = time.monotonic()
+    manager.is_cancelled = lambda: time.monotonic() - started > 0.5
+
+    returncode, _, _ = manager._run([sys.executable, "-c", "import time; time.sleep(60)"])
+
+    assert returncode != 0
+    assert time.monotonic() - started < 10
+
+
+def test_a_failing_cancel_check_still_stops_the_command():
+    import sys
+    import time
+
+    manager = G3MToolManager(Mock(local_config={}))
+    manager.is_cancelled = Mock(side_effect=RuntimeError("closed"))
+    started = time.monotonic()
+
+    returncode, _, _ = manager._run([sys.executable, "-c", "import time; time.sleep(60)"])
+
+    assert returncode != 0
+    assert time.monotonic() - started < 10

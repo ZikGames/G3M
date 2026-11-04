@@ -8,6 +8,7 @@ from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QMessageBox
 
 from config.config import CLOUD_FUNCTIONS_BASE_URL
+from services.game_detection_service import is_game_running
 from services.localization_service import tr
 from ui.utils.thread_lifetime import ManagedQThread, retire_qthread
 from utils.network_utils import cloud_function_request, get_session
@@ -71,14 +72,42 @@ def _safe_warning(parent, title: str, message: str) -> None:
         logger.exception("Update presenter: warning dialog failed")
 
 
+def store_global_settings(app, data: dict) -> bool:
+    """Keep freshly loaded server settings; returns whether they differ from the previous ones."""
+    if not isinstance(data, dict):
+        return False
+    state = app.app_state
+    changed = data != state.global_settings
+    state.global_settings = data
+    state.global_settings_loaded_at = time.time()
+    return changed
+
+
 def apply_synced_global_settings(app, data: dict) -> None:
     if not isinstance(data, dict):
         return
-    changed = data != app.app_state.global_settings
-    app.app_state.global_settings = data
-    app.app_state.global_settings_loaded_at = time.time()
-    if changed and app.app_state.initialization_completed:
+    old = app.app_state.global_settings or {}
+    changed = store_global_settings(app, data)
+    if not app.app_state.initialization_completed:
+        return
+    if changed:
         check_and_show_announce(app, force_check=True)
+    if any(data.get(key) != old.get(key) for key in ("launcher_files", "launcher_beta_files")):
+        # An update published while G3M is open reaches users with the next settings sync.
+        _check_for_app_update(app)
+
+
+def on_refresh_settings_loaded(app, success: bool) -> None:
+    """Refresh finished loading the server settings: show a new announce, then look for an update."""
+    if success:
+        check_and_show_announce(app, force_check=True)
+    _check_for_app_update(app)
+
+
+def _check_for_app_update(app) -> None:
+    # An app update must not restart G3M while it still has to restore the game's files.
+    if not is_game_running():
+        app.update_checker.check_for_updates()
 
 
 def handle_update_info(app, update_info, retry_count=0):
@@ -131,8 +160,7 @@ def reload_global_settings(app, callback=None, *, force_refresh: bool = False):
             )
             success = bool(response and response.status_code == 200)
             if success and response is not None:
-                app.app_state.global_settings = response.json() or {}
-                app.app_state.global_settings_loaded_at = time.time()
+                store_global_settings(app, response.json() or {})
         except Exception as e:
             logger.warning("reload_global_settings: %s", e)
             success = False
@@ -146,8 +174,7 @@ def reload_global_settings(app, callback=None, *, force_refresh: bool = False):
     def _on_finished(success, data):
         try:
             if success:
-                dynamic_app.app_state.global_settings = data
-                dynamic_app.app_state.global_settings_loaded_at = time.time()
+                store_global_settings(dynamic_app, data)
             _run_global_settings_callback(callback, success)
         finally:
             dynamic_app.app_state.global_settings_load_in_progress = False

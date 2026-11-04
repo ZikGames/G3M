@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import stat
+import subprocess
+import sys
 import zipfile
 from dataclasses import replace
 
@@ -12,6 +15,7 @@ from services.mod_operation_executor import (
     ModOperationExecutionError,
     ModOperationExecutor,
     ModOperationJournal,
+    ModPatchMismatchError,
     ModRecoveryConflictError,
 )
 from utils.mod.archive import materialize_archive
@@ -743,6 +747,29 @@ def test_executor_restores_after_failed_patch(tmp_path):
     assert target.read_text(encoding="utf-8") == "original"
 
 
+def test_executor_names_the_mod_whose_patch_does_not_fit_and_restores(tmp_path):
+    mod_root, game_root, _ = _plan(tmp_path, [])
+    (mod_root / "change.patch").write_text("patch", encoding="utf-8")
+    target = game_root / "target.bin"
+    target.write_text("original", encoding="utf-8")
+    plan = build_mod_operation_plan(
+        _config([{"source": "${mod_path}/change.patch", "target": "${game_path}/target.bin", "type": "patch"}]),
+        ModPathContext.create(
+            mod_path=mod_root, game_path=game_root, game_data_path=None, user_path=tmp_path / "user"
+        ),
+    )
+    plan = replace(plan, operations=tuple(replace(o, mod_id="test_mod") for o in plan.operations))
+
+    def patcher(*_args):
+        raise ModOperationExecutionError("patch backend failed: xdelta3: target window checksum mismatch")
+
+    with pytest.raises(ModPatchMismatchError) as caught:
+        ModOperationExecutor(tmp_path / "session", patcher=patcher).execute(plan)
+
+    assert (caught.value.mod_id, caught.value.patch) == ("test_mod", "change.patch")
+    assert target.read_text(encoding="utf-8") == "original"
+
+
 def test_executor_passes_a_nonexistent_output_path_to_patchers(tmp_path):
     mod_root, game_root, _ = _plan(tmp_path, [])
     (mod_root / "change.patch").write_text("patch", encoding="utf-8")
@@ -922,3 +949,101 @@ def test_executor_replaces_a_hardlinked_target_without_mutating_its_peer(tmp_pat
     journal.restore()
     assert target.read_text(encoding="utf-8") == "original"
     assert peer.read_text(encoding="utf-8") == "original"
+
+
+def _extract_into_game_folder(tmp_path, game_folder_name="addons"):
+    mod_root, game_root, _ = _plan(tmp_path, [])
+    (mod_root / "files" / "Hornet").mkdir(parents=True)
+    (mod_root / "files" / "Hornet" / "icon.png").write_text("mod", encoding="utf-8")
+    target = game_root / game_folder_name
+    target.mkdir()
+    (target / "Stock").mkdir()
+    (target / "Stock" / "icon.png").write_text("stock", encoding="utf-8")
+    subprocess.run(["attrib", "+R", str(target)], check=True)
+    plan = build_mod_operation_plan(
+        _config([{"source": "${mod_path}/files/", "target": f"${{game_path}}/{game_folder_name}/", "type": "extract"}]),
+        ModPathContext.create(
+            mod_path=mod_root, game_path=game_root, game_data_path=None, user_path=tmp_path / "user"
+        ),
+    )
+    return target, plan
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the read-only folder attribute is a Windows one")
+def test_read_only_game_folder_is_restored_after_the_game_closes(tmp_path):
+    target, plan = _extract_into_game_folder(tmp_path)
+    journal = ModOperationExecutor(tmp_path / "session").execute(plan)
+    assert (target / "Hornet" / "icon.png").is_file()
+
+    journal.checkpoint()
+    journal.restore()
+
+    assert not (target / "Hornet").exists()
+    assert (target / "Stock" / "icon.png").read_text(encoding="utf-8") == "stock"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the read-only folder attribute is a Windows one")
+def test_next_launch_starts_after_a_session_with_a_read_only_game_folder(tmp_path):
+    target, plan = _extract_into_game_folder(tmp_path)
+    session = tmp_path / "session"
+    journal = ModOperationExecutor(session).execute(plan)
+    journal.checkpoint()
+    journal.restore()
+
+    second = ModOperationExecutor(session).execute(plan)
+    second.checkpoint()
+    second.restore()
+
+    assert not (target / "Hornet").exists()
+    assert (target / "Stock" / "icon.png").read_text(encoding="utf-8") == "stock"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the read-only folder attribute is a Windows one")
+def test_stale_backup_of_a_read_only_folder_does_not_block_the_next_launch(tmp_path):
+    target, plan = _extract_into_game_folder(tmp_path, "skins")
+    session = tmp_path / "session"
+    ModOperationExecutor(session).execute(plan)
+    # a crash leaves the session unrestored; the user keeps external changes, which retires it
+    ModOperationJournal.load(session).retire()
+
+    journal = ModOperationExecutor(session).execute(plan)
+    journal.checkpoint()
+    journal.restore()
+
+    assert (target / "Stock" / "icon.png").read_text(encoding="utf-8") == "stock"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the read-only file attribute is a Windows one")
+def test_read_only_target_file_is_overwritten_and_restored(tmp_path):
+    mod_root, game_root, _ = _plan(tmp_path, [])
+    (mod_root / "new.txt").write_text("mod", encoding="utf-8")
+    target = game_root / "target.txt"
+    target.write_text("original", encoding="utf-8")
+    subprocess.run(["attrib", "+R", str(target)], check=True)
+    plan = build_mod_operation_plan(
+        _config([{"source": "${mod_path}/new.txt", "target": "${game_path}/target.txt", "type": "overwrite"}]),
+        ModPathContext.create(
+            mod_path=mod_root, game_path=game_root, game_data_path=None, user_path=tmp_path / "user"
+        ),
+    )
+
+    journal = ModOperationExecutor(tmp_path / "session").execute(plan)
+    assert target.read_text(encoding="utf-8") == "mod"
+    journal.checkpoint()
+    journal.restore()
+
+    assert target.read_text(encoding="utf-8") == "original"
+
+
+def test_replace_file_replaces_a_read_only_target(tmp_path):
+    from services.mod_operation_executor import replace_file
+
+    target = tmp_path / "data.win"
+    target.write_text("old", encoding="utf-8")
+    os.chmod(target, stat.S_IREAD)
+    source = tmp_path / "new.tmp"
+    source.write_text("new", encoding="utf-8")
+
+    replace_file(source, target)
+
+    assert target.read_text(encoding="utf-8") == "new"

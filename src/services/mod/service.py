@@ -1,5 +1,6 @@
 """Mod management and installation."""
 
+import json
 import logging
 import os
 import shutil
@@ -11,7 +12,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 import models.mod_models as mod_models
 from config.config import MOD_CONFIG_FILENAME
-from models.exceptions import ModUninstallationError
+from models.exceptions import AppError, ModUninstallationError
 from models.mod_models import BrowserModInfo, LocalModInfo, get_mod_authors
 from services.localization_service import tr
 from services.migration_service import migrate_mod_metadata
@@ -19,6 +20,7 @@ from services.mod_config_migration_service import (
     ModConfigMigrationIssue,
     migrate_managed_mods,
 )
+from services.mod_usage import ModInUseError, is_mod_busy, reserve_for_deletion
 from utils.file_utils import (
     load_json,
     save_json,
@@ -54,6 +56,7 @@ class ModManager(QObject):
     progress_updated = pyqtSignal(int)
     status_changed = pyqtSignal(str, str)
     mod_list_updated = pyqtSignal()
+    mods_added = pyqtSignal(list)
 
     def __init__(
         self, app_state, feedback_service, settings_service=None, parent=None
@@ -68,6 +71,7 @@ class ModManager(QObject):
         self._mods_cache_valid = False
         self._scan_thread: ModScanThread | None = None
         self._scan_in_progress = False
+        self._seen_mod_ids: tuple[str, set[str]] | None = None
         self.migration_issues: tuple[ModConfigMigrationIssue, ...] = ()
 
     def _migrate_owned_mods(self) -> None:
@@ -151,6 +155,12 @@ class ModManager(QObject):
         with self._cache_lock:
             self._mods_cache_valid = False
             self._mods_by_name.clear()
+
+    def mods_needing_newer_g3m(self) -> list[str]:
+        """Names of installed mods whose config format is newer than this G3M reads."""
+        names: list[str] = []
+        scan_mods_directory(self.app_state.mods_dir, self._mods_cache, newer_config_mods=names)
+        return names
 
     def _on_scan_completed(self, cache_dict: dict):
         with self._cache_lock:
@@ -250,11 +260,19 @@ class ModManager(QObject):
             self._mods_cache_valid = True
             return self._mods_cache.copy()
 
+    def _announce_new_mods(self, mod_ids: set[str]) -> None:
+        """Tell listeners which mods appeared since the previous scan of the same folder; a first scan or another profile only sets the baseline."""
+        previous, self._seen_mod_ids = self._seen_mod_ids, (self.app_state.mods_dir, mod_ids)
+        if previous is not None and previous[0] == self.app_state.mods_dir and (added := mod_ids - previous[1]):
+            self.mods_added.emit(sorted(added))
+
     def load_local_mods(self):
         if not os.path.exists(self.app_state.mods_dir):
             os.makedirs(self.app_state.mods_dir, exist_ok=True)
+            self._seen_mod_ids = (self.app_state.mods_dir, set())
             return False
         self._migrate_owned_mods()
+        scan_failed = False
         try:
             cache = self._get_mods_cache(use_async=False)
         except Exception as e:
@@ -262,6 +280,7 @@ class ModManager(QObject):
                 f"load_local_mods: Failed to get mods cache: {e}", exc_info=True
             )
             cache = {}
+            scan_failed = True
         from utils.mod.utils import parse_gamebanana_mod_id
 
         installed_mods = {}
@@ -284,6 +303,8 @@ class ModManager(QObject):
                         exc_info=True,
                     )
                     continue
+            if not scan_failed:
+                self._announce_new_mods(set(installed_mods))
             installed_gamebanana_by_id = {}
             for mod_id, config_data in installed_mods.items():
                 if is_gamebanana_id(mod_id):
@@ -519,6 +540,9 @@ class ModManager(QObject):
             self.app_state.is_installing = False
             self.mod_list_updated.emit()
             self.status_changed.emit(tr("status.mod_uninstalled"), "status_success")
+        except AppError as e:
+            self._safe_show_feedback_message("warning", tr("errors.error"), str(e))
+            raise
         except Exception as e:
             mod_id = get_mod_id(mod) or "unknown"
             mod_name = get_mod_name(mod, "Unknown Mod")
@@ -563,7 +587,14 @@ class ModManager(QObject):
             return False
         logger.info(f"delete_mod_files: Deleting mod folder by {label}: {folder_path}")
         try:
-            if safe_rmtree(folder_path):
+            # Whatever the descriptor says, a folder an operation is using is never removed,
+            # and no operation can start on it until the removal is over.
+            try:
+                with reserve_for_deletion(self._installed_mod_ids_at(folder_path)):
+                    deleted = safe_rmtree(folder_path)
+            except ModInUseError as error:
+                raise AppError("errors.mod_busy", mod_name=os.path.basename(folder_path)) from error
+            if deleted:
                 self.invalidate_mods_cache()
                 logger.info(
                     f"delete_mod_files: Successfully deleted mod folder by {label}: {folder_path}"
@@ -572,6 +603,9 @@ class ModManager(QObject):
             logger.warning(
                 f"delete_mod_files: safe_rmtree returned False for {folder_path}"
             )
+            if os.path.exists(folder_path):
+                # a locked file kept the folder: report it instead of announcing a finished uninstall
+                raise PermissionError(13, "Folder could not be fully removed", folder_path)
         except Exception as e:
             logger.error(
                 f"delete_mod_files: Failed to delete folder {folder_path}: {e}",
@@ -642,7 +676,28 @@ class ModManager(QObject):
                 return cached_info
         return None
 
+    def _installed_mod_ids_at(self, folder_path: str | None) -> list[str]:
+        if not folder_path:
+            return []
+        wanted = os.path.normcase(os.path.abspath(folder_path))
+        ids: list[str] = []
+        for cached_id, info in self._get_mods_cache().items():
+            if os.path.normcase(os.path.abspath(info.folder_path)) == wanted:
+                ids.extend((cached_id, str(info.config_data.get("id") or "")))
+        return ids
+
+    def ensure_mod_idle(self, mod_data) -> None:
+        """Raise AppError while a patch, analysis or export is still using the mod's files."""
+        folder = (
+            mod_data.get("folder_path")
+            if isinstance(mod_data, dict)
+            else getattr(mod_data, "folder_path", None)
+        )
+        if any(is_mod_busy(mod_id) for mod_id in (get_mod_id(mod_data), *self._installed_mod_ids_at(folder))):
+            raise AppError("errors.mod_busy", mod_name=get_mod_name(mod_data, ""))
+
     def delete_mod_files(self, mod_data):
+        self.ensure_mod_idle(mod_data)
         try:
             folder_path = (
                 mod_data.folder_path
@@ -806,7 +861,11 @@ class ModManager(QObject):
                 metadata = {}
             else:
                 try:
-                    metadata = load_json(self.app_state.mods_metadata_path)
+                    # load_json answers {} for a locked file, and saving that would wipe every mod's metadata
+                    with open(self.app_state.mods_metadata_path, encoding="utf-8") as handle:
+                        metadata = json.load(handle)
+                except json.JSONDecodeError:
+                    metadata = load_json(self.app_state.mods_metadata_path)  # backs the corrupt file up
                 except Exception as e:
                     logger.warning(f"add_playtime_hours: failed to read metadata: {e}")
                     return

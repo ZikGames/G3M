@@ -7,6 +7,8 @@ import types
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from config.config import APP_VERSION
 
 
@@ -257,3 +259,70 @@ def test_windows_update_keeps_installer_staging_for_its_helper(
 
     checker._launch_windows_installer.assert_called_once_with(str(staging_dir / "extracted"))
     assert staging_dir.is_dir()
+
+
+def test_update_check_before_server_settings_is_repeated_when_they_arrive(app_state):
+    from services.updatecheck_service import UpdateChecker
+
+    checker = UpdateChecker(app_state=app_state, feedback_service=Mock())
+    app_state.global_settings = {}
+
+    assert checker.get_update_info(system="Linux", beta_enabled=False) is None
+    assert checker.awaiting_settings
+
+    app_state.global_settings = {"launcher_files": {"version": APP_VERSION, "urls": {}}}
+    checker.get_update_info(system="Linux", beta_enabled=False)
+
+    assert not checker.awaiting_settings
+
+
+def _settings(version):
+    return {"launcher_files": {"version": version, "urls": {}}}
+
+
+def _app(settings, monkeypatch, *, game_running=False, initialized=True):
+    from presentation import update_presenter
+
+    monkeypatch.setattr(update_presenter, "is_game_running", lambda: game_running)
+    announce = Mock()
+    monkeypatch.setattr(update_presenter, "check_and_show_announce", announce)
+    app = SimpleNamespace(
+        app_state=SimpleNamespace(global_settings=settings, initialization_completed=initialized),
+        update_checker=Mock(),
+    )
+    return app, announce
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "game_running", "initialized", "checks"),
+    [
+        (_settings("1.0.0"), _settings("9.9.9"), False, True, 1),
+        (_settings("9.9.9"), {**_settings("9.9.9"), "announce": {"version": 2}}, False, True, 0),
+        (_settings("1.0.0"), _settings("9.9.9"), True, True, 0),
+        (_settings("1.0.0"), _settings("9.9.9"), False, False, 0),
+    ],
+)
+def test_new_launcher_entry_from_a_settings_sync_triggers_an_update_check(
+    monkeypatch, old, new, game_running, initialized, checks
+):
+    from presentation import update_presenter
+
+    app, _ = _app(old, monkeypatch, game_running=game_running, initialized=initialized)
+
+    update_presenter.apply_synced_global_settings(app, new)
+
+    assert app.app_state.global_settings == new
+    assert app.update_checker.check_for_updates.call_count == checks
+
+
+@pytest.mark.parametrize(("game_running", "checks"), [(False, 1), (True, 0)])
+def test_refresh_checks_for_an_update_once_the_server_settings_are_loaded(monkeypatch, game_running, checks):
+    from presentation import update_presenter
+
+    app, announce = _app(_settings("9.9.9"), monkeypatch, game_running=game_running)
+
+    update_presenter.on_refresh_settings_loaded(app, True)
+    update_presenter.on_refresh_settings_loaded(app, False)
+
+    assert app.update_checker.check_for_updates.call_count == checks * 2
+    announce.assert_called_once_with(app, force_check=True)

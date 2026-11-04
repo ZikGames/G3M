@@ -79,6 +79,10 @@ def connect_window_signals(window) -> None:
         lambda mod: window.mod_ops.install_mod(mod, force=True)
     )
     window.initialization_finished.connect(window._handle_pending_install)
+    window.initialization_finished.connect(window.remote_install_service.start)
+    window.remote_install_service.mod_ready.connect(
+        window.mod_ops._enqueue_gamebanana_download
+    )
     window.app_state.all_mods_updated.connect(
         lambda mods: setattr(window.app_state, "all_mods", mods)
     )

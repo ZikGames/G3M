@@ -19,6 +19,7 @@ from config.config import (
     NETWORK_TIMEOUT_MEDIUM,
     NETWORK_TIMEOUT_SHORT,
 )
+from models.exceptions import AppError
 from models.game_modes import get_gamebanana_reverse_map
 from models.mod_models import BrowserModInfo
 from utils.mod.tags import normalize_tag
@@ -29,8 +30,6 @@ logger = logging.getLogger(__name__)
 _G3M_LIST_TTL_SECONDS = 30
 _G3M_LIST_TIMEOUT = (2, 3)  # connect, read
 
-<<<<<<< HEAD
-=======
 
 @dataclass(frozen=True)
 class G3MConfirmedMod:
@@ -40,16 +39,11 @@ class G3MConfirmedMod:
     game: str = ""  # G3M game id; empty means any game
     game_version: str = ""
 
->>>>>>> upstream/main
 
 class GameBananaAPI:
     _compatibility_cache: dict[int, dict[str, Any]] = {}
     _app_state = None
-<<<<<<< HEAD
-    g3m_confirmed: dict[str, str] = {}  # mod id -> optional note
-=======
     g3m_confirmed: dict[str, G3MConfirmedMod] = {}
->>>>>>> upstream/main
     _g3m_confirmed_loaded_at = float("-inf")
     _g3m_confirmed_etag = ""
 
@@ -71,13 +65,9 @@ class GameBananaAPI:
             response.raise_for_status()
             cls._g3m_confirmed_etag = response.headers.get("ETag", "")
             cls.g3m_confirmed = {
-<<<<<<< HEAD
-                str(entry["id"]): str(entry.get("note") or "").strip()
-=======
                 str(entry["id"]): G3MConfirmedMod(
                     *(str(entry.get(key) or "").strip() for key in ("note", "game", "game_version"))
                 )
->>>>>>> upstream/main
                 for entry in response.json().get("mods", [])
                 if isinstance(entry, dict) and entry.get("id")
             }
@@ -292,6 +282,24 @@ class GameBananaAPI:
             max_retries,
         )
 
+    def get_installable_mod(self, mod_id: int, item_type: str = "Mod") -> BrowserModInfo:
+        """The mod with its downloadable files, ready to install straight from a link; raises AppError."""
+        profile = self.get_mod_profile_page(mod_id, itemtype=item_type, max_retries=0, timeout=NETWORK_TIMEOUT_SHORT)
+        if not profile:
+            raise AppError("errors.mod_not_found")
+        game_id = self._safe_int((profile.get("_aGame") or {}).get("_idRow")) or 0
+        mod = self._map_mod_data(profile, get_gamebanana_reverse_map().get(game_id, "deltarune"), is_wip=item_type == "Wip")
+        if not mod:
+            raise AppError("errors.mod_not_found")
+        files = profile.get("_aFiles") or []
+        for entry in files.values() if isinstance(files, dict) else files:
+            if not isinstance(entry, dict) or not (file_id := self._safe_int(entry.get("_idRow"))) or not entry.get("_bHasContents", True) or entry.get("_bIsArchived"):
+                continue
+            mod.gamebanana_supported_files.append(self._build_file_metadata(file_id, entry, f"gb_{item_type.lower()}_{mod_id}"))
+        if not mod.gamebanana_supported_files:
+            raise AppError("errors.mod_no_files", mod_name=mod.name)
+        return mod
+
     def get_mod_profile_page(self, mod_id, itemtype="Mod", max_retries=2, timeout=None):
         data = self._api_request(
             f"{self.base_url}/{itemtype}/{mod_id}/ProfilePage",
@@ -377,7 +385,9 @@ class GameBananaAPI:
                     file_id := self._safe_int(file_entry.get("_idRow"))
                 ):
                     continue
-                file_payload = self._build_file_metadata(file_id, file_entry)
+                file_payload = self._build_file_metadata(
+                    file_id, file_entry, f"gb_{itemtype.lower()}_{mod_id}"
+                )
                 compatibility_label = file_payload["compatibility"]
                 if compatibility_label == "g3m":
                     compatibility["has_g3m_file"] = True
@@ -637,6 +647,7 @@ class GameBananaAPI:
         self,
         file_id: int,
         profile_entry: dict[str, Any],
+        mod_key: str = "",
     ) -> dict[str, Any]:
         integrations = [
             (tool_id, integration.get("_sName", str(tool_id)))
@@ -670,7 +681,12 @@ class GameBananaAPI:
             "has_contents": bool(self._first_value(sources, "_bHasContents", False)),
             "tool_ids": tool_ids,
             "tool_names": [name for _, name in integrations],
-            "compatibility": "g3m" if GAMEBANANA_TOOL_ID_G3M in tool_ids else "deltamod" if GAMEBANANA_TOOL_ID_DELTAMOD in tool_ids else "",
+            # Every GameBanana mod can carry the G3M tool, so only mods from the confirmed list install by themselves.
+            "compatibility": (
+                "g3m"
+                if GAMEBANANA_TOOL_ID_G3M in tool_ids and mod_key in self.g3m_confirmed
+                else "deltamod" if GAMEBANANA_TOOL_ID_DELTAMOD in tool_ids else ""
+            ),
         }
 
     def search_mods(

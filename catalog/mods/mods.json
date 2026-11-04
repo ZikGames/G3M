@@ -3,7 +3,531 @@
     {
       "id": "gb_mod_697365",
       "name": "Sumire as Protagonist (CHAPTER 1)",
+      "game": "deltarune",
       "added": "2026-10-19"
+    },
+    {
+      "id": "gb_mod_728039",
+      "name": "Flower Dialogue Sounds Mod (+ in battle!)",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_wip_102106",
+      "name": "[UPDATE] Performance Mod | Chapter 5",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_725201",
+      "name": "More Slots",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_661274",
+      "name": "Third Sanctuary Plays In Battles",
+      "game": "deltarune",
+      "game_version": "Ch4 v0.0.110",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_692903",
+      "name": "More File Stars",
+      "game": "deltarune",
+      "game_version": "Chapter Selector v23",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_723630",
+      "name": "BetterEveryBody",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_723477",
+      "name": "Save points want you to SAVE!!!",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_718652",
+      "name": "DELTARUNE Hitbox Viewer",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_722935",
+      "name": "The Susie Hair Swap",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_659189",
+      "name": "Northernlight File Select After Weird Route",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_715360",
+      "name": "RNG Increase",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_718827",
+      "name": "Spawn Pink On Hit",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_680171",
+      "name": "Deltarune but it's [percentage] [color] CH1-5",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_614438",
+      "name": "Deltarune AI Chapter 1-5",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_717444",
+      "name": "Double Enemy Turns (Chapters 1-5)",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_701961",
+      "name": "A Trans Ralsei Mod",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_715348",
+      "name": "Cool Spells",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_713789",
+      "name": "CH2 Knight over Kris mod",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_713038",
+      "name": "Ralsei Battle Fall Sprites",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_711739",
+      "name": "Stray Pixel Exterminator",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_633023",
+      "name": "Deltarune : Replace Watercooler with Wobber",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_708265",
+      "name": "More Ralsei Says Okay",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_709289",
+      "name": "Deltarune Multiplayer PT-BR",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_689695",
+      "name": "Flower Man - VOCAL MOD (Multiple Covers)",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_708865",
+      "name": "Spareable(?) Yellow",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_667507",
+      "name": "1/10000 Foxy Jumpscare mod",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_702094",
+      "name": "Fight Flowery, for REAL",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_707484",
+      "name": "GALLERY for Flowery and Tenna",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_707447",
+      "name": "Nothing ever happens",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_707276",
+      "name": "Pink & Yellow Chapter 5 File Select Background",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_704622",
+      "name": "Ralsei with FIRESHOCK! (1-5)",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_705532",
+      "name": "didn't think we'd still be standing, did you?",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_704077",
+      "name": "Custom Battle Themes",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_703774",
+      "name": "Gender blender (randomize pronouns)",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_700194",
+      "name": "DELTASTATS - Statistics Mod",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_690240",
+      "name": "Aqua Over Kris (CHs 1-5 w/ Dialogue)",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_702889",
+      "name": "Holiday House Text Appears Faster",
+      "game": "deltarune",
+      "game_version": "Ch4 v0.0.110",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_702752",
+      "name": "Mew Mew SOUL Colors",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_697039",
+      "name": "Deltarune Missing OST Plus",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_701710",
+      "name": "Marshmallow Ralsei",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_701732",
+      "name": "Shadow Soul (Clone)",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_701691",
+      "name": "Deltarune Input Viewer",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_693501",
+      "name": "Extra Tenna Name Interactions",
+      "game": "deltarune",
+      "game_version": "Ch3 v0.0.105",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_692309",
+      "name": "Improved Omega Flowery V3",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_698654",
+      "name": "Deltarune Custom Debug Mode (Ch1-5)",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_692560",
+      "name": "No Rude Buster in Cyber City",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_692351",
+      "name": "Side B Cyber City at original speed",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_699172",
+      "name": "Bomb Warning W/O Easy Mode Mew Mew",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_697936",
+      "name": "Power of VENGEANCE",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_690141",
+      "name": "Alternate Cuter Pink Cafe Scene",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_610944",
+      "name": "No-hit!",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_690450",
+      "name": "She/Her Pluey",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_657954",
+      "name": "Surprising Weird Spamton",
+      "game": "deltarune",
+      "game_version": "Ch2 v1.52",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_654094",
+      "name": "TV Land plays in Chapter 3 Credits",
+      "game": "deltarune",
+      "game_version": "Ch3 v0.0.105",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_700876",
+      "name": "Orange Soul Mode (Always Move)",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_690109",
+      "name": "Kris Slide Fix & Backport",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_692194",
+      "name": "Princess Ralsei",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_698184",
+      "name": "Oh Yes",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_697897",
+      "name": "Ralsei death prayer",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_691730",
+      "name": "Improved Pink Fight Background V2",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_696224",
+      "name": "CHAOTH KING",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_689488",
+      "name": "Where's My Voice Clips?",
+      "game": "deltarune",
+      "game_version": "Ch5 v0.0.247",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_694046",
+      "name": "DELTAWING",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_624913",
+      "name": "Deltarune Parody Song",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_691213",
+      "name": "C.A.W.C.A.W.",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_610534",
+      "name": "Serif0S' No-hat Ralsei Face Resprites Mod",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_604789",
+      "name": "Maki's Ralsei Portraits",
+      "game": "deltarune",
+      "game_version": "Ch5 v0.0.243",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_605508",
+      "name": "StarTweaks",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_689150",
+      "name": "Cheaper Flower Items",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_689247",
+      "name": "No-Hit Run (1 HP, instant restart) - ALL CHAPTERS",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_689418",
+      "name": "Greyscale Yellow",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_690065",
+      "name": "Golden Freddery mod",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_674307",
+      "name": "Relsay Mod",
+      "game": "deltarune",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_730367",
+      "name": "Dojo+",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-22"
+    },
+    {
+      "id": "gb_mod_732378",
+      "name": "Switch 2 Mike Content in PC Version",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-26"
+    },
+    {
+      "id": "gb_mod_733383",
+      "name": "Deltarune But CRT Screen",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-10-28"
+    },
+    {
+      "id": "gb_mod_661496",
+      "name": "Noise's funny longjump (G3M/G3MPatch Compatible)",
+      "game": "pizzatower",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_679117",
+      "name": "TOO MANY TAUNTS",
+      "game": "sugaryspire",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_680398",
+      "name": "New Confecti Animations (+ Lolipop)",
+      "game": "sugaryspire",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_695101",
+      "name": "Run button and fast-text",
+      "game": "undertale",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_562619",
+      "name": "Redesign of Playable Character Sprites",
+      "game": "undertale",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_697424",
+      "name": "Mash Text with Menu Button",
+      "game": "undertale",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_490253",
+      "name": "Multiple Save Files (Infinite!)",
+      "game": "undertaleyellow",
+      "added": "2026-10-20"
+    },
+    {
+      "id": "gb_mod_735507",
+      "name": "DELTARUNE 60 FPS PT-BR",
+      "game": "deltarune",
+      "game_version": "v0.0.253",
+      "added": "2026-11-04"
     }
   ]
 }

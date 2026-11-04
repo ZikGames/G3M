@@ -25,6 +25,7 @@ from services.plugins.install_service import PluginInstallService
 from services.plugins.runtime_service import PluginRuntimeService
 from services.plugins.state_service import PluginStateService
 from services.profile_service import ProfileService
+from services.remote_install_service import RemoteInstallService
 from services.settings_service import SettingsManager
 from services.updatecheck_service import UpdateChecker
 from services.used_mods_service import UsedModsManager
@@ -183,6 +184,7 @@ def build_application_context(parent=None) -> ApplicationContext:
         customization_service=customization_service,
         used_mods_service=used_mods_service,
         downloads_manager=downloads_manager,
+        remote_install_service=RemoteInstallService(app_state, settings_service, parent),
         game_versions_manager=game_versions_manager,
         pizza_oven_conversion_service=pizza_oven_conversion_service,
         plugin_state_service=plugin_state_service,

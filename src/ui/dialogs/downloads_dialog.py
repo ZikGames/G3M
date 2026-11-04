@@ -145,11 +145,7 @@ class _RecordWidget(QFrame):
             self._progress_bar.setRange(0, 0)
         else:
             self._progress_bar.setRange(0, 100)
-<<<<<<< HEAD
-            self._progress_bar.setValue(r.progress)
-=======
             UIAnimator.progress_to(self._progress_bar, r.progress, self._app_state)
->>>>>>> upstream/main
         if r.error_message and status_key in ("failed", "ready"):
             self._error_label.setText(r.error_message)
             self._error_label.setVisible(True)

@@ -78,7 +78,7 @@ from config.config import (
     UI_COLORS,
 )
 from presentation.update_presenter import (
-    check_and_show_announce,
+    on_refresh_settings_loaded,
     prompt_for_update,
     reload_global_settings,
 )
@@ -114,6 +114,7 @@ if TYPE_CHECKING:
     from services.launch_service import GameLauncher
     from services.mod.service import ModManager
     from services.profile_service import ProfileService
+    from services.remote_install_service import RemoteInstallService
     from services.settings_service import SettingsManager
     from services.used_mods_service import UsedModsManager
     from session.session_manager import SessionManager
@@ -131,6 +132,7 @@ class AppWindow(QWidget):
     profile_service: ProfileService
     used_mods_service: UsedModsManager
     session_manager: SessionManager
+    remote_install_service: RemoteInstallService
     library_display: Any
     search_display: Any
     game_launch: Any
@@ -1471,12 +1473,11 @@ class AppWindow(QWidget):
         if hasattr(self, "theme") and self.theme:
             self.theme.init_theme_list()
         if not is_initial and self.app_state.has_internet:
+            self.remote_install_service.refresh()
             reload_global_settings(
                 self,
                 force_refresh=True,
-                callback=lambda success: (
-                    check_and_show_announce(self, force_check=True) if success else None
-                ),
+                callback=lambda success: on_refresh_settings_loaded(self, success),
             )
             self.session_manager.request_presence_refresh()
 

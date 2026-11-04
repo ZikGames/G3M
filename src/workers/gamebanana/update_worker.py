@@ -71,7 +71,11 @@ class ResolveGameBananaUpdatesThread(ManagedQThread):
                 ):
                     candidate = {**candidate, "file_timestamp": timestamp}
                     break
-        return [resolution for resolution in resolutions if ResolveGameBananaUpdatesThread._is_newer(candidate, resolution)]
+        return [
+            resolution
+            for resolution in resolutions
+            if ResolveGameBananaUpdatesThread._is_newer(candidate, resolution)
+        ]
 
     @staticmethod
     def _is_newer(candidate: dict[str, Any], resolved: dict[str, Any]) -> bool:
@@ -86,13 +90,7 @@ class ResolveGameBananaUpdatesThread(ManagedQThread):
         if remote_version and local_version:
             remote_key = GameBananaAPI._gamebanana_version_key(remote_version)
             local_key = GameBananaAPI._gamebanana_version_key(local_version)
-            if remote_key != local_key:
-                return remote_key > local_key
-            return (
-                remote_timestamp is not None
-                and local_timestamp is not None
-                and remote_timestamp > local_timestamp
-            )
+            return remote_key > local_key  # the same version is never an update, whichever package it is
         if remote_timestamp is not None and local_timestamp is not None:
             return remote_timestamp > local_timestamp
         if local_file_id and remote_file_id:

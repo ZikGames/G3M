@@ -12,12 +12,15 @@ from config.config import MOD_CONFIG_FILENAME
 from utils.mod.config import (
     MOD_CONFIG_MAX_BYTES,
     load_mod_config,
+    newer_config_mod_name,
 )
 from utils.mod.config import (
     validate_mod_config as validate_current_mod_config,
 )
+from utils.path_utils import version_sort_key
 
 logger = logging.getLogger(__name__)
+_reported_duplicates: set[tuple[str, str, str]] = set()  # a leftover copy is found on every scan; say so once
 
 
 @dataclass(slots=True)
@@ -30,6 +33,35 @@ class ModFolderInfo:
     config_data: dict
     config_mtime: float
     config_digest: str = ""
+
+
+def _add_to_cache(
+    cache: dict[str, ModFolderInfo], mods_by_name: dict[str, str], info: ModFolderInfo
+) -> None:
+    """Add a mod; of two folders with one id (a leftover copy) the newer version wins, not the scan order."""
+
+    def rank(item: ModFolderInfo):
+        return version_sort_key(str(item.config_data.get("version") or "")), item.folder_name.casefold()
+
+    kept = cache.get(info.id)
+    if kept is not None:
+        keep_new = rank(info) > rank(kept)
+        first, second = sorted((kept.folder_path, info.folder_path))
+        pair = (first, second, info.id)
+        if pair not in _reported_duplicates:
+            _reported_duplicates.add(pair)
+            logger.warning(
+                "scan_mods_directory: folders %s and %s share the mod id %s, using %s",
+                kept.folder_path, info.folder_path, info.id,
+                info.folder_path if keep_new else kept.folder_path,
+            )
+        if not keep_new:
+            return
+        for name in [name for name, mod_id in mods_by_name.items() if mod_id == info.id]:
+            del mods_by_name[name]
+    cache[info.id] = info
+    if mod_name := str(info.config_data.get("name") or ""):
+        mods_by_name[mod_name.lower()] = info.id
 
 
 def validate_mod_config(config_data: dict, config_path: str, folder_name: str) -> bool:
@@ -51,8 +83,11 @@ def scan_mods_directory(
     old_cache: dict[str, ModFolderInfo] | None = None,
     *,
     is_cancelled: Callable[[], bool] | None = None,
+    newer_config_mods: list[str] | None = None,
 ) -> tuple[dict[str, ModFolderInfo], dict[str, str]]:
     """Scan the mods directory and return (cache, mods_by_name).
+
+    Names of mods saved in a newer config format than this G3M reads are added to `newer_config_mods`.
 
     Returns:
         Tuple of (mod cache dict, mods_by_name dict mapping lowercase name -> id)
@@ -122,10 +157,7 @@ def scan_mods_directory(
                     if mod_id is not None:
                         old_info = old_cache[mod_id]
                         if old_info.config_digest == config_digest:
-                            cache[mod_id] = old_info
-                            mod_name = old_info.config_data.get("name", "")
-                            if mod_name:
-                                mods_by_name[mod_name.lower()] = mod_id
+                            _add_to_cache(cache, mods_by_name, old_info)
                             continue
 
                     try:
@@ -149,6 +181,10 @@ def scan_mods_directory(
                         ValueError,
                         AttributeError,
                     ) as e:
+                        if newer_config_mods is not None and (
+                            name := newer_config_mod_name(config_path)
+                        ):
+                            newer_config_mods.append(name)
                         logger.warning(
                             f"scan_mods_directory: Config error in {config_path}: {e}",
                             extra={
@@ -167,7 +203,6 @@ def scan_mods_directory(
                             },
                         )
                         continue
-                    cache_key = mod_id
                     mod_info = ModFolderInfo(
                         id=mod_id,
                         folder_path=folder_path,
@@ -176,10 +211,7 @@ def scan_mods_directory(
                         config_mtime=config_mtime,
                         config_digest=config_digest,
                     )
-                    cache[cache_key] = mod_info
-                    mod_name = str(config_data.get("name") or "")
-                    if mod_name:
-                        mods_by_name[mod_name.lower()] = cache_key
+                    _add_to_cache(cache, mods_by_name, mod_info)
                 except (OSError, PermissionError) as e:
                     logger.warning(
                         f"scan_mods_directory: Corrupted config detected (failed to access) in {config_path}: {e}",

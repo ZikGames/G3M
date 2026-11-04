@@ -240,3 +240,21 @@ def test_remove_mod_cleans_saved_step_membership(app_state):
     assert app_state.local_config["mod_steps_deltarune"] == {
         "deltarune": [["addon"]]
     }
+
+
+def test_load_used_mods_state_ignores_browser_entries_of_deleted_mods(app_state):
+    """A deleted mod must not come back just because the browser list still has it."""
+    browser_entry = SimpleNamespace(id="gb_mod_717980", name="Acolyte")
+    app_state.current_mode = "normal"
+    app_state.local_config["used_mods_deltarune"] = {"deltarune": ["gb_mod_717980"]}
+    app_state.all_mods = [browser_entry]
+
+    mod_service = Mock()
+    mod_service.is_mod_installed.return_value = False
+    mod_service.get_installed_mods_list.return_value = []
+    mod_service.get_mod_config.return_value = {}
+
+    service = UsedModsManager(app_state, mod_service, Mock(), Mock(), parent=None)
+    service.load_used_mods_state()
+
+    assert service.used_mods == {}

@@ -4,7 +4,7 @@
     "language_name": "简体中文",
     "font": "NotoSansSC-Bold.ttf",
     "qt_translation": "qtbase_zh_cn",
-    "version": "3.4.3"
+    "version": "3.4.5"
   },
   "onboarding": {
     "title": "欢迎使用 G3M",
@@ -112,7 +112,7 @@
     "mod_summary_show_all": "显示全部",
     "mod_summary_show_summary": "显示摘要",
     "mod_summary_all_operations": "全部操作 ({count})",
-    "more_operation_warnings": "... 还有 {count} 条操作警告",
+    "more_in_log": "... 还有 {count} 项。详情请查看日志。",
     "manual_install_hint": "{count} 个项目 · {configured} 个已配置 · {unconfigured} 个未配置",
     "manual_install_configure": "保存并进一步配置",
     "manual_install_unconfigured": "未配置",
@@ -739,6 +739,7 @@
     "unexpected_startup_error": "启动时发生意外错误：{details}",
     "modpack_creation_failed": "创建模组包失败",
     "mod_patching_failed": "模组操作失败。请查看日志了解详情。",
+    "mod_patch_mismatch": "{mod} 的补丁 {patch} 与游戏文件不匹配。它是为另一个游戏版本制作的，或是为原始文件制作而其他 Mod 已修改了该文件。请将修改同一文件的 Mod 放入同一步骤，或安装匹配的游戏版本。",
     "plugin_hook_failed": "插件操作失败。请查看日志了解详情。",
     "changelog_load_failed": "加载更新日志失败",
     "deletion_error": "删除错误",
@@ -858,6 +859,7 @@
     "copy_font_failed": "复制字体失败。",
     "gamebanana_install_failed": "从GameBanana安装模组失败：{error}",
     "mod_uninstall_failed": "卸载模组失败：{error}",
+    "mod_busy": "模组“{mod_name}”正在打补丁或分析中。请等待完成，或先取消操作。",
     "uninstall_failed": "卸载模组失败",
     "game_running": "游戏已经在运行。请先关闭它。"
   },
@@ -1008,6 +1010,8 @@
     "clear_downloads": "清除下载",
     "open_folder": "打开文件夹",
     "external_download": "外部下载",
+    "remote_install_title": "GameBanana 远程安装",
+    "remote_install_pair": "要将此 G3M 关联到你的 GameBanana 远程安装吗？你在 GameBanana 上发送的模组将自动下载到这里。",
     "empty_list": "暂无下载。",
     "status_downloading": "下载中 {progress}%",
     "status_installing": "安装中…",
@@ -1031,6 +1035,12 @@
     "settings_no_auto_use": "不自动安装已下载的文件",
     "settings_delete_after_use": "安装后删除已下载的文件",
     "settings_save_local_imports": "将本地导入保存到下载",
+    "settings_manual_install_always": "始终使用手动安装",
+    "settings_manual_install_always_tip": "关闭时：手动安装的自动扫描配置好已下载模组的所有文件后，模组会自动安装。",
+    "settings_docs_as_info": "自动将文档标记为信息文件",
+    "settings_docs_as_info_tip": "手动安装的自动扫描会把 .md、.txt 等文件设为信息文件。",
+    "settings_use_after_install": "安装后立即使用模组",
+    "settings_use_after_install_tip": "模组会立即启用，无需先选中再点击 Use。",
     "already_downloading": "已在队列中或正在下载",
     "enqueued": "已添加到下载：{name}",
     "confirm_external_title": "外部下载",
@@ -1544,7 +1554,11 @@
       "merge_failed": "合并失败",
       "steam_launch_with_mods": "Steam 可能会启动其他游戏文件夹",
       "patching_warning": "其他补丁警告",
-      "direct_absolute_operation_paths": "模组使用了直接绝对路径"
+      "direct_absolute_operation_paths": "模组使用了直接绝对路径",
+      "missing_dependencies": "缺少所需模组",
+      "inactive_dependencies": "所需模组未启用",
+      "mod_order_suggestion": "可以优化模组顺序",
+      "newer_mod_config": "模组需要更新的 G3M"
     },
     "messages": {
       "xdelta_apply_failed": {
@@ -1570,6 +1584,10 @@
       "direct_absolute_operation_paths": {
         "title": "模组使用了直接绝对路径",
         "body": "此模组会访问配置的游戏和模组文件夹之外的路径。仅在信任该模组时继续。之后可以在模组编辑器中修改这些路径。"
+      },
+      "newer_mod_config": {
+        "title": "部分模组需要更新的 G3M",
+        "body": "部分已安装的模组是为更新版本的 G3M 制作的，不会显示在你的列表中。请将 G3M 更新到最新版本以使用它们。仍要启动吗？"
       }
     },
     "tooltips": {
@@ -1578,7 +1596,11 @@
       "merge_failed": "当 G3MTool 无法合并所选模组或补丁时显示。",
       "steam_launch_with_mods": "当 Steam 可能打开的游戏文件夹不是 G3M 刚修补的文件夹时显示。",
       "patching_warning": "用于尚未分类的修补/合并风险。",
-      "direct_absolute_operation_paths": "当模组操作使用字面文件系统路径而不是占位符根目录时显示。"
+      "direct_absolute_operation_paths": "当模组操作使用字面文件系统路径而不是占位符根目录时显示。",
+      "missing_dependencies": "当所选模组需要未安装的模组，或安装这些模组失败时，在启动前显示。",
+      "inactive_dependencies": "当所选模组需要已安装但未选择的模组时，在启动前显示。G3M 会建议启用它们。",
+      "mod_order_suggestion": "当所选模组的顺序与作者推荐的顺序不同时，在启动前显示。",
+      "newer_mod_config": "当已安装的模组使用了此 G3M 无法读取的更新格式时，在启动前显示。"
     }
   },
   "data_root": {

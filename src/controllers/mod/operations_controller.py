@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QDialog
 
 from adapters.gamebanana_adapter import GameBananaAPI
 from config.config import UI_COLORS
+from models.exceptions import AppError
 from services.localization_service import tr
 from ui.dialogs.file_picker_dialog import GameBananaFilePickerDialog
 from utils.mod.utils import (
@@ -382,6 +383,11 @@ class ModOperationsController:
 
     def on_mod_uninstall_requested(self, mod):
         if self.app_state.is_installing:
+            return
+        try:
+            self.mod_service.ensure_mod_idle(mod)
+        except AppError as error:
+            self._safe_show_message("warning", tr("errors.error"), str(error))
             return
         if self.feedback_service.ask_question(
             "dialogs.delete_confirmation",

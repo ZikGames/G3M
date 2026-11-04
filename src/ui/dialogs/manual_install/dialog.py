@@ -157,9 +157,13 @@ class ManualModInstallDialog(DynamicDialog):
         initial_game_type: str | None = None,
         *,
         target_mods_dir: str | None = None,
+        auto_install: bool = False,
     ) -> None:
         super().__init__(parent)
         self.prepared_files_path = prepared_files_path
+        self.auto_install = auto_install
+        self._auto_started = False
+        self._detection_error = ""
         self.gamebanana_metadata = dict(gamebanana_metadata or {})
         self._metadata_thread: MetadataThread | None = None
         self._detection_thread: DetectionThread | None = None
@@ -566,7 +570,8 @@ class ManualModInstallDialog(DynamicDialog):
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self._items[relative] = item
             if (
-                not relative.endswith("/")
+                getattr(self.app_state, "local_config", {}).get("manual_install_docs_as_info", True)
+                and not relative.endswith("/")
                 and Path(relative).suffix.casefold() in MOD_DOCUMENTATION_EXTENSIONS
             ):
                 self._assignments[relative] = {"type": "info"}
@@ -646,6 +651,7 @@ class ManualModInstallDialog(DynamicDialog):
             self.name_edit.setText(str(metadata["name"]))
         self._stop_metadata_load()
         self.relocalize_ui()
+        self._auto_install_step()
 
     def _stop_metadata_load(self) -> None:
         if thread := self._metadata_thread:
@@ -708,9 +714,11 @@ class ManualModInstallDialog(DynamicDialog):
                 entry.get("type") != "info" or relative not in self._assignments
             ):
                 self._assign(relative, entry)
+        self._detection_error = error
         self._stop_detection()
         self._update_summary()
         if not self._validate():
+            self._auto_install_step()
             return
         unconfigured = sum(
             not self._configured(relative) for relative in self._source_nodes
@@ -727,6 +735,35 @@ class ManualModInstallDialog(DynamicDialog):
             "ui.manual_install_detection_failed" if error else status,
             error=error, count=unconfigured,
         )
+        self._auto_install_step()
+
+    def _auto_install_step(self) -> None:
+        """Hidden run: save once every file is set up, otherwise give up so the user can finish by hand."""
+        if (
+            not self.auto_install
+            or self._auto_started
+            or self._detection_thread
+            or self._metadata_thread
+        ):
+            return
+        self._auto_started = True
+        context = self._context()
+        unconfigured = [relative for relative in self._source_nodes if not self._configured(relative)]
+        reason = (
+            f"detection failed: {self._detection_error}" if self._detection_error
+            else "no game folder is set" if not (context.game_path or context.game_data_path)
+            else "the file list is not valid" if self.app_state is None or not self._validate()
+            else f"{len(unconfigured)} of {len(self._source_nodes)} files are not set up" if unconfigured
+            else "it has no file that changes the game" if all(
+                self._assignments[relative].get("type") == "info" for relative in self._configured_sources()
+            )
+            else ""
+        )
+        if reason:
+            logger.info("Automatic installation declined: %s", reason)
+            self.reject()
+            return
+        self._on_finish()
 
     def _assign(self, relative: str, entry: dict) -> None:
         self._assignments[relative] = dict(entry)
@@ -1332,6 +1369,10 @@ class ManualModInstallDialog(DynamicDialog):
             return
         self._stop_detection()
         self._checking_save = False
+        if error and self.auto_install:
+            logger.info("Automatic installation declined: %s", error)
+            self.reject()
+            return
         if error:
             self._set_busy(False)
             warning = DynamicMessageBox(self)
@@ -1417,6 +1458,9 @@ class ManualModInstallDialog(DynamicDialog):
             self.accept()
             if self._configure_after_save:
                 self._open_editor(self._saved_config, folder)
+        elif error and self.auto_install:
+            logger.info("Automatic installation could not save: %s", error)
+            self.reject()
         elif error:
             self._set_busy(False)
             self.tabs.setCurrentIndex(0)

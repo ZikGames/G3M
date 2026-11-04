@@ -53,6 +53,7 @@ from services.mod_diagnostics_service import (
     ModDiagnosticsService,
 )
 from services.mod_operation_support import collect_profile_operation_inputs
+from services.mod_usage import hold_mods
 from ui.common.dialog_theme import (
     DynamicDialog,
     build_dialog_theme_stylesheet,
@@ -117,7 +118,9 @@ class DiagnosticsWorker(ManagedQThread):
             )
             return
         configs, steps, contexts = self._operation_inputs
-        self.result_ready.emit(self._service.build_operation_report(configs, steps, contexts))
+        with hold_mods(configs):
+            report = self._service.build_operation_report(configs, steps, contexts)
+        self.result_ready.emit(report)
 
 
 class DiagnosticsPreflightWorker(ManagedQThread):
@@ -145,13 +148,14 @@ class DiagnosticsPreflightWorker(ManagedQThread):
 
     def run(self) -> None:
         try:
-            report = self._service.run(
-                self._plan,
-                self._game_path,
-                self._game_data_path,
-                str(Path.home()),
-                progress=lambda value, phase: self.progress_update.emit(value, phase),
-            )
+            with hold_mods(operation.mod_id for operation in self._plan.operations):
+                report = self._service.run(
+                    self._plan,
+                    self._game_path,
+                    self._game_data_path,
+                    str(Path.home()),
+                    progress=lambda value, phase: self.progress_update.emit(value, phase),
+                )
             self.result_ready.emit(report)
         except Exception as error:
             logger.error("Deep diagnostics failed: %s", error, exc_info=True)

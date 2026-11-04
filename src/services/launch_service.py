@@ -52,6 +52,7 @@ from utils.path_utils import (
 )
 from utils.process_utils import (
     build_external_process_env,
+    join_limited,
     resolve_portproton_command,
     resolve_wine_command,
 )
@@ -494,6 +495,9 @@ class GameLauncher(QObject):
         self._handle_launch_failure("restore")
 
     def _continue_launch_with_selections(self, selections: dict[str, Any]) -> None:
+        if not self._confirm_newer_mod_configs():
+            self._handle_launch_failure("newer-mod-config")
+            return
         has_selected_mods = self._launch_had_mods
         current_path = self._get_current_game_path()
         if not current_path or not os.path.exists(current_path):
@@ -557,6 +561,19 @@ class GameLauncher(QObject):
                 return
         else:
             self._continue_after_patching(selections, True, needs_multi_mod)
+
+    def _confirm_newer_mod_configs(self) -> bool:
+        """Tell the user which installed mods need a newer G3M; they are missing from the mod list."""
+        if not is_warning_enabled("newer_mod_config", self.app_state.local_config):
+            return True
+        names = self.mod_service.mods_needing_newer_g3m()
+        if not names:
+            return True
+        return bool(
+            self.feedback_service.ask_patching_warning(
+                create_warning_event("newer_mod_config", details=join_limited(names, "\n"))
+            )
+        )
 
     def _handle_launch_failure(self, reason: str = "unknown"):
         self._notify_pre_launch_plugin_cancellation(reason)
@@ -805,9 +822,14 @@ class GameLauncher(QObject):
 
     def _check_game_running(self, vanilla_mode):
         logger.info("[LAUNCH] Game is no longer running, starting cleanup")
-        if self.restore_window_callback:
-            self.restore_window_callback()
-        self._record_launch_playtime()
+        # neither step may stop the restore of the game files below
+        for step in (self.restore_window_callback, self._record_launch_playtime):
+            if step is None:
+                continue
+            try:
+                step()
+            except Exception:
+                logger.warning("Game exit step %s failed", getattr(step, "__name__", step), exc_info=True)
         if not self._selected_launch_mode.restores_after_game:
             if self._operation_journal is not None and not self._permanent_committed:
                 logger.warning("Game was not detected; restoring uncommitted changes")
@@ -844,7 +866,7 @@ class GameLauncher(QObject):
         if journal is not None:
             try:
                 journal.retire()
-            except OSError as error:
+            except Exception as error:
                 logger.error("Could not commit permanent operation journal: %s", error)
                 self._run_journal_operation(
                     "retire",
@@ -1379,6 +1401,8 @@ class GameLauncher(QObject):
     ) -> bool:
         from utils.mod.utils import get_mod_id
 
+        if not is_warning_enabled("mod_order_suggestion", self.app_state.local_config):
+            return True
         game_id = str(getattr(getattr(self.app_state, "game_mode", None), "game_id", "") or "")
         scopes, _configs, source_steps, recommendations = self._operation_relation_recommendations(
             selections, patch_steps, game_id
@@ -1495,7 +1519,7 @@ class GameLauncher(QObject):
         self._pending_dependency_launch = None
         self._clear_pending_dependency_downloads()
         self._finish_background_launch_operation()
-        if details:
+        if details and is_warning_enabled("missing_dependencies", self.app_state.local_config):
             ask = getattr(self.feedback_service, "ask_patching_warning", None)
             warning_key = (
                 "dialogs.patching_warning.dependency_manual_required"
@@ -1691,8 +1715,17 @@ class GameLauncher(QObject):
             }
             for scope, scope_findings in findings.items()
         }
-        inactive = {scope: ids for scope, ids in inactive.items() if ids}
-        missing = {scope: ids for scope, ids in missing.items() if ids}
+        config = self.app_state.local_config
+        inactive = {
+            scope: ids
+            for scope, ids in inactive.items()
+            if ids and is_warning_enabled("inactive_dependencies", config)
+        }
+        missing = {
+            scope: ids
+            for scope, ids in missing.items()
+            if ids and is_warning_enabled("missing_dependencies", config)
+        }
         if not inactive and not missing:
             return True
         installed = {
@@ -2406,7 +2439,7 @@ class GameLauncher(QObject):
         elif errors:
             logger.error("[CLEANUP] %s", "; ".join(errors))
             self.status_changed.emit(
-                tr("errors.files_restore_error", error="; ".join(errors)),
+                tr("errors.files_restore_error", error=join_limited(errors, "; ")),
                 UI_COLORS["status_error"],
             )
         else:
@@ -2528,7 +2561,7 @@ class GameLauncher(QObject):
         self.launch_transaction.fail("operation-recovery")
         logger.error("operation session recovery failed: %s", "; ".join(errors))
         self._safe_feedback_status(
-            tr("errors.files_restore_error", error="; ".join(errors)),
+            tr("errors.files_restore_error", error=join_limited(errors, "; ")),
             UI_COLORS["status_error"],
         )
         self._finish_session_recovery()

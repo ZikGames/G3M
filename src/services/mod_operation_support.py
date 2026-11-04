@@ -7,8 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from services.localization_service import tr
-from services.mod_operation_executor import ModOperationExecutionError
+from services.mod_operation_executor import (
+    ModOperationCancelledError,
+    ModOperationExecutionError,
+)
 from services.warning_service import (
     create_warning_event,
     is_warning_enabled,
@@ -25,18 +27,18 @@ from utils.mod.operation_plan import (
     build_profile_operation_plan,
 )
 from utils.mod.utils import get_mod_id
-from utils.process_utils import bounded_output_preview
+from utils.process_utils import (
+    SCROLL_DIALOG_MAX_CHARS,
+    SCROLL_DIALOG_MAX_LINES,
+    bounded_output_preview,
+    limit_dialog_text,
+)
 
 _DIRECT_ABSOLUTE_CODES = frozenset({"direct_absolute_source", "direct_absolute_target"})
-_MAX_OPERATION_WARNING_LINES = 100
 
 
 def _bounded_warning_lines(lines: list[str]) -> str:
-    visible = lines[:_MAX_OPERATION_WARNING_LINES]
-    hidden = len(lines) - len(visible)
-    if hidden:
-        visible.append(tr("ui.more_operation_warnings", count=hidden))
-    return "\n".join(visible)
+    return limit_dialog_text("\n".join(lines), SCROLL_DIALOG_MAX_LINES, SCROLL_DIALOG_MAX_CHARS)
 
 
 def direct_operation_paths_preapproved(local_config: dict | None) -> bool:
@@ -276,12 +278,15 @@ def create_g3mtool_patcher(
             from adapters.g3mtool_adapter import G3MToolManager
 
             tool = G3MToolManager(app_state) if app_state is not None else G3MToolManager()
+            tool.is_cancelled = is_cancelled
         if not tool.is_available():
             raise ModOperationExecutionError(tool.get_unavailable_reason())
         apply = tool.xpatch_apply if patch.suffix.casefold() in {".xdelta", ".vcdiff"} else tool.apply_patch
         returncode, stdout, stderr = apply(
             str(target), str(patch), str(output), **_progress_arguments(progress)
         )
+        if is_cancelled is not None and is_cancelled():
+            raise ModOperationCancelledError("operation cancelled")
         if returncode:
             raise ModOperationExecutionError(
                 f"patch backend failed: {bounded_output_preview(stderr or stdout or str(returncode))}"
@@ -310,6 +315,7 @@ def create_g3mtool_merger(
             from adapters.g3mtool_adapter import G3MToolManager
 
             tool = G3MToolManager(app_state) if app_state is not None else G3MToolManager()
+            tool.is_cancelled = is_cancelled
         if not tool.is_available():
             raise ModOperationExecutionError(tool.get_unavailable_reason())
         config = getattr(app_state, "local_config", {}) if app_state is not None else {}
@@ -323,6 +329,8 @@ def create_g3mtool_merger(
             ),
             **_progress_arguments(progress),
         )
+        if is_cancelled is not None and is_cancelled():
+            raise ModOperationCancelledError("operation cancelled")
         if returncode:
             raise ModOperationExecutionError(
                 f"patch merge failed: {bounded_output_preview(stderr or stdout or str(returncode))}"

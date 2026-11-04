@@ -1,6 +1,7 @@
 """G3MTool CLI execution and management."""
 
 import codecs
+import contextlib
 import json
 import logging
 import os
@@ -8,7 +9,10 @@ import platform
 import re
 import subprocess
 import threading
+import time
 from collections.abc import Callable
+
+import psutil
 
 from services.background_operations import background_operations, terminate_process
 from services.localization_service import tr
@@ -16,6 +20,29 @@ from utils.path_utils import get_g3mtool_cache_dir, get_user_data_root, resource
 from utils.process_utils import bounded_output_preview, format_external_process_error
 
 logger = logging.getLogger(__name__)
+
+
+def _terminate_tree(process: subprocess.Popen) -> None:
+    """Stop the tool and anything it started, so no child keeps a patch file open."""
+    children: list[psutil.Process] = []
+    suspended = False
+    try:
+        parent = psutil.Process(process.pid)
+        # A frozen parent cannot start new children while the existing ones are collected.
+        with contextlib.suppress(psutil.Error):
+            parent.suspend()
+            suspended = True
+        children = parent.children(recursive=True)
+    except psutil.Error:
+        pass
+    for child in children:
+        with contextlib.suppress(psutil.Error):
+            child.kill()
+    if suspended:
+        process.kill()  # a stopped process would leave a polite SIGTERM pending
+    else:
+        terminate_process(process)
+    psutil.wait_procs(children, timeout=5)
 
 
 class G3MToolManager:
@@ -34,6 +61,8 @@ class G3MToolManager:
         self.refresh_executable()
         self._active_processes: list[subprocess.Popen] = []
         self._active_processes_lock = threading.Lock()
+        # Polled while a command runs; a true answer kills the process so cancel is immediate.
+        self.is_cancelled: Callable[[], bool] | None = None
 
     def _get_local_config(self) -> dict:
         local_config = getattr(self.app_state, "local_config", None)
@@ -416,8 +445,12 @@ class G3MToolManager:
         for process in processes:
             try:
                 if process.poll() is None:
-                    process.kill()
-                    process.wait()
+                    _terminate_tree(process)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
             except Exception as e:
                 logger.debug(
                     f"G3MToolManager.cancel_active_processes: failed to stop process: {e}",
@@ -501,6 +534,16 @@ class G3MToolManager:
             return None
         return callback
 
+    def _cancel_requested(self) -> bool:
+        if self.is_cancelled is None:
+            return False
+        try:
+            return bool(self.is_cancelled())
+        except Exception:
+            # A broken callback must not leave the tool running with its files open.
+            logger.warning("G3MToolManager: cancel check failed; stopping the tool", exc_info=True)
+            return True
+
     def _run(
         self,
         cmd: list[str],
@@ -533,7 +576,7 @@ class G3MToolManager:
             background_operations.register_process(
                 process,
                 cancel=lambda process=process: (
-                    terminate_process(process) if process.poll() is None else None
+                    _terminate_tree(process) if process.poll() is None else None
                 ),
                 owner=self,
             )
@@ -552,7 +595,18 @@ class G3MToolManager:
             stdout_thread.start()
             stderr_thread.start()
             try:
-                process.wait()
+                cancelled_at = None
+                while True:
+                    try:
+                        process.wait(timeout=0.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if cancelled_at is None:
+                            if self._cancel_requested():
+                                cancelled_at = time.monotonic()
+                                _terminate_tree(process)
+                        elif time.monotonic() - cancelled_at > 5:
+                            process.kill()
                 returncode = process.returncode
             finally:
                 stdout_thread.join()
