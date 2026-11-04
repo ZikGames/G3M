@@ -6,7 +6,12 @@
 - Added the **Use a mod right after it is installed** checkbox: a new mod is turned on at once, with no need to select it and press Use.
 - Fixed several bugs and crashes.
 
-### Version 3.4.4 — 01.11.26
+### Version 3.4.3(4)-nix - 26.10.26 - Zik1213
+
+- updated flake.lock
+- make another way to sync
+
+### Version 3.4.4 — 01.11.26 - Y114
 
 - **Adjustment:** the Linux builds need glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39), not 2.34 as the 3.4.0 notes said. On older systems G3M does not start.
 - Fixed G3M not starting when a saved mod version in the Library is a damaged archive. G3M now skips that file and reports it by name.
